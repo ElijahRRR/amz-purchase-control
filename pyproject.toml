@@ -1,0 +1,23 @@
+[project]
+name = "amz-purchase-control"
+version = "0.1.0"
+description = "Amazon 采购自动化:服务端派单 + 浏览器插件执行"
+requires-python = ">=3.12"
+dependencies = [
+    "psycopg[binary]>=3.2",
+    "python-dotenv>=1.0",
+    "fastapi>=0.115",
+    "uvicorn[standard]>=0.32",
+    "pydantic>=2.9",
+]
+
+[dependency-groups]
+dev = ["pytest>=8"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
+[tool.setuptools]
+# 与 WalmartAPI-Contral 一致:本项目是应用不是库,不打包发布
+py-modules = []
+packages = []
