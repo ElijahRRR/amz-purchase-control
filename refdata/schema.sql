@@ -111,6 +111,36 @@ CREATE INDEX IF NOT EXISTS idx_task_products_task
     ON procure.task_products (task_id);
 
 -- 事件流:只追加。替代厂商系统那一个 failContent 自由文本字段
+-- 任务 ↔ 上游那一行的对照。回写要知道「这张任务对应飞书里哪几行」。
+--
+-- **一张任务对多行**:飞书里通常一行一个商品,同一张上游订单占好几行,
+-- 落库时被合并成一张任务(合并不是优化是正确性,见 services/feishu_intake)。
+-- 回写时这几行都要写 —— 只写第一行的话,上游在表里看到的是
+-- 「第一个商品有单号,其余几个还没动静」,而它们本来就是同一次下单。
+CREATE TABLE IF NOT EXISTS procure.task_sources (
+    id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    task_id     bigint NOT NULL REFERENCES procure.tasks(id) ON DELETE CASCADE,
+    source      text NOT NULL DEFAULT 'feishu',   -- 目前只有 feishu(封闭集)
+    external_id text NOT NULL,                    -- 飞书的 record_id
+    pushed_hash text,                             -- 上次回写过去的内容摘要,没变就不再写
+    pushed_at   timestamptz,
+    push_error  text,                             -- 上次回写失败的原因
+    -- 上游把这一行删了。删了就别再试 —— 每轮一次注定失败的请求,
+    -- 「失败 N 行」会变成永久噪音,然后没人再看那个数字。
+    -- 下次拉单又看见它(比如从回收站恢复了)会自动清空,这条链因此自愈。
+    gone_at     timestamptz,
+    created_at  timestamptz NOT NULL DEFAULT now()
+);
+-- 一行上游数据只能属于一张任务。上游把某一行的单号改掉时,这一行**改挂**到
+-- 新任务上(ON CONFLICT DO UPDATE),而不是报错 —— 那是上游的合法操作。
+CREATE UNIQUE INDEX IF NOT EXISTS uq_task_sources_external
+    ON procure.task_sources (source, external_id);
+CREATE INDEX IF NOT EXISTS idx_task_sources_task
+    ON procure.task_sources (task_id);
+-- 找「该回写却还没写」的行:没写过的,或者内容变了的
+CREATE INDEX IF NOT EXISTS idx_task_sources_pending
+    ON procure.task_sources (task_id) WHERE pushed_at IS NULL;
+
 CREATE TABLE IF NOT EXISTS procure.task_events (
     id          bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     task_id     bigint NOT NULL REFERENCES procure.tasks(id) ON DELETE CASCADE,

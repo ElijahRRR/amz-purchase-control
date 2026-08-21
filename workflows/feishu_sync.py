@@ -17,7 +17,7 @@
 
 from api import feishu
 from registry import db, settings
-from services import feishu_intake, task_intake
+from services import feishu_intake, task_intake, task_source
 
 
 def _fetch(mapping: dict) -> tuple[list[dict], dict]:
@@ -50,6 +50,34 @@ def _tail(mapped: dict, records: list[dict]) -> str:
     return "\n".join(lines)
 
 
+def _link_sources(conn, got: dict, mapped: dict) -> int:
+    """输入:落库结果 + 映射结果 → 输出:建立了几条「任务 ↔ 飞书行」对照。
+
+    **新增和重复的都要建**。只给新增建的话,第一轮之后新加进来的那几行
+    (上游给同一张单补了个商品)永远不会被对照上,回写时它们那几格空着 ——
+    而上游看到的就是「这一单一半有单号一半没有」。
+
+    重复行拿 line_key 回查 task_id:ingest 对重复行不返回 id,但返回 line_key,
+    而 line_key 上有唯一索引。
+    """
+    total = 0
+    for d in got["details"]:
+        if d["result"] == "rejected":
+            continue                      # 都没落库,没有 task 可对照
+        task_id = d.get("task_id")
+        if task_id is None:
+            row = conn.execute("SELECT id FROM procure.tasks WHERE line_key = %s",
+                               (d["line_key"],)).fetchone()
+            if row is None:
+                continue
+            task_id = row["id"]
+        group = mapped["groups"].get(d["upstream_order_no"])
+        if not group:
+            continue
+        total += task_source.link(conn, task_id, group["record_ids"])
+    return total
+
+
 def run(params: dict) -> str:
     """输入:params(release / dry_run 可选)→ 输出:结果摘要。"""
     mapping = feishu_intake.load_mapping()
@@ -77,10 +105,12 @@ def run(params: dict) -> str:
 
     with db.pg_conn() as conn:
         got = task_intake.ingest(conn, rows, release=release)
+        linked = _link_sources(conn, got, mapped)
 
     summary = (f"同步完成:新增 {got['inserted']},重复 {got['duplicated']},"
                f"拒收 {got['rejected']}(共 {len(rows)} 张订单)")
     summary += "\n" + _tail(mapped, records)
+    summary += f"\n  对照上游行 {linked} 条(回写要靠它找到飞书里是哪几行)"
     bad = [d for d in got["details"] if d["result"] == "rejected"]
     if bad:
         # 拒收的必须逐条说出来。回一句「同步成功」就完了的话,少了几行没人知道。

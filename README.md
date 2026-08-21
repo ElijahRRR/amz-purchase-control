@@ -135,6 +135,43 @@ python cli.py feishu_sync -p release=1  # 落库即放行
 同一个上游单号的两行给了不同的地址或限价时,**按先出现的落库并在摘要里报出来** ——
 那多半是上游把两张不同的单填成了同一个号,静默取第一行会按错的地址寄出去。
 
+### 回写:把采购结果写回那张表
+
+**默认关着。** 往别人的表里写字是有副作用的动作,不该因为「代码里有这个功能」
+就默认发生。要开的话:
+
+1. 在飞书表里建好这几列(列名随便,填进映射就行):
+   采购状态 / AMZ单号 / 失败原因 / 采购时间 / 实付总计 / 物流状态 / 物流商 / 运单号
+2. 给应用加 `bitable:app` **写**权限(读权限不够)
+3. 把 `refdata/feishu_fields.json` 里 `writeback.enabled` 改成 `true`
+
+```bash
+python cli.py feishu_writeback --dry-run    # 看这一轮会写哪几行、写什么
+python cli.py feishu_writeback
+```
+
+几条值得知道的:
+
+- **一张单在飞书里占几行,这几行都会被写。** 只写第一行的话,上游看到的是
+  「第一个商品有单号,其余几个还没动静」,而它们本来就是同一次下单。
+- **只写已经有结果的单**(已拍单 / 拍单异常 / 待人工 / 已取消)。还在路上的不写,
+  否则那张表会被「待拍单 → 拍单中 → 待拍单」刷得没法看。
+- **内容没变就不写。** 否则每 10 分钟一轮会把飞书的编辑历史刷成一片
+  「机器人修改了此记录」,人再想看谁改过什么就看不见了。
+- **一条坏行不会挡住整批。** 飞书的 `batch_update` 是整批一起生效的:上游删掉
+  某一行之后,那一条会让整批失败。所以整批失败时会**降级逐条重发**,
+  失败原因逐条记进 `procure.task_sources.push_error`:
+
+  ```sql
+  SELECT external_id, push_error FROM procure.task_sources WHERE push_error IS NOT NULL;
+  ```
+
+- 状态列如果做成**单选**,飞书要求写进去的值必须是已有选项 —— 先把
+  `已拍单 / 拍单异常 / 待人工 / 已取消`、`未发货 / 运输中 / 已签收 / 已取消`
+  建成选项,或者干脆用文本列。
+- 中文标签取自 `services/vocab.py`,**与运营台同一个来源**。两边各写一份的话,
+  迟早一边说「已拍单」一边说「采购成功」,然后有人开始怀疑这是不是两回事。
+
 ## 验到了什么、没验到什么
 
 | | 状态 |
@@ -160,7 +197,12 @@ python cli.py feishu_sync -p release=1  # 落库即放行
 ```cron
 */5  * * * *  cd /path/to/amz-purchase-control && python cli.py task_sweep  >> /var/log/amz/sweep.log 2>&1
 */10 * * * *  cd /path/to/amz-purchase-control && python cli.py feishu_sync >> /var/log/amz/feishu.log 2>&1
+2-59/10 * * * *  cd /path/to/amz-purchase-control && python cli.py feishu_writeback >> /var/log/amz/feishu.log 2>&1
 ```
+
+第三条只在开了回写时才需要挂;没开的话它每轮只是安静地跳过,
+运营台也不会盯着它(不会出现一格永远红着的卡片)。
+错开两分钟是为了别和拉单挤在同一秒去撞飞书的频控。
 
 第二条是上游那条链。它停了,新单一张都进不来 —— 而界面上「队列待拍 0」
 跟「今天上游确实没派单」长得一模一样,不会有人觉得不对。
@@ -199,7 +241,7 @@ python cli.py task_sweep
 | `AMZ_FEISHU_APP_TOKEN` / `_TABLE_ID` | 空 | 表格与数据表标识(从表格 URL 里取) |
 | `AMZ_FEISHU_VIEW_ID` | 空 | 只拉某个视图。让运营在飞书里用「待采购」视图圈范围,改条件不用发版 |
 | `AMZ_FEISHU_MAX_RECORDS` | `5000` | 一轮最多读多少条。兜底用:表被误操作灌成十万行时宁可报错停下 |
-| `AMZ_FEISHU_SYNC_MAX_AGE_MIN` | `120` | 拉单多久没跑算不正常。**改低频跑要一起调大** |
+| `AMZ_FEISHU_SYNC_MAX_AGE_MIN` | `120` | 拉单/回写多久没跑算不正常。**改低频跑要一起调大** |
 | `AMZ_PG_DSN` | `dbname=amz_purchase` | 数据库连接串 |
 | `AMZ_DATA_ROOT` | `~/.amz-purchase` | .env / 日志 / 锁文件所在目录 |
 | `AMZ_CLAIM_TIMEOUT_MIN` | `15` | 领走多久没回传判为异常中断(转 manual,**不**退回队列) |
@@ -223,6 +265,7 @@ python cli.py task_sweep
 | `POST /v1/admin/tasks/import` `/search` `/export` · `GET /{id}` | 落库、查询、导出 CSV(整个筛选结果,不只当前页) |
 | `POST /v1/admin/tasks/{id}/release` `/reset` `/force-backfill` `/address` `/asin` | 五个人工动作 |
 | `POST /v1/admin/tasks/batch-reset` | 批量重置。**不接受 acknowledged** —— 可能已下单的原样报回来,让人逐条去看 |
+
 | `GET /v1/admin/instances` | 买家号与判活 |
 | `GET /v1/admin/meta` | 封闭集连中文标签下发。**前端不存副本** |
 | `GET /v1/admin/summary` | 状态桶计数(跟着 env/时间筛选走;顶栏两个数字保持全局) |
@@ -304,5 +347,5 @@ python cli.py task_sweep
 | P5 | 物流同步 | ✅ |
 | — | 任务落库(上游 → procure.tasks) | ✅ |
 | P6 | 运营台 Web 前端:四页 + 点行弹出的订单详情 + 点击即复制 | ✅ |
-| P7 | 上游接入:定时从飞书多维表格拉单 | ✅ 代码完成,**未对着真实表格跑过**(缺凭据) |
+| P7 | 上游接入:定时从飞书多维表格拉单 + 结果回写 | ✅ 代码完成,**未对着真实表格跑过**(缺凭据) |
 | 下一步 | 自动重试:目前 `RETRYABLE` 那一组没有任何东西在消费它 | 待定 |

@@ -57,11 +57,18 @@ def run(params: dict) -> str:
         out.append(f"\n当前映射文件有问题:{exc}")
         return "\n".join(out)
 
-    missing = [f"{ours} → {theirs!r}" for ours, theirs in mapping["fields"].items()
+    # 必填与可选分开说。把可选列也报成「对不上就会整表拒收」是在吓唬人 ——
+    # 而一个会吓唬人的检查,用几次之后就没人认真看了。
+    missing = [(ours, theirs) for ours, theirs in mapping["fields"].items()
                if theirs and theirs not in names]
-    if missing:
-        out.append("\n⚠ 映射里这些列在表里找不到(对不上就会整表拒收):")
-        out.extend(f"    {m}" for m in missing)
+    hard = [f"{o} → {t!r}" for o, t in missing if o not in feishu_intake._OPTIONAL]
+    soft = [f"{o} → {t!r}" for o, t in missing if o in feishu_intake._OPTIONAL]
+    if hard:
+        out.append("\n⚠ 这些**必填**列在表里找不到,对不上就会整表拒收:")
+        out.extend(f"    {m}" for m in hard)
+    if soft:
+        out.append("\n  这些列是可选的,表里没有就用默认值(交期 7 天 / 站点 US):")
+        out.extend(f"    {m}" for m in soft)
 
     mapped = feishu_intake.to_rows(records, mapping)
     out.append(f"\n按当前映射读出来({mapping['row_is']} 模式,"

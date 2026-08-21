@@ -119,6 +119,30 @@
 | `actual_unit_price` | numeric(12,2) | 结算页实测，回传后填 |
 | `image_url` | text | |
 
+### `procure.task_sources` — 任务 ↔ 上游那一行的对照
+
+回写要知道「这张任务对应飞书里哪几行」。
+
+**一张任务对多行**：飞书里通常一行一个商品，同一张上游订单占好几行，落库时被合并成
+一张任务。回写时这几行都要写 —— 只写第一行的话，上游在表里看到的是「第一个商品有单号，
+其余几个还没动静」，而它们本来就是同一次下单。
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `id` | bigint identity | |
+| `task_id` | bigint FK CASCADE | |
+| `source` | text | 目前只有 `feishu`（封闭集） |
+| `external_id` | text | 飞书的 `record_id` |
+| `pushed_hash` | text | 上次回写过去的内容摘要。没变就不再写 |
+| `pushed_at` | timestamptz | |
+| `push_error` | text | 上次回写失败的原因（行被删了、单选没有这个选项……） |
+| `gone_at` | timestamptz | 上游把这一行删了。删了就不再重试；下次拉单又看见它会自动清空 |
+| `created_at` | timestamptz | |
+
+> `UNIQUE (source, external_id)` —— 一行上游数据只能属于一张任务。
+> 上游把某一行的单号改掉时，这一行会**改挂**到新任务上（`ON CONFLICT DO UPDATE`），
+> 而不是报错：那是上游的合法操作。
+
 ### `procure.task_events` — 事件流（只追加）
 
 替代厂商系统那**一个** `failContent` 自由文本字段。后台按 `task_id` 展开就是这条任务的

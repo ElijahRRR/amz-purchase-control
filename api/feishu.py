@@ -47,6 +47,13 @@ _RETRYABLE_CODES = frozenset({
 
 _RETRYABLE_HTTP = frozenset({429, 500, 502, 503, 504})
 
+#: 「这一行不在了」。与其它失败不同:它不会自己回来,重试没有意义。
+#: 上游删记录、把记录挪去别的表,都会落到这里。
+RECORD_GONE_CODES = frozenset({
+    1254043,    # RecordIdNotFound
+    1254045,    # RecordNotFound
+})
+
 
 def _default_transport(url: str, *, method: str, headers: dict[str, str],
                        body: bytes | None, timeout: int) -> tuple[int, bytes]:
@@ -215,6 +222,27 @@ class Client:
                 # has_more 说还有,却不给 page_token —— 再翻就是死循环。
                 # 这种情况宁可报错,也不要静默停在这里让人以为拉全了。
                 raise FeishuError(0, "飞书说还有下一页,却没给 page_token")
+
+
+    def batch_update(self, app_token: str, table_id: str,
+                     updates: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """输入:[{record_id, fields}] → 输出:飞书回的 records。
+
+        一次最多 1000 条(飞书上限),超了自己分批 —— 让调用方去记这个数字,
+        迟早有人在某个循环里忘了分。
+
+        **整批一起失败的话,这一批一条都没写进去。** 飞书这个接口不是逐条生效的,
+        所以调用方必须按批处理失败,不能假设「失败了但前几条写进去了」。
+        """
+        out: list[dict[str, Any]] = []
+        for i in range(0, len(updates), 1000):
+            chunk = updates[i:i + 1000]
+            got = self._call(
+                f"/open-apis/bitable/v1/apps/{app_token}/tables/{table_id}"
+                f"/records/batch_update",
+                method="POST", body={"records": chunk})
+            out.extend((got.get("data") or {}).get("records") or [])
+        return out
 
 
 def flatten(value: Any) -> Any:

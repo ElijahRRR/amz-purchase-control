@@ -71,6 +71,9 @@ def load_mapping(path: str | Path | None = None) -> dict[str, Any]:
         "row_is": row_is,
         "take_column": (take.get("column") or "").strip(),
         "take_equals": [str(v) for v in (take.get("equals") or [])],
+        # 原样带上,由 services/feishu_writeback 自己解释 ——
+        # 拉单这一层不需要知道回写写哪几列。
+        "writeback": raw.get("writeback") or {},
     }
 
 
@@ -146,6 +149,10 @@ def to_rows(records: list[dict[str, Any]], mapping: dict[str, Any]) -> dict[str,
             # 那说明上游把两张不同的单填成了同一个单号,是要人去看的。
             g = groups[order_no]
             g["products"].extend(products)
+            # **后面几行的 record_id 也要收进来。**
+            # 漏了的话,回写只会写这张单的第一行 —— 上游在表里看到的是
+            # 「第一个商品有单号,其余几个还没动静」,而它们本来就是同一次下单。
+            g["record_ids"].append(rec.get("record_id"))
             for key in ("buyer_env_code", "price_cap", "ship_name", "ship_phone",
                         "ship_line1", "ship_city", "ship_state", "ship_postcode"):
                 now = _text(col(rec, key))
