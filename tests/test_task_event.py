@@ -103,3 +103,26 @@ def test_error_codes_table_matches_docs():
         f"只在文档里:{sorted(in_doc - set(error_codes.ERROR_CODES))};"
         f"只在代码里:{sorted(set(error_codes.ERROR_CODES) - in_doc)}"
     )
+
+
+def test_docs_layout_lists_every_service_and_workflow():
+    """docs/01 §目录树 与真实文件必须对得上。
+
+    这条测试的由来:那张目录树里曾经写着 workflows/erp_sync.py、workflows/reconcile.py、
+    api/erp.py —— 三个都不存在。文档描述一个不存在的目录结构,
+    比不写目录结构更糟:照着它去找文件的人会以为自己漏看了什么。
+    """
+    import re
+
+    from registry import paths
+
+    root = paths.repo_root()
+    doc = (root / "docs" / "01-系统设计.md").read_text(encoding="utf-8")
+
+    for pkg in ("services", "workflows"):
+        real = {f.name for f in (root / pkg).glob("*.py") if f.name != "__init__.py"}
+        listed = set(re.findall(rf"^\s+({pkg}/)?(\w+\.py)\s{{2,}}",
+                                doc[doc.index("amz-purchase-control/"):], re.M))
+        listed = {m[1] for m in listed}
+        missing = real - listed
+        assert not missing, f"{pkg}/ 里有文档没提的文件:{sorted(missing)}"
