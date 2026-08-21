@@ -7,6 +7,7 @@ import type { Phase } from "../core/status.js";
 import type { Task } from "../core/types.js";
 import type { PageDriver } from "../flow/driver.js";
 import { runTask, type Outcome, type RunDeps } from "../flow/run.js";
+import { syncShipments, type ShipmentReader, type SyncSummary } from "../flow/shipment.js";
 
 export type TickResult =
   | { kind: "busy" }
@@ -21,6 +22,8 @@ export interface LoopDeps {
   log: Log;
   config: () => Config;
   driver: () => PageDriver;
+  /** 物流读取器。与 driver 分开:那条流跑在 purchased 之后,不碰购物车也不下单。 */
+  shipmentReader?: () => ShipmentReader;
   onPhase?: (phase: Phase, task: Task | null) => void;
   askConfirm?: RunDeps["askConfirm"];
 }
@@ -33,6 +36,25 @@ export class Loop {
 
   private phase(p: Phase, task: Task | null = null) {
     this.deps.onPhase?.(p, task);
+  }
+
+  /** 同步一轮物流。与认领共用 busy 闸:两条流都要开 iframe,
+   *  同时跑会让一个页面里挂着一堆 iframe,也会互相抢焦点。 */
+  async tickShipments(): Promise<SyncSummary | { skipped: string }> {
+    const cfg = this.deps.config();
+    if (cfg.mode === "off") return { skipped: "off" };
+    const make = this.deps.shipmentReader;
+    if (!make) return { skipped: "no-reader" };
+    const reader = make();
+    if (!reader.ready) return { skipped: "reader-not-ready" };
+    if (this.busy) return { skipped: "busy" };
+
+    this.busy = true;
+    try {
+      return await syncShipments(this.deps.client, reader, this.deps.log);
+    } finally {
+      this.busy = false;
+    }
   }
 
   /** 跑一轮:认领 → 执行 → 落终态。同一时刻只允许一轮在跑。 */

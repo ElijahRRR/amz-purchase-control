@@ -1,0 +1,37 @@
+<!doctype html>
+<!--
+  夹具：订单详情页 · 打不开这一单
+  出处：插件功能深度分析 §4.3 第 3 步 —— 含 "unable to load your order details"
+        → updateAmzOrderStatus(..., 92) 订单不存在
+
+  对我们的意义比厂商那边大：这说明我们回填的那个单号**可能根本不属于这个买家号**。
+  但服务端对它是「只记不改」—— 一次打不开也可能是页面抽风，
+  自动把 purchased 打回待人工，会在 Amazon 抽风的那天把一整批已完成的单全掀翻。
+
+  刻意覆盖的边界：
+    · **没有 #orderDetails**。所以「等 #orderDetails 出现」的写法会在这里干等到超时，
+      而正确的做法是把「出现了可判定的告警」也算作一种就绪信号
+    · 页面本身是 200，不是错误页 —— 有导航、有页脚、有搜索框
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Amazon.com</title></head>
+<body>
+<div id="a-page">
+  <div id="nav-belt"><input type="text" id="twotabsearchtextbox" placeholder="Search Amazon"></div>
+
+  <div class="a-container">
+    <!-- ✅ 报告记载：.a-alert-heading -->
+    <div class="a-box a-alert a-alert-error">
+      <div class="a-box-inner a-alert-container">
+        <h4 class="a-alert-heading">We're unable to load your order details</h4>
+        <div class="a-alert-content">
+          Please try again later, or visit Your Orders to see your recent orders.
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <div id="navFooter"><span>Conditions of Use</span></div>
+</div>
+</body>
+</html>

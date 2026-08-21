@@ -1,0 +1,61 @@
+<!doctype html>
+<!--
+  夹具：订单详情页 · 已取消
+  出处：插件功能深度分析 §4.3 第 3 步的状态判定表
+
+      含 cancelled  → .a-alert-heading      → updateAmzOrderStatus(..., 91) 已取消
+      含 refund     → #shipment-top-row     → updateAmzOrderStatus(..., 91) 已退货
+      含 unable to load your order details  → 92 订单不存在
+
+  本页覆盖第一条：.a-alert-heading 文案含 "cancelled"。
+  第二条（refund）走的是 #shipment-top-row，本页在页面下方也放了一个含 refund 的
+  #shipment-top-row，两条判据都能验到 —— 它们在报告里落到同一个结果（91）。
+
+  刻意覆盖的边界：
+    · #orderDetails **存在**。「订单被取消」和「页面没加载好」是两回事，
+      解析器不能因为看到 #orderDetails 就认定一切正常
+    · 页面上还有正常的商品与金额区 —— 取消的订单详情页并不是空的，
+      只做「有没有商品」判断的写法会把它当成正常单
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Order Details</title></head>
+<body>
+<div id="a-page">
+  <div id="orderDetails">
+
+    <!-- ✅ 报告记载：.a-alert-heading —— 状态判定要先于抓取 -->
+    <div class="a-box a-alert a-alert-warning">
+      <div class="a-box-inner a-alert-container">
+        <h4 class="a-alert-heading">This order was cancelled</h4>
+        <div class="a-alert-content">
+          Your order was cancelled on August 22, 2026. You have not been charged.
+        </div>
+      </div>
+    </div>
+
+    <!-- ✅ 报告记载：#shipment-top-row 含 refund（同样判成 91） -->
+    <div id="shipment-top-row" class="a-row">
+      <h4>Refund issued</h4>
+      <span class="a-color-secondary">A refund of $40.59 was issued to your Visa.</span>
+    </div>
+
+    <!-- 取消的订单详情页并不是空的：商品与金额都还在。
+         只做「有没有商品」判断的写法会把它当成正常单。 -->
+    <div class="a-fixed-left-grid">
+      <div class="a-fixed-left-grid-col a-col-right">
+        <div class="a-row">
+          <a class="a-link-normal" href="/dp/B0FB3VS68J/ref=x">Echo Dot (5th Gen)</a>
+        </div>
+      </div>
+    </div>
+
+    <div id="od-subtotals" class="a-section">
+      <div class="a-row od-line-item-row">
+        <div class="a-column a-span7">Grand Total:</div>
+        <div class="a-column a-span5 a-span-last">$40.59</div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

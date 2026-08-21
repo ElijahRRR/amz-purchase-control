@@ -19,6 +19,9 @@ export interface Config {
   mode: RunMode;
   heartbeatMs: number;
   claimPollMs: number;
+  /** 物流同步的轮询间隔。比认领慢得多 —— 轨迹一天更新不了几次,
+   *  真正的节流在服务端(pending 会把刚同步过的挡在外面)。 */
+  shipmentPollMs: number;
   requestTimeoutMs: number;
 }
 
@@ -27,6 +30,7 @@ export const DEFAULTS = {
   mode: "off" as RunMode,
   heartbeatMs: 20_000,
   claimPollMs: 10_000,
+  shipmentPollMs: 15 * 60_000,
   requestTimeoutMs: 15_000,
 };
 
@@ -49,6 +53,7 @@ export async function loadConfig(store: Store = memoryStore()): Promise<Config> 
     mode: saved.mode ?? DEFAULTS.mode,
     heartbeatMs: saved.heartbeatMs ?? DEFAULTS.heartbeatMs,
     claimPollMs: saved.claimPollMs ?? DEFAULTS.claimPollMs,
+    shipmentPollMs: saved.shipmentPollMs ?? DEFAULTS.shipmentPollMs,
     requestTimeoutMs: saved.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,
   };
   if (saved.instanceUid !== cfg.instanceUid) await store.set(KEY, cfg);

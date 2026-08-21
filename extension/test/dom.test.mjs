@@ -179,6 +179,92 @@ await withFixture("order-history-empty.html", async (run) => {
   eq("orders-empty 读到 0 张卡", await run("amzdom.readOrderCards(document).length"), 0);
 });
 
+// ── 订单详情页(物流同步流) ──────────────────────────────────────────
+await withFixture("order-details.html", async (run) => {
+  eq("order-details 状态为 ok", await run("amzdom.readOrderState(document)"), "ok");
+
+  // 金额行按 label 扫,不按下标 —— 夹具里刻意多了礼品卡与促销两行
+  const sub = await run("amzdom.readOrderSubtotals(document)");
+  eq("order-details 运费", sub.shipping, "3.99");
+  eq("order-details 税前总额", sub.beforeTax, "1296.79");
+  eq("order-details 税费", sub.tax, "2.82");
+  eq("order-details 总计(带千分位)", sub.total, "1299.61");
+
+  // 隐藏的 #od-subtotals 副本排在真的之前,取第一个会读到全是 0.00 的模板
+  check("order-details 没读到隐藏副本里的 0.00", sub.total !== "0.00", JSON.stringify(sub));
+
+  const asins = await run("amzdom.readOrderAsins(document)");
+  eq("order-details 商品 ASIN", asins, ["B0FB3VS68J", "B0CHXNPXVX"]);
+  check("order-details 没把 Buy it again 推荐位算进来",
+        !asins.includes("B0NOISE0003"), JSON.stringify(asins));
+
+  // 文案里先出现 "4 payments" 的 4 和年份 2026,取第一个 4 位数会取错
+  eq("order-details 卡后四位取的是 ending in 后面那个",
+     await run("amzdom.readOrderPaymentLast4(document)"), "4417");
+
+  check("order-details 找到跟踪链接",
+        (await run("amzdom.findTrackingLink(document)") || "").includes("/ship-track?"));
+});
+
+await withFixture("order-details-cancelled.html", async (run) => {
+  // 「订单被取消」和「页面没加载好」是两回事:这一页 #orderDetails 是存在的
+  eq("order-details-cancelled 判为已取消",
+     await run("amzdom.readOrderState(document)"), "cancelled");
+  check("order-details-cancelled 页面上确实有 #orderDetails",
+        await run("!!document.querySelector('#orderDetails')"));
+});
+
+await withFixture("order-details-notfound.html", async (run) => {
+  // 这一页**没有** #orderDetails。只等 #orderDetails 的写法会在这里干等到超时
+  eq("order-details-notfound 判为打不开",
+     await run("amzdom.readOrderState(document)"), "not_found");
+  check("order-details-notfound 页面上没有 #orderDetails",
+        await run("!document.querySelector('#orderDetails')"));
+});
+
+// ── 包裹跟踪页 ──────────────────────────────────────────────────────
+await withFixture("tracking.html", async (run) => {
+  // 隐藏的运单号副本排在真的之前;退化选择器里还有个不一样的号
+  eq("tracking 运单号取的是可见的那个",
+     await run("amzdom.readTrackingNumber(document)"), "9400111899223197428431");
+
+  // 厂商取 .a-spacing-small 文本的 split(" ")[2] —— 在这个词序下取到的是 "shipped"
+  eq("tracking 承运商不是 shipped", await run("amzdom.readCarrier(document)"), "USPS");
+
+  eq("tracking 主状态映射到封闭集",
+     await run("amzdom.readTrackingStatus(document)"), "in_transit");
+  eq("tracking 预计送达", await run("amzdom.readDeliveryPromise(document)"), "Wednesday, August 27");
+
+  const ev = await run("amzdom.readTrackingEvents(document)");
+  // 容器外还有一组同构的事件行(相关订单),不带容器前缀就会混进来
+  eq("tracking 只数容器内的事件", ev.length, 6);
+  check("tracking 没把容器外的 Delivered 混进来",
+        !ev.some((e) => (e.description || "").includes("Front door")),
+        JSON.stringify(ev.map((e) => e.description)));
+
+  eq("tracking 最新一条(倒序,带日期分组)", ev[0], {
+    raw_day: "August 26, 2026", raw_time: "8:42 AM",
+    description: "Out for delivery", city: "Santa Ana", state_code: "CA",
+  });
+  // 位置串 "Los Angeles, CA 90001":按逗号切,后段去掉最后一个 token 才是州
+  eq("tracking 位置串拆成 city / state", { c: ev[2].city, s: ev[2].state_code },
+     { c: "Los Angeles", s: "CA" });
+  // 有一条真的没有 location,不能崩、也不能把上一条的位置串过来
+  const noLoc = ev.find((e) => (e.description || "").includes("left the carrier facility"));
+  eq("tracking 缺 location 的事件位置为空", { c: noLoc?.city, s: noLoc?.state_code },
+     { c: null, s: null });
+  // 日期分组跨了三组,最后一条该落在最早那一天
+  eq("tracking 最后一条的日期分组", ev[ev.length - 1].raw_day, "August 24, 2026");
+});
+
+await withFixture("tracking-delivered.html", async (run) => {
+  eq("tracking-delivered 状态", await run("amzdom.readTrackingStatus(document)"), "delivered");
+  // 另一种词序:"Shipped with AMZL US"。两份夹具合起来才说明盲取第 3 个词是靠运气
+  eq("tracking-delivered 承运商", await run("amzdom.readCarrier(document)"), "AMZL US");
+  // 已签收的单没有预计送达,读不到不该报错
+  eq("tracking-delivered 没有预计送达", await run("amzdom.readDeliveryPromise(document)"), null);
+});
+
 await browser.close();
 
 console.log(`\n  通过 ${pass} 条`);

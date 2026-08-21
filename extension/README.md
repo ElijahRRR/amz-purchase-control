@@ -10,6 +10,7 @@
 | 注册 / 心跳 / 认领 / 事件上报 / 护栏裁决 / 回填 / 失败 / 释放 | ✅ 通了，六个场景实跑验过 |
 | 执行时序（清车 → 加购 → 核对 → 填地址 → 读结算页 → 护栏 → 下单 → 回填断言） | ✅ 通了 |
 | 面板（相位、任务卡、步骤、日志、点击复制） | ✅ |
+| 物流同步（订单详情页 → 跟踪页 → 回传轨迹） | ✅ 独立一条流，跑在 purchased 之后 |
 | 真实 Amazon 页面动作（P3） | ⚠️ 写完了，解析层对着 DOM 夹具全绿；**但没在真实 Amazon 上跑过** |
 
 ## 三档运行模式
@@ -43,7 +44,7 @@ python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
 真实 Amazon 页面拿不到，所以 DOM 解析对着 `test/fixtures/` 里按逆向报告造的页面跑：
 
 ```bash
-npm run test:dom     # 33 条断言
+npm run test:dom     # 65 条断言
 ```
 
 夹具里塞满了干扰项——隐藏的同 id 副本、Saved for later、推荐位、`<template>` 模板节点、
@@ -53,6 +54,9 @@ npm run test:dom     # 33 条断言
 - `.order-card__list` 被报告记作 `.js-order-card` 的退化选择器，但它其实是**列表容器**。
   一张订单都没有时，隐藏模板里的空容器会被当成一张卡，于是"没有订单"变成
   "有一张读不出号的订单"
+- **FBA 判定看错了对象**：原来的正则把 `Sold by` 也收进判据，遇到
+  「Sold by Amazon.com / Ships from ThirdParty Seller」这种排版会把第三方单判成 FBA。
+  FBA 的定义是由 Amazon **履约**，看的是谁发货
 
 这不能替代真实页面验证——Amazon 的真实 DOM 一定和夹具有出入。它能保证的是：
 **报告里记着的那些选择器，我们的解析器确实按它们的语义在读。**
@@ -66,6 +70,12 @@ node tools/smoke.mjs --scenario oos             # 商品无货
 node tools/smoke.mjs --scenario not_fba         # 非 Amazon 配送
 node tools/smoke.mjs --scenario wrong_asin      # 订单卡 ASIN 不符
 node tools/smoke.mjs --scenario confirm_timeout # 点了下单但没见确认页
+node tools/smoke.mjs --scenario late_delivery   # 交期超限
+node tools/smoke.mjs --scenario cart_mismatch   # 购物车回读与本单不符
+
+# 物流同步是独立一条流,加 --ship 顺带跑一轮
+node tools/smoke.mjs --scenario happy --ship in_transit
+node tools/smoke.mjs --scenario happy --ship delivered
 ```
 
 跑的是 `src/` 里将来真装进浏览器的那份 `Loop` 与 `runTask`，只把页面动作换成假的。
@@ -128,6 +138,7 @@ node tools/smoke.mjs --scenario confirm_timeout # 点了下单但没见确认页
 src/core/      types(契约) codes(19 个错误码) status(界面标签)
                api(HTTP 出口) client(端点) config store log
 src/flow/      driver(页面动作接口) simulated(自检用) amazon(真实驱动) run(执行时序)
+               shipment(物流同步,独立一条流)
 src/flow/dom/  wait(等待原语) frame(同源 iframe) selectors(选择器,标出处) parse(纯解析)
 src/background/ loop(认领循环,不碰 chrome API) service-worker(MV3 后台)
 src/content/   panel(注入面板) styles copy(点击复制)
@@ -135,3 +146,31 @@ tools/         smoke.mjs(自检) copy-static.mjs
 ```
 
 `loop.ts` 与 `run.ts` 刻意不碰任何 chrome API —— 否则这套逻辑就只能靠手点扩展来验证。
+
+## 物流同步
+
+跑在任务已经 `purchased` 之后,**不改任务状态**,只往 logistics 域写。
+所以它失败了不会把一单已完成的采购掀翻 —— 这是刻意的。
+
+```
+POST /v1/shipments/pending  → 我这个买家号下哪些单该同步了
+  ↓ 每单
+订单详情页 /gp/your-account/order-details?orderID=...
+  ↓ 先判订单本身的状态(报告 §4.3 第 3 步),再抓
+  ok → 找跟踪链接 → 跟踪页 → 运单号 / 承运商 / 主状态 / 轨迹事件
+  cancelled / not_found → 直接回传,不再往下走
+  ↓
+POST /v1/shipments/sync
+```
+
+三条写进代码的判断:
+
+**订单本身的状态盖过轨迹状态。** 页面说 cancelled,轨迹上写什么都不算数。
+
+**`not_found` 只记不改。** 订单详情页打不开,说明我们回填的那个号可能根本不属于
+这个买家号 —— 但一次打不开也可能是页面抽风。自动把 `purchased` 打回待人工,
+会在 Amazon 抽风的那天把一整批已完成的单全掀翻。所以服务端只记一条 `shipment` 事件。
+
+**单条失败不拖垮整批。** 厂商那边 `postalCodeInfo` 为 null 时抛的 TypeError 会一路
+冒泡到 `handleOrderSync` 的 catch,**整批同步就此中止**,后面的订单全部不再处理
+(报告 §4.3)。这里每单一个 try。

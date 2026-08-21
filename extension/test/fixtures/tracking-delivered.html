@@ -1,0 +1,59 @@
+<!doctype html>
+<!--
+  夹具：包裹跟踪页 · 已签收
+  出处：插件功能深度分析 §4.3
+
+  刻意覆盖的边界：
+    · #primaryStatus = "Delivered" → 映射到封闭集里的 delivered
+    · 承运商文案换成另一种词序 "Shipped with AMZL US" ——
+      split(" ")[2] 在这个词序下恰好取到 "AMZL"（对了一半），
+      两份夹具合起来才说明「盲取第 3 个词」是靠运气
+    · .pt-delivery-card-wrapper .a-declarative img = 签收照片（报告记的 deliveryImg）
+    · 已签收的单没有 .pt-promise-main-slot（预计送达没有意义了）——
+      解析器不能因为读不到它就报错
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Track your package</title></head>
+<body>
+<div id="a-page">
+  <div class="a-container">
+    <h1 id="primaryStatus">Delivered</h1>
+
+    <div class="pt-delivery-card-wrapper">
+      <div class="a-spacing-small">Shipped with AMZL US</div>
+      <span class="pt-delivery-card-trackingId">Tracking ID: TBA305271884221</span>
+      <!-- ✅ 报告记载：.pt-delivery-card-wrapper .a-declarative img（签收照片） -->
+      <div class="a-declarative">
+        <img alt="Delivery photo"
+             src="data:image/gif;base64,R0lGODlhAQABAIAAAP8AACwAAAAAAQABAAACAkQBADs=">
+      </div>
+    </div>
+
+    <div id="tracking-events-container">
+      <div class="a-container">
+        <div class="a-row tracking-event-date-header">
+          <span class="tracking-event-date">August 27, 2026</span>
+        </div>
+        <div class="a-row a-spacing-large a-spacing-top-medium">
+          <div class="a-column a-span3"><span class="tracking-event-time">2:15 PM</span></div>
+          <div class="a-column a-span9">
+            <span class="tracking-event-message">Delivered, Left with individual</span>
+            <span class="tracking-event-location">Santa Ana, CA 92707</span>
+          </div>
+        </div>
+        <div class="a-row tracking-event-date-header">
+          <span class="tracking-event-date">August 26, 2026</span>
+        </div>
+        <div class="a-row a-spacing-large a-spacing-top-medium">
+          <div class="a-column a-span3"><span class="tracking-event-time">8:42 AM</span></div>
+          <div class="a-column a-span9">
+            <span class="tracking-event-message">Out for delivery</span>
+            <span class="tracking-event-location">Santa Ana, CA 92707</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

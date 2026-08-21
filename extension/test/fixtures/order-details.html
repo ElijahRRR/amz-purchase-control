@@ -1,0 +1,183 @@
+<!doctype html>
+<!--
+  夹具：订单详情页（正常已发货）
+  URL 形态：/gp/your-account/order-details?ie=UTF8&orderID=111-4820193-7736514
+  出处：插件功能深度分析 §4.3（processOrder / extractOrderInfo）
+
+  报告点名、本页覆盖的选择器：
+    #orderDetails                                      页面加载好了没
+    .a-alert-heading                                   状态判定（本页无告警块）
+    #shipment-top-row                                  refund 判定（本页文案无 refund）
+    #od-subtotals .a-row.od-line-item-row               金额行
+    .a-fixed-left-grid-col.a-col-right .a-row .a-link-normal   商品 ASIN
+    .pmts-payments-instrument-details                  卡后四位
+    .a-button-stack.a-spacing-mini a                   跟踪链接（/ship-track?）
+    .a-button.a-button-primary.track-package-button a  跟踪链接（progress-tracker）
+
+  刻意覆盖的边界：
+    · 金额行按 label 文案扫，不按行下标 —— Amazon 会按订单形态增减行
+      （本页多放了 "Gift Card Amount" 与 "Promotion Applied" 两行做扰动）
+    · 支付文案里**先**出现另一个 4 位数（"Pay in 4 payments of $2.70"），
+      取"第一个 4 位连续数字"的写法会取到 2026 或别的数
+    · 一个隐藏的 #od-subtotals 副本排在真的**之前**
+    · "Buy it again" 推荐区的 .a-link-normal 排在真商品链接**之前**
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Order Details</title></head>
+<body>
+<div id="a-page"><!-- 报告未记载，仅作包裹 -->
+
+  <!-- ------------------------------------------------------------------
+       干扰项 A：隐藏的 #od-subtotals 副本，排在真的之前。
+       写松了会怎样：`doc.querySelector('#od-subtotals ...')` 命中的是这一份，
+       读到的是模板占位符 $0.00 —— 于是一单 40.59 的订单在库里成了 0。
+       ------------------------------------------------------------------ -->
+  <div id="od-subtotals" class="a-section" style="display:none" aria-hidden="true">
+    <div class="a-row od-line-item-row"><span>Shipping &amp; Handling:</span><span>$0.00</span></div>
+    <div class="a-row od-line-item-row"><span>Grand Total:</span><span>$0.00</span></div>
+  </div>
+
+  <!-- ------------------------------------------------------------------
+       干扰项 B："Buy it again" 推荐区，排在真商品之前。
+       它用的正是报告记的 .a-link-normal，而且也在
+       .a-fixed-left-grid-col.a-col-right .a-row 里面。
+       写松了会怎样：不先锁 #orderDetails 就扫全页，第一个 ASIN 会是 B0NOISE0003，
+       回填时把推荐商品当成本单的货。
+       ------------------------------------------------------------------ -->
+  <div class="a-section" id="rhf-recommendations">
+    <h2>Buy it again</h2>
+    <div class="a-fixed-left-grid">
+      <div class="a-fixed-left-grid-col a-col-right">
+        <div class="a-row">
+          <a class="a-link-normal" href="/dp/B0NOISE0003/ref=ppx_yo_dt_b_title">Recommended thing</a>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ✅ 报告记载：#orderDetails —— 页面加载好了没的判据 -->
+  <div id="orderDetails">
+
+    <div class="a-box-group">
+      <div class="a-box a-color-offset-background">
+        <div class="a-box-inner">
+          <span class="a-color-secondary">Order placed</span>
+          <span class="a-color-base">August 21, 2026</span>
+          <span class="a-color-secondary">Order #</span>
+          <span class="a-color-base">111-4820193-7736514</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ✅ 报告记载：#shipment-top-row（§4.3 第 3 步 refund 判定）
+         本页是正常发货，文案里没有 refund。 -->
+    <div id="shipment-top-row" class="a-row">
+      <h4>Arriving Wednesday, August 27</h4>
+      <span class="a-color-secondary">Shipped</span>
+    </div>
+
+    <div class="a-box shipment">
+      <div class="a-box-inner">
+        <div class="a-fixed-left-grid">
+          <div class="a-fixed-left-grid-col a-col-left">
+            <img alt="Echo Dot"
+                 src="data:image/gif;base64,R0lGODlhAQABAIAAAP8AACwAAAAAAQABAAACAkQBADs=">
+          </div>
+
+          <!-- ✅ 报告记载：.a-fixed-left-grid-col.a-col-right .a-row .a-link-normal -->
+          <div class="a-fixed-left-grid-col a-col-right">
+            <div class="a-row">
+              <a class="a-link-normal" href="/gp/product/B0FB3VS68J/ref=ppx_yo_dt_b_asin_title">
+                Echo Dot (5th Gen) Smart speaker with Alexa
+              </a>
+            </div>
+            <div class="a-row a-size-small">
+              <span class="a-color-secondary">Sold by:</span>
+              <a class="a-link-normal" href="/gp/help/seller/at-a-glance.html?seller=ATVPDKIKX0DER">Amazon.com</a>
+            </div>
+            <div class="a-row">
+              <span class="a-color-price">$13.99</span>
+            </div>
+
+            <!-- ✅ 报告记载：跟踪入口（§4.3 extractTrackingInfo 第 1 步的两条路径） -->
+            <div class="a-button-stack a-spacing-mini">
+              <span class="a-button a-button-base">
+                <a class="a-button-text"
+                   href="/gp/css/shiptrack/view.html/ship-track?orderId=111-4820193-7736514&amp;packageIndex=0">
+                  Track package
+                </a>
+              </span>
+            </div>
+          </div>
+        </div>
+
+        <div class="a-fixed-left-grid">
+          <div class="a-fixed-left-grid-col a-col-left">
+            <img alt="USB Cable"
+                 src="data:image/gif;base64,R0lGODlhAQABAIAAAP8AACwAAAAAAQABAAACAkQBADs=">
+          </div>
+          <div class="a-fixed-left-grid-col a-col-right">
+            <div class="a-row">
+              <a class="a-link-normal" href="/dp/B0CHXNPXVX/ref=ppx_yo_dt_b_asin_title">
+                Anker USB-C Cable, 6 ft
+              </a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ✅ 报告记载：.a-button.a-button-primary.track-package-button a
+         第二条跟踪链接路径（progress-tracker 形态） -->
+    <span class="a-button a-button-primary track-package-button">
+      <a class="a-button-text"
+         href="/progress-tracker/package/ref=ppx_od_dt_b_track_package?_encoding=UTF8&amp;itemId=abc&amp;orderId=111-4820193-7736514">
+        Track package
+      </a>
+    </span>
+
+    <!-- ✅ 报告记载：.pmts-payments-instrument-details（卡后四位）
+         ⚠ 陷阱：文案里**先**出现 "4 payments" 的 4，再出现年份 2026，
+         最后才是真正的卡尾号 4417。
+         报告说厂商取的是 /\d{4}/ 的**第一个**匹配 —— 那会取到 2026。
+         正确写法先认 "ending in"。 -->
+    <div class="pmts-payments-instrument-details">
+      Pay in 4 payments of $2.70 · offer valid through 2026 · Visa ending in 4417
+    </div>
+
+    <!-- ✅ 报告记载：#od-subtotals .a-row.od-line-item-row
+         金额行按 label 扫，不按下标 —— 这里刻意多了两行（礼品卡、促销）。 -->
+    <div id="od-subtotals" class="a-section">
+      <div class="a-row od-line-item-row">
+        <div class="a-column a-span7 a-text-right">Item(s) Subtotal:</div>
+        <div class="a-column a-span5 a-text-right a-span-last">$1,299.00</div>
+      </div>
+      <div class="a-row od-line-item-row">
+        <div class="a-column a-span7 a-text-right">Shipping &amp; Handling:</div>
+        <div class="a-column a-span5 a-text-right a-span-last">$3.99</div>
+      </div>
+      <div class="a-row od-line-item-row">
+        <div class="a-column a-span7 a-text-right">Gift Card Amount:</div>
+        <div class="a-column a-span5 a-text-right a-span-last">-$5.00</div>
+      </div>
+      <div class="a-row od-line-item-row">
+        <div class="a-column a-span7 a-text-right">Promotion Applied:</div>
+        <div class="a-column a-span5 a-text-right a-span-last">-$1.20</div>
+      </div>
+      <div class="a-row od-line-item-row">
+        <div class="a-column a-span7 a-text-right">Total before tax:</div>
+        <div class="a-column a-span5 a-text-right a-span-last">$1,296.79</div>
+      </div>
+      <div class="a-row od-line-item-row">
+        <div class="a-column a-span7 a-text-right">Estimated tax to be collected:</div>
+        <div class="a-column a-span5 a-text-right a-span-last">$2.82</div>
+      </div>
+      <div class="a-row od-line-item-row">
+        <div class="a-column a-span7 a-text-right"><b>Grand Total:</b></div>
+        <div class="a-column a-span5 a-text-right a-span-last"><b>$1,299.61</b></div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

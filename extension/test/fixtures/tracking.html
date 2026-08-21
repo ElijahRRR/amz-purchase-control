@@ -1,0 +1,162 @@
+<!doctype html>
+<!--
+  夹具：包裹跟踪页 · 在途
+  出处：插件功能深度分析 §4.3（extractTrackingInfo / extractTrackingEvents）
+
+  报告点名、本页覆盖的选择器：
+    .pt-delivery-card-trackingId            运单号（正则 /Tracking ID:?\s*(\w+)/）
+    #carrierRelatedInfo-container > div h4  运单号的退化选择器
+    .pt-delivery-card-wrapper .a-spacing-small  承运商
+    .pt-promise-main-slot .nowrap           预计送达
+    #primaryStatus                          主状态
+    #tracking-events-container > div.a-container   轨迹容器
+      .a-row.a-spacing-large.a-spacing-top-medium  一条事件
+        .tracking-event-time / .tracking-event-message / .tracking-event-location
+      .tracking-event-date-header .tracking-event-date   日期分组头
+
+  刻意覆盖的边界：
+    · 承运商文案是 "Package was shipped by USPS" —— 报告说厂商取的是
+      这个元素文本的 split(" ")[2]，在这个词序下取到的是 "shipped"。
+      正确写法按语义取（shipped with/by、carrier:），认不出返回 null
+    · 一个隐藏的 .pt-delivery-card-trackingId 副本排在真的**之前**
+    · #tracking-events-container **之外**也有一模一样的 .a-row 事件结构
+    · 有一条事件**没有** .tracking-event-location（真实存在），
+      缺字段不能让解析器崩掉
+    · 三个日期分组、6 条事件、倒序（最新在最上）
+    · 位置串形如 "Los Angeles, CA 90001"：按逗号切，后段去掉最后一个 token 才是州
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Track your package</title></head>
+<body>
+<div id="a-page">
+
+  <!-- ------------------------------------------------------------------
+       干扰项 A：隐藏的运单号副本，排在真的之前。
+       写松了会怎样：querySelector 取到它，运单号写成模板占位符 TBA000000000000，
+       而这个号在承运商那里查不到任何东西 —— 客服拿着它对不上账。
+       ------------------------------------------------------------------ -->
+  <div class="pt-delivery-card-wrapper" style="display:none" aria-hidden="true">
+    <span class="pt-delivery-card-trackingId">Tracking ID: TBA000000000000</span>
+  </div>
+
+  <div class="a-container">
+    <!-- ✅ 报告记载：#primaryStatus -->
+    <h1 id="primaryStatus">Out for delivery</h1>
+
+    <!-- ✅ 报告记载：.pt-promise-main-slot 与里面的 .nowrap -->
+    <div class="pt-promise-main-slot">
+      Arriving <span class="nowrap">Wednesday, August 27</span> by 10 PM
+    </div>
+
+    <!-- ✅ 报告记载：.pt-delivery-card-wrapper / .pt-delivery-card-trackingId
+         ⚠ 承运商陷阱：文案是 "Package was shipped by USPS"。
+            split(" ")[2] → "shipped"（错）
+            按语义取 shipped by 后面那个 → "USPS"（对） -->
+    <div class="pt-delivery-card-wrapper">
+      <div class="a-spacing-small">Package was shipped by USPS</div>
+      <span class="pt-delivery-card-trackingId">Tracking ID: 9400111899223197428431</span>
+      <div class="a-declarative">
+        <img alt="" src="data:image/gif;base64,R0lGODlhAQABAIAAAP8AACwAAAAAAQABAAACAkQBADs=">
+      </div>
+    </div>
+
+    <!-- ✅ 报告记载：运单号的退化选择器。真选择器在时不该用到它，
+         这里放一个不一样的号，好验证优先级。 -->
+    <div id="carrierRelatedInfo-container">
+      <div><h4>1Z999AA10123456784</h4></div>
+    </div>
+
+    <!-- ✅ 报告记载：#tracking-events-container > div.a-container -->
+    <div id="tracking-events-container">
+      <div class="a-container">
+
+        <div class="a-row tracking-event-date-header">
+          <span class="tracking-event-date">August 26, 2026</span>
+        </div>
+        <div class="a-row a-spacing-large a-spacing-top-medium">
+          <div class="a-column a-span3">
+            <span class="tracking-event-time">8:42 AM</span>
+          </div>
+          <div class="a-column a-span9">
+            <span class="tracking-event-message">Out for delivery</span>
+            <span class="tracking-event-location">Santa Ana, CA 92707</span>
+          </div>
+        </div>
+        <div class="a-row a-spacing-large a-spacing-top-medium">
+          <div class="a-column a-span3">
+            <span class="tracking-event-time">5:11 AM</span>
+          </div>
+          <div class="a-column a-span9">
+            <span class="tracking-event-message">Arrived at delivery station</span>
+            <span class="tracking-event-location">Santa Ana, CA 92707</span>
+          </div>
+        </div>
+
+        <div class="a-row tracking-event-date-header">
+          <span class="tracking-event-date">August 25, 2026</span>
+        </div>
+        <div class="a-row a-spacing-large a-spacing-top-medium">
+          <div class="a-column a-span3">
+            <span class="tracking-event-time">11:03 PM</span>
+          </div>
+          <div class="a-column a-span9">
+            <span class="tracking-event-message">Package arrived at carrier facility</span>
+            <span class="tracking-event-location">Los Angeles, CA 90001</span>
+          </div>
+        </div>
+        <!-- 这一条**没有** .tracking-event-location（真实存在的形态）。
+             缺字段不能让解析器崩掉，也不该把上一条的位置串过来。 -->
+        <div class="a-row a-spacing-large a-spacing-top-medium">
+          <div class="a-column a-span3">
+            <span class="tracking-event-time">6:20 PM</span>
+          </div>
+          <div class="a-column a-span9">
+            <span class="tracking-event-message">Package has left the carrier facility</span>
+          </div>
+        </div>
+
+        <div class="a-row tracking-event-date-header">
+          <span class="tracking-event-date">August 24, 2026</span>
+        </div>
+        <div class="a-row a-spacing-large a-spacing-top-medium">
+          <div class="a-column a-span3">
+            <span class="tracking-event-time">2:47 PM</span>
+          </div>
+          <div class="a-column a-span9">
+            <span class="tracking-event-message">Shipped</span>
+            <span class="tracking-event-location">Ontario, CA 91761</span>
+          </div>
+        </div>
+        <div class="a-row a-spacing-large a-spacing-top-medium">
+          <div class="a-column a-span3">
+            <span class="tracking-event-time">9:15 AM</span>
+          </div>
+          <div class="a-column a-span9">
+            <span class="tracking-event-message">Label created</span>
+            <span class="tracking-event-location">Ontario, CA 91761</span>
+          </div>
+        </div>
+      </div>
+    </div>
+
+    <!-- ------------------------------------------------------------------
+         干扰项 B：#tracking-events-container **之外**的同构事件行。
+         这是「相关订单」区域，结构与真轨迹一模一样。
+         写松了会怎样：不带容器前缀的 querySelectorAll('.a-row.a-spacing-large…')
+         会把它算进来，于是别人包裹的轨迹混进这一单的时间线。
+         ------------------------------------------------------------------ -->
+    <div class="a-container" id="related-shipments">
+      <div class="a-row tracking-event-date-header">
+        <span class="tracking-event-date">August 20, 2026</span>
+      </div>
+      <div class="a-row a-spacing-large a-spacing-top-medium">
+        <div class="a-column a-span9">
+          <span class="tracking-event-message">Delivered, Front door</span>
+          <span class="tracking-event-location">Irvine, CA 92602</span>
+        </div>
+      </div>
+    </div>
+  </div>
+</div>
+</body>
+</html>

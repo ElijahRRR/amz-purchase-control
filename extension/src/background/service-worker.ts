@@ -10,14 +10,16 @@ import { Log } from "../core/log.js";
 import { chromeStore } from "../core/store.chrome.js";
 import type { Phase } from "../core/status.js";
 import type { Task } from "../core/types.js";
-import { AmazonDriver } from "../flow/amazon.js";
-import { SimulatedDriver } from "../flow/simulated.js";
+import { AmazonDriver, AmazonShipmentReader } from "../flow/amazon.js";
+import { SimulatedDriver, SimulatedShipmentReader } from "../flow/simulated.js";
 import type { PageDriver } from "../flow/driver.js";
+import type { ShipmentReader } from "../flow/shipment.js";
 import { Loop } from "./loop.js";
 
 const VERSION = "0.1.0";
 const ALARM_HEARTBEAT = "amz.heartbeat";
 const ALARM_CLAIM = "amz.claim";
+const ALARM_SHIPMENT = "amz.shipment";
 
 const store = chromeStore();
 const log = new Log();
@@ -32,6 +34,10 @@ function driverFor(c: Config): PageDriver {
   return c.mode === "simulate" ? new SimulatedDriver("happy") : new AmazonDriver();
 }
 
+function shipmentReaderFor(c: Config): ShipmentReader {
+  return c.mode === "simulate" ? new SimulatedShipmentReader("in_transit") : new AmazonShipmentReader();
+}
+
 async function boot(): Promise<void> {
   cfg = await loadConfig(store);
   client = new Client(
@@ -43,6 +49,7 @@ async function boot(): Promise<void> {
     log,
     config: () => cfg!,
     driver: () => driverFor(cfg!),
+    shipmentReader: () => shipmentReaderFor(cfg!),
     onPhase: (p, t) => {
       phase = p;
       currentTask = t;
@@ -60,6 +67,7 @@ async function boot(): Promise<void> {
 
   chrome.alarms.create(ALARM_HEARTBEAT, { periodInMinutes: Math.max(0.5, cfg.heartbeatMs / 60000) });
   chrome.alarms.create(ALARM_CLAIM, { periodInMinutes: Math.max(0.5, cfg.claimPollMs / 60000) });
+  chrome.alarms.create(ALARM_SHIPMENT, { periodInMinutes: Math.max(1, cfg.shipmentPollMs / 60000) });
   broadcast();
 }
 
@@ -89,6 +97,7 @@ chrome.runtime.onStartup.addListener(() => void boot());
 chrome.alarms.onAlarm.addListener((a) => {
   if (a.name === ALARM_HEARTBEAT) void heartbeat();
   if (a.name === ALARM_CLAIM) void loop?.tickOnce();
+  if (a.name === ALARM_SHIPMENT) void loop?.tickShipments();
 });
 
 chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
@@ -104,6 +113,10 @@ chrome.runtime.onMessage.addListener((msg, _sender, respond) => {
       await boot();
       respond({ ok: true });
     })();
+    return true;
+  }
+  if (msg?.type === "amz.syncShipments") {
+    void loop?.tickShipments().then((r) => respond(r));
     return true;
   }
   if (msg?.type === "amz.tick") {
