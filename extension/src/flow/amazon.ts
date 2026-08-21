@@ -17,7 +17,8 @@ import { SEL, URLS } from "./dom/selectors.js";
 import { openFrame, withFrame, type Frame } from "./dom/frame.js";
 import { sleep, waitFor, waitStable, WaitTimeout } from "./dom/wait.js";
 import {
-  cartMatches, findQuantityOption, pickQuantitySelect, readCartLines, readCheckoutPanels,
+  cartMatches, findInterstitialButton, findQuantityOption, pickQuantitySelect,
+  readCartLines, readCheckoutPanels,
   readGrandTotal, readInStock, readOrderCards, readOrderSummary, readPaymentLast4,
   readProductShipper,
 } from "./dom/parse.js";
@@ -182,11 +183,7 @@ export class AmazonDriver implements PageDriver {
         throw new DriverError("CHECKOUT_TIMEOUT", `等结算页超时,当前 URL:${f.url()}`);
       }
       if (f.url().includes(URLS.finalCheckout)) return;
-      let clicked = false;
-      for (const sel of SEL.checkout.interstitialButtons) {
-        if (click(f.doc().querySelector(sel))) { clicked = true; break; }
-      }
-      if (!clicked) {
+      if (!click(findInterstitialButton(f.doc()))) {
         throw new DriverError("CHECKOUT_TIMEOUT", `卡在中间页且找不到继续按钮:${f.url()}`);
       }
     }

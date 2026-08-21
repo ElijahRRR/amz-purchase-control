@@ -268,6 +268,55 @@
 
       </div>
     </div>
+  <!-- ==========================================================================
+       第二个真面板 —— 「卖家是 Amazon，但发货的不是」
+       ==========================================================================
+       后加的一条，补审计指出的缺口：原来的夹具里没有任何
+       「含 amazon 子串但不是 FBA」的样本落在**合法作用域内**，
+       于是报告 §4.2.4「第 9 项判据极弱」这件事，在唯一权威的结算页上一次都没被验证过。
+
+           Ships from  ThirdParty Seller      ← 决定是不是 FBA 的是这一行
+           Sold by     Amazon.com             ← 这一行含 amazon，但与 FBA 无关
+
+       FBA 的定义是「由 Amazon 履约」，看的是**谁发货**，不是谁卖。
+       厂商的判据是「文案里出现 amazon 就算 FBA」——这一格在他们那里会被放行下单。
+
+       写松了会怎样：
+           /(ships from|dispatched from|sold by)\s*:?\s*([^,.|]+)/i
+       这种把 sold by 也收进来的正则，先匹配到哪一行取决于 DOM 顺序，
+       在这里就会匹配到 "Sold by Amazon.com" → 判成 FBA。
+       正确写法只认 ships from / dispatched from；认不出返回「未知」，
+       绝不拿卖家名字凑数。
+       ========================================================================== -->
+  <div data-csa-c-slot-id="checkout-itemBlockPanel" class="a-section">
+    <div class="lineitem-container">
+      <div class="a-fixed-left-grid">
+        <div class="a-fixed-left-grid-col a-col-left">
+          <img class="a-dynamic-image" alt="Anker Soundcore"
+               src="data:image/gif;base64,R0lGODlhAQABAIAAAP8AACwAAAAAAQABAAACAkQBADs=">
+        </div>
+        <div id="col-item-block-description" class="a-fixed-left-grid-col a-col-right">
+          <div class="aok-hidden">B0C7KN2M4P</div>
+          <span class="a-size-base a-color-base a-text-bold">Anker Soundcore Life Q30</span>
+          <div class="a-row a-size-small a-color-secondary">Qty: 1</div>
+          <!-- 注意这两行的**顺序**：Sold by 在前，Ships from 在后。
+               Amazon 的排版两种顺序都出现过，而这个顺序才是真正的陷阱：
+               只读第一个 p.a-spacing-none span.a-size-small 的实现，
+               在这里读到的是 "Sold by Amazon.com" —— 含 amazon，于是判成 FBA。
+               正确写法要把面板里**所有**配送方行都读进来再找 ships from。 -->
+          <p class="a-spacing-none">
+            <span class="a-size-small a-color-secondary">Sold by Amazon.com</span>
+          </p>
+          <p class="a-spacing-none">
+            <span class="a-size-small a-color-secondary">Ships from ThirdParty Seller</span>
+          </p>
+          <span class="lineitem-price-text a-text-bold">$79.99</span>
+          <h2 class="a-size-base">Thursday, August 28</h2>
+        </div>
+      </div>
+    </div>
+  </div>
+
   </div>
 
 

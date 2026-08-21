@@ -139,12 +139,20 @@ export function readCheckoutPanels(doc: Document): CheckoutPanel[] {
         }
       }
 
-      const shipperText = text(panel.querySelector(SEL.checkout.panelShipper));
-      const shipperMatch = /(ships from|dispatched from|sold by)\s*:?\s*([^,.|]+)/i.exec(shipperText);
-      // 厂商的判据是"文案里出现 amazon 就算 FBA",太松 —— 商品标题里带 amazon
-      // 的第三方货也会算进去。这里要求先认出配送方,再看配送方是不是 Amazon。
-      const shipper = shipperMatch ? shipperMatch[2].trim() : (shipperText || null);
-      const isFba = shipperMatch ? /amazon/i.test(shipperMatch[2]) : null;
+      // 读**全部**配送方行再拼起来。只读第一行的话,
+      // 遇到 "Sold by ..." 排在 "Ships from ..." 前面的排版就什么都判不出来。
+      const shipperText = Array.from(panel.querySelectorAll(SEL.checkout.panelShipper))
+        .map(text).filter(Boolean).join(" | ");
+      // FBA 看的是**谁发货**,不是谁卖。
+      //   "Ships from Amazon.com / Sold by ThirdParty"  → 是 FBA(这正是 FBA 的定义)
+      //   "Ships from ThirdParty / Sold by Amazon.com"  → 不是 FBA
+      // 所以只认 ships from / dispatched from,绝不拿 sold by 来判。
+      // 厂商的判据是"文案里出现 amazon 就算 FBA"(报告 §4.2.4 第 9 项「判据极弱」),
+      // 上面第二种写法在他们那里会被判成 FBA。
+      const shipFrom = /(?:ships?|dispatched)\s+from\s*:?\s*([^,.|\n]+)/i.exec(shipperText);
+      const shipper = shipFrom ? shipFrom[1].trim() : (shipperText || null);
+      // 认不出配送方就是 null(未知),不拿卖家名字凑数 —— 服务端会按 require_fba 处置。
+      const isFba = shipFrom ? /amazon/i.test(shipFrom[1]) : null;
 
       return {
         asin,
@@ -154,6 +162,17 @@ export function readCheckoutPanels(doc: Document): CheckoutPanel[] {
         deliveryText: text(panel.querySelector(SEL.checkout.panelDelivery)) || null,
       };
     });
+}
+
+/** 购物车点完结算,Amazon 可能插一张中间页(byg/byc)。
+ *  做成纯函数是为了能对着夹具验:选错元素会把中间页当成终局页,
+ *  下一步就直接去点"下单"了。 */
+export function findInterstitialButton(doc: Document): Element | null {
+  for (const sel of SEL.checkout.interstitialButtons) {
+    const el = visible(doc, sel);
+    if (el) return el;
+  }
+  return null;
 }
 
 export function readGrandTotal(doc: Document): string | undefined {

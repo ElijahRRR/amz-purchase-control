@@ -63,6 +63,10 @@ await withFixture("product.html", async (run) => {
   // 夹具里 4 那个 option 的文本带换行与缩进 —— 只 trim 不折叠空白就选不中
   eq("product 数量 4 可选(文本带换行缩进)", await run("amzdom.findQuantityOption(document, 4)"), { has: true, matched: true });
   eq("product 数量 7 不可选", await run("amzdom.findQuantityOption(document, 7)"), { has: true, matched: false });
+  // 夹具里有个 <option value="0">0 (Delete)</option> —— 图省事读 option.value 的
+  // 实现会把「删除」当成数量 0 选中。报告明写的是比对 innerText。
+  eq("product 不会把 value=0 的删除项当成数量 0",
+     await run("amzdom.findQuantityOption(document, 0)"), { has: true, matched: false });
   // 隐藏的同 id 副本只有 1 个 option,被选中就会让上面那几条挂掉
   eq("product 选中的是可见的那个 #quantity",
      await run("amzdom.pickQuantitySelect(document).options.length > 2"), true);
@@ -133,6 +137,27 @@ await withFixture("checkout-thirdparty.html", async (run) => {
   check("checkout-thirdparty 全部面板都不是 Amazon 发货",
         panels.length > 0 && panels.every((p) => p.isFba === false),
         JSON.stringify(panels.map((p) => ({ s: p.shipper, f: p.isFba }))));
+
+  // FBA 看的是**谁发货**,不是谁卖。第二个面板 "Sold by Amazon.com" 排在
+  // "Ships from ThirdParty Seller" 前面 —— 只读第一行、或把 sold by 也收进判据的
+  // 写法会在这里把第三方单判成 FBA 放行下单。
+  const trap = panels.find((p) => p.asin === "B0C7KN2M4P");
+  check("checkout-thirdparty Sold by Amazon 不算 FBA", trap && trap.isFba === false,
+        JSON.stringify(trap));
+  eq("checkout-thirdparty 配送方取的是 ships from 那一行", trap?.shipper, "ThirdParty Seller");
+});
+
+// ── 结算中间页 ──────────────────────────────────────────────────────
+await withFixture("checkout-interstitial.html", async (run) => {
+  // 隐藏的同选择器副本排在真按钮前面:取第一个就会点在 display:none 的元素上,
+  // 不报错也不跳转,然后 45 秒超时,一单白跑
+  eq("interstitial 选到的是可见的那个继续按钮",
+     await run("amzdom.findInterstitialButton(document)?.getAttribute('href')"),
+     "/checkout/p/p-A1B2C3D4E5F6");
+  // 中间页上也有 #submitOrderButtonId。靠「页面上有没有下单按钮」判断到没到终局页的
+  // 写法,会在这里就去点下单 —— 地址还没填、护栏还没跑
+  check("interstitial 页面上确实有个会骗人的 #submitOrderButtonId",
+        await run("!!document.querySelector('#submitOrderButtonId')"));
 });
 
 // ── 订单历史 ────────────────────────────────────────────────────────

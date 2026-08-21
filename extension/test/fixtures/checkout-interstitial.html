@@ -1,0 +1,77 @@
+<!doctype html>
+<!--
+  夹具：结算中间页（byg 形态）
+  URL 形态：/checkout/byg/ref=... 或 /gp/cart/byc/ref=...
+  出处：插件功能深度分析 §4.2.2 第 6/7 步
+
+  报告原文：点完购物车的结算按钮后，页面可能先落到 byg / byc 中间页，
+  要再点一次 `#checkout-byg-ptc-button a` 或 `#sc-byc-ptc-button-lower a`，
+  才会到最终结算页 /checkout/p/p-。
+
+  §4.2.2 把这一段标成了**高危缺陷**的现场：厂商第 6/7 步跳转超时直接 resolve()，
+  而 addressFillingInProgress 仍为 true 且永不复位 —— 下一单进来命中裸 return，
+  外层 await 永不兑现，整批拍单静默死锁，UI 停在「正在拍单中...」。
+
+  本夹具刻意覆盖的边界：
+    · 真按钮在合法选择器下能被选中
+    · 一个隐藏的同选择器副本排在真按钮**之前**（抓「取第一个就完事」的写法）
+    · 页面上放了一个 #submitOrderButtonId —— 中间页没认出来、
+      直接当终局页去点「下单」的写法，会在这里下出一个还没填地址的单
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Amazon.com Checkout</title></head>
+<body>
+<div id="a-page">
+
+  <!-- ------------------------------------------------------------------
+       干扰项 A：隐藏的同选择器副本，排在真按钮**之前**。
+       写松了会怎样：`doc.querySelector('#checkout-byg-ptc-button a')` 取到的是它，
+       .click() 打在一个 display:none 的元素上 —— 不报错、也不跳转，
+       然后就是 45 秒超时，一单白跑。
+       正确写法要跳过隐藏节点。
+       ------------------------------------------------------------------ -->
+  <div id="byg-template-shadow" style="display:none" aria-hidden="true">
+    <span id="checkout-byg-ptc-button" class="a-button">
+      <a href="#" class="a-button-text">Continue</a>
+    </span>
+  </div>
+
+  <div class="a-container">
+    <h1>Choose your options</h1>
+
+    <div class="a-box a-spacing-base">
+      <div class="a-box-inner">
+        <p>Ships from Amazon.com</p>
+        <div class="a-row">
+          <span class="a-price">$10.79</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- ✅ 报告记载：#checkout-byg-ptc-button a（§4.2.2 第 7 步）
+         这是真按钮。 -->
+    <span id="checkout-byg-ptc-button" class="a-button a-button-primary">
+      <span class="a-button-inner">
+        <a href="/checkout/p/p-A1B2C3D4E5F6" class="a-button-text" role="button">
+          Continue to checkout
+        </a>
+      </span>
+    </span>
+
+    <!-- ------------------------------------------------------------------
+         干扰项 B：中间页上也存在一个 #submitOrderButtonId。
+         Amazon 的中间页会预渲染终局页的一部分骨架。
+         写松了会怎样：只用「页面上有没有 #submitOrderButtonId」来判断
+         「到没到终局页」的实现，会在这里就去点下单 ——
+         地址还没填、护栏还没跑，直接下出一个寄错地方的单。
+         正确写法是靠 **URL** 判断到没到 /checkout/p/p-，不靠页面上有什么元素。
+         ------------------------------------------------------------------ -->
+    <div id="submitOrderButtonId" class="a-button" style="visibility:hidden">
+      <span class="a-button-inner">
+        <input class="a-button-input" type="submit" value="Place your order">
+      </span>
+    </div>
+  </div>
+</div>
+</body>
+</html>

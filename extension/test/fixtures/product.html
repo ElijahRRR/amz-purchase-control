@@ -175,7 +175,11 @@
   <div class="a-section a-spacing-small">
     <label class="a-form-label a-size-small" for="quantity">Quantity:</label>
     <select name="quantity" id="quantity" class="a-native-dropdown a-declarative">
-      <option value="1" selected>1</option>
+      <!-- 干扰项：value 与显示文本**不相等**的 option。
+                 报告 §4.2.1 明写的是拿 innerText.trim() 比对；
+                 图省事读 option.value 的实现，会在这里把「删除」当成数量 0 选中。 -->
+            <option value="0">0 (Delete)</option>
+            <option value="1" selected>1</option>
       <option value="2">2</option>
       <!-- 前后各一个空格：不 trim 就选不中 -->
       <option value="3"> 3 </option>
