@@ -8,13 +8,20 @@
  *   npm run test:dom
  */
 
-import { readFileSync } from "node:fs";
+import { existsSync, readFileSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
 import { chromium } from "/opt/node22/lib/node_modules/playwright/index.mjs";
 
 const here = dirname(fileURLToPath(import.meta.url));
 const KIT = join(here, "..", "dist", "domkit.js");
+
+// dist/ 会被 background 那趟构建清空,直接 node 这个文件就会撞 ENOENT。
+// 报一句人话,别让人对着 fs 的堆栈猜。
+if (!existsSync(KIT)) {
+  console.error(`\n  找不到 ${KIT}\n  先跑 npm run test:dom(它会先构建 domkit),别直接 node 这个文件。\n`);
+  process.exit(1);
+}
 
 let pass = 0;
 const failures = [];

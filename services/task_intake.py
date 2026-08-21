@@ -67,12 +67,25 @@ def _validate(row: dict[str, Any]) -> str | None:
         # 整批单全卡在待人工 —— 这种错要在入口拦下,不能等到插件跑到结算页。
         return f"price_cap 必须大于 0,收到 {cap}"
 
+    # 下面两条校验对应 ingest 里真正做的类型转换。少了它们,dry_run 会说「都能进」,
+    # 而 ingest 走到那一行时抛 ValueError/AttributeError,pg_conn 回滚 ——
+    # **连同已经写进去的前几行一起**,最终 0 行落库,而且 details 里一句解释都没有。
+    # 模块 docstring 承诺「预览数字与真跑一致」,这两处正好把承诺打破。
+    md = row.get("max_delivery_days")
+    if md:
+        try:
+            int(md)
+        except (ValueError, TypeError):
+            return f"max_delivery_days 不是整数:{md!r}"
+
     products = row.get("products") or []
     if not products:
         return "没有商品行"
     for p in products:
-        if not str(p.get("asin") or "").strip():
-            return "商品行缺 asin"
+        # 必须是字符串:上游把 ASIN 导成 JSON 数字(630509311712)时,
+        # str() 判空能过,而 ingest 里的 p["asin"].strip() 会抛 AttributeError。
+        if not isinstance(p.get("asin"), str) or not p["asin"].strip():
+            return f"商品行的 asin 必须是非空字符串,收到 {p.get('asin')!r}"
         try:
             if int(p["quantity"]) <= 0:
                 return f"{p['asin']} 的数量必须大于 0"

@@ -183,6 +183,11 @@ export class AmazonDriver implements PageDriver {
   /** Amazon 会插中间页(byg/byc)。到了就再点一次,最多两次。
    *  URL 要求连续稳定 3 次 —— 重定向链里会短暂命中中间态。 */
   private async waitForFinalCheckout(f: Frame): Promise<void> {
+    // 记住点击前停在哪一页。不记的话,「连续三次 URL 相同」会被**还没跳走的那一页**
+    // 满足 —— 点完继续按钮才 800ms,页面正在提交,URL 当然还没变,
+    // 于是这一 hop 直接判成"稳定了",再点一次继续。三个 hop 在 2.4 秒里被吃光,
+    // 45 秒的预算一秒都没用上,而中间页的继续按钮被连点了三次(有重复提交风险)。
+    let from = f.url();
     for (let hop = 0; hop < 3; hop += 1) {
       try {
         // 盯 URL 本身连续三次不变,而不是盯它的分类 ——
@@ -190,6 +195,7 @@ export class AmazonDriver implements PageDriver {
         await waitStable("跳到结算页",
                          () => {
                            const u = f.url();
+                           if (u === from) return null;   // 还没离开点击前那一页
                            const hit = u.includes(URLS.finalCheckout) ||
                                        URLS.interstitial.some((x) => u.includes(x));
                            return hit ? u : null;
@@ -199,6 +205,7 @@ export class AmazonDriver implements PageDriver {
         throw new DriverError("CHECKOUT_TIMEOUT", `等结算页超时,当前 URL:${f.url()}`);
       }
       if (f.url().includes(URLS.finalCheckout)) return;
+      from = f.url();          // 下一 hop 要离开的是这张中间页
       if (!click(findInterstitialButton(f.doc()))) {
         throw new DriverError("CHECKOUT_TIMEOUT", `卡在中间页且找不到继续按钮:${f.url()}`);
       }
@@ -278,9 +285,20 @@ export class AmazonDriver implements PageDriver {
     const applied = (doc().querySelector(SEL.checkout.addressText)?.textContent ?? "")
       .replace(/\s+/g, " ");
     const zip = shipping.postcode.split("-")[0];   // 页面常只显示 ZIP5,下发的可能是 ZIP+4
+    const lower = applied.toLowerCase();
+    const has = (v: string) => lower.includes(v.trim().toLowerCase());
     const missing: string[] = [];
+    // 只比邮编和城市不够:同城不同街道、甚至同城同邮编的另一个人,
+    // 这两项都能对上。收件人姓名与街道才是真正区分"寄给谁"的东西。
+    // 厂商只做了「地址文本含邮编」一条子串判断,姓名/街道/城市/州一概不校验。
     if (!applied.includes(zip)) missing.push(`邮编 ${zip}`);
-    if (!applied.toLowerCase().includes(shipping.city.toLowerCase())) missing.push(`城市 ${shipping.city}`);
+    if (!has(shipping.city)) missing.push(`城市 ${shipping.city}`);
+    if (!has(shipping.state)) missing.push(`州 ${shipping.state}`);
+    if (!has(shipping.name)) missing.push(`收件人 ${shipping.name}`);
+    // 街道只比第一个 token(门牌号):Amazon 会把 "St" 规范成 "Street"、
+    // 大小写和缩写都可能变,整串比会误报;门牌号不会变。
+    const houseNo = shipping.line1.trim().split(/\s+/)[0];
+    if (houseNo && !applied.includes(houseNo)) missing.push(`街道 ${houseNo}`);
     if (missing.length) {
       throw new DriverError("ADDRESS_NOT_APPLIED",
                             `收货地址栏里没有 ${missing.join(" / ")},当前是「${applied.slice(0, 80)}」`);
@@ -299,6 +317,18 @@ export class AmazonDriver implements PageDriver {
     }
 
     const panels = readCheckoutPanels(f.doc());
+
+    // 有面板读不出交期 = 有一件商品的交期未知。
+    // 少报一条会让服务端只对看得懂的那几条取最晚(price_guard.adjudicate),
+    // 于是「读不懂的那条其实更晚」时会放行一单不该放的 ——
+    // 而服务端那条「有一条读不懂就整单转人工」的策略,因为它压根没收到那一条,
+    // 在真实链路上根本不成立。与下面「读不到总额就绝不下单」同一个立场。
+    const blind = panels.filter((p) => !p.deliveryText).length;
+    if (blind) {
+      throw new DriverError("DELIVERY_UNPARSEABLE",
+                            `${blind}/${panels.length} 个商品面板读不到交期文案`);
+    }
+
     const total = readGrandTotal(f.doc());
     if (!total) {
       // 读不到总额就绝不下单 —— 护栏比的就是这个数。
@@ -315,7 +345,7 @@ export class AmazonDriver implements PageDriver {
       actualTotal: total,
       actualShipping: summary.shipping,
       actualTax: summary.tax,
-      deliveryTexts: panels.map((p) => p.deliveryText).filter((t): t is string => !!t),
+      deliveryTexts: panels.map((p) => p.deliveryText as string),
       isFba,
       paymentLast4: readPaymentLast4(f.doc()),
       // 只报**读到的**单价。数量结算页上没读(报告说厂商那道数量校验是死代码,

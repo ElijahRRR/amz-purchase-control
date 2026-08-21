@@ -35,6 +35,16 @@ SELECT t.id, t.line_key, t.upstream_order_no, t.marketplace, t.status,
  LIMIT %(limit)s OFFSET %(offset)s
 """
 
+#: 算「哪些号一个都没匹配上」要看全量,不能看分页后的那一页 ——
+#: 否则粘 60 个号、每页 50 条时,第 51~60 个命中项会被指着说查不到。
+#: 这个字段存在的意义正是「别让运营以为都查到了」,反过来误报比不报更坏。
+_FOUND_SQL = """
+SELECT t.amazon_order_no, t.upstream_order_no
+  FROM procure.tasks t
+  JOIN procure.buyer_envs e ON e.id = t.buyer_env_id
+ WHERE {where}
+"""
+
 _COUNT_SQL = """
 SELECT count(*) AS n
   FROM procure.tasks t
@@ -125,8 +135,9 @@ def search(
 
     missing: list[str] = []
     if by_number:
-        found = {r["amazon_order_no"] for r in items if r["amazon_order_no"]}
-        found |= {r["upstream_order_no"] for r in items}
+        hit = conn.execute(_FOUND_SQL.format(where=where), params).fetchall()
+        found = {r["amazon_order_no"] for r in hit if r["amazon_order_no"]}
+        found |= {r["upstream_order_no"] for r in hit}
         missing = [n for n in (amz + upstream) if n not in found]
 
     return {

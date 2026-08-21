@@ -15,11 +15,27 @@ from typing import Any
 from services import error_codes, task_event
 
 CLAIM_SQL = """
-WITH candidate AS (
+WITH env AS (
+    SELECT daily_cap FROM procure.buyer_envs WHERE id = %(env_id)s
+),
+done_today AS (
+    -- 今天这个买家号已经拍成了多少单。日限是防关联场景下最基本的一条闸:
+    -- 一个号一天买太多本身就是风控信号。
+    SELECT count(*) AS n
+      FROM procure.tasks
+     WHERE buyer_env_id = %(env_id)s
+       AND status = 'purchased'
+       AND purchased_at >= date_trunc('day', now())
+),
+candidate AS (
     SELECT t.id
     FROM procure.tasks t
     WHERE t.status = 'ready'
       AND t.buyer_env_id = %(env_id)s
+      -- daily_cap = 0 表示不限。闸门放在这条 SQL 里而不是路由里,
+      -- 是为了让「查额度」和「选中并置位」天然同事务,不另开一个窗口。
+      AND ((SELECT daily_cap FROM env) = 0
+           OR (SELECT n FROM done_today) < (SELECT daily_cap FROM env))
     ORDER BY t.created_at
     FOR UPDATE OF t SKIP LOCKED
     LIMIT 1

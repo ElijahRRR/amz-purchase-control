@@ -161,3 +161,25 @@ def test_dry_run_writes_nothing(conn, seed):
     task_intake.dry_run(conn, [_row(upstream_order_no="UP-80001")])
     after = conn.execute("SELECT count(*) c FROM procure.tasks").fetchone()["c"]
     assert before == after
+
+
+def test_dry_run_catches_what_would_crash_ingest(conn, seed):
+    """dry_run 必须覆盖 ingest 真正做的类型转换。
+
+    少了这两条:dry_run 说「都能进」,ingest 走到那一行时抛 ValueError/AttributeError,
+    pg_conn 回滚 —— **连同已经写进去的前几行一起** —— 最终 0 行落库,
+    而且 details 里一句解释都没有。人看了空跑以为没问题,真跑一条都没进。
+    """
+    from services import task_intake
+
+    bad_days = _row(upstream_order_no="UP-BAD1", max_delivery_days="7 天")
+    bad_asin = _row(upstream_order_no="UP-BAD2",
+                    products=[{"asin": 630509311712, "quantity": 1}])
+
+    preview = task_intake.dry_run(conn, [_row(upstream_order_no="UP-OK1"), bad_days, bad_asin])
+    assert preview["inserted"] == 1 and preview["rejected"] == 2
+    assert "max_delivery_days" in preview["details"][1]["reason"]
+    assert "asin" in preview["details"][2]["reason"]
+
+    real = task_intake.ingest(conn, [_row(upstream_order_no="UP-OK1"), bad_days, bad_asin])
+    assert (real["inserted"], real["rejected"]) == (1, 2)

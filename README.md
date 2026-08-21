@@ -117,6 +117,7 @@ python cli.py task_sweep
 | `AMZ_ADMIN_PAGE_SIZE_MAX` | `200` | 后台列表单页上限 |
 | `AMZ_SHIPMENT_RESYNC_MIN` | `360` | 同一条物流多久之后才值得再同步 |
 | `AMZ_SHIPMENT_BATCH` | `20` | 一次给插件多少条待同步的单 |
+| （库里）`buyer_envs.daily_cap` | `0` | 该买家号一天最多拍几单，`0` = 不限。闸门在认领的那条 SQL 里 |
 | `AMZ_SERVER_HOST` / `AMZ_SERVER_PORT` | `127.0.0.1` / `8781` | HTTP 监听 |
 
 ## 接口

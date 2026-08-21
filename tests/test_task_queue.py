@@ -143,3 +143,49 @@ def test_sweep_leaves_fresh_claims_alone(conn, seed):
     task = task_queue.claim(conn, env_id, inst_id)
     assert task_queue.sweep_stale(conn, timeout_minutes=15) == []
     assert _status(conn, task["id"])["status"] == "claimed"
+
+
+# ── 日限 ────────────────────────────────────────────────────────────────
+
+def test_daily_cap_stops_dispatch(conn, seed):
+    """daily_cap 之前只存不用:建表有这一列、后台展示它、docs/01 §5.3 把它列为一条护栏,
+    而 CLAIM_SQL 里一行实现都没有。
+
+    防关联场景下「一个号一天买太多」本身就是风控信号,这是最基本的一条闸。
+    """
+    from services import task_queue
+
+    env_id, inst_id, task_ids = seed
+    conn.execute("UPDATE procure.buyer_envs SET daily_cap = 1 WHERE id = %s", (env_id,))
+
+    first = task_queue.claim(conn, env_id, inst_id)
+    assert first is not None
+    task_queue.complete(conn, first["id"], amazon_order_no="111-0000041-0000041",
+                        instance_id=inst_id, totals={})
+
+    # 今天已经拍成 1 单,额度用完
+    assert task_queue.claim(conn, env_id, inst_id) is None
+
+
+def test_daily_cap_zero_means_unlimited(conn, seed):
+    from services import task_queue
+
+    env_id, inst_id, _ = seed
+    conn.execute("UPDATE procure.buyer_envs SET daily_cap = 0 WHERE id = %s", (env_id,))
+    first = task_queue.claim(conn, env_id, inst_id)
+    task_queue.complete(conn, first["id"], amazon_order_no="111-0000042-0000042",
+                        instance_id=inst_id, totals={})
+    assert task_queue.claim(conn, env_id, inst_id) is not None
+
+
+def test_daily_cap_counts_only_today(conn, seed):
+    """昨天拍的不占今天的额度。"""
+    from services import task_queue
+
+    env_id, inst_id, task_ids = seed
+    conn.execute("UPDATE procure.buyer_envs SET daily_cap = 1 WHERE id = %s", (env_id,))
+    conn.execute("""UPDATE procure.tasks SET status='purchased',
+                           amazon_order_no='111-0000043-0000043',
+                           purchased_at = now() - interval '1 day' WHERE id = %s""",
+                 (task_ids[0],))
+    assert task_queue.claim(conn, env_id, inst_id) is not None

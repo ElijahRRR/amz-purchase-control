@@ -322,3 +322,26 @@ def test_executed_by_takes_the_last_claim(client, conn, seed):
 
     d = client.get(f"/v1/admin/tasks/{again['id']}").json()["data"]
     assert d["executed_by_uid"] == "inst-B"
+
+
+def test_missing_order_numbers_looks_at_all_pages(client, conn, seed):
+    """命中但落在页外的号不能被报成「没匹配上」。
+
+    这个字段存在的意义是「别让运营以为都查到了」;反过来指着一张确实存在的单
+    说查不到,比不报更坏 —— 人会去上游翻一遍,翻完发现单就在库里。
+    """
+    env_id, _inst, _tasks = seed
+    nos = [f"PG-{i}" for i in range(60)]
+    for i, no in enumerate(nos):
+        conn.execute("""INSERT INTO procure.tasks
+                          (line_key, upstream_order_no, buyer_env_id, ship_name, ship_phone,
+                           ship_line1, ship_city, ship_state, ship_postcode, price_cap, status)
+                        VALUES (%s,%s,%s,'N','1','1 A St','Santa Ana','CA','92707',10,'ready')""",
+                     (f"pg-key-{i}", no, env_id))
+    conn.commit()
+
+    d = client.post("/v1/admin/tasks/search",
+                    json={"order_numbers": nos, "page_size": 50}).json()["data"]
+    assert d["total"] == 60
+    assert len(d["items"]) == 50           # 这一页只有 50 条
+    assert d["missing_order_numbers"] == []  # 但一个都不缺
