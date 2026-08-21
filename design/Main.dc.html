@@ -70,9 +70,13 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
 .cell { padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
         border-right: 1px solid #f4f4f5; border-bottom: 1px solid #f4f4f5; min-width: 0; }
 .frow { display: flex; align-items: center; height: 26px; font-size: 12.5px; }
+.rd .td { height: auto; padding: 12px; vertical-align: top; }
+.dl { display: flex; align-items: baseline; gap: 6px; font-size: 12px; line-height: 1.6; color: #27272a; }
+.dk { width: 46px; flex: none; color: #a1a1aa; white-space: nowrap; }
+.dl .ic { width: 12px; flex: none; position: relative; top: 1px; }
 </style>
 </helmet>
-<div style="width:1760px;height:1120px;display:flex;background:#fafafa;overflow:hidden;position:relative">
+<div style="width:1920px;height:1280px;display:flex;background:#fafafa;overflow:hidden;position:relative">
 
   <nav style="width:200px;flex:none;background:#fff;border-right:1px solid #e4e4e7;display:flex;flex-direction:column">
     <div style="height:48px;display:flex;align-items:center;gap:8px;padding:0 16px;border-bottom:1px solid #f4f4f5">
@@ -142,7 +146,11 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
         <span class="fld ghost">ASIN</span>
         <span style="margin-left:auto"></span>
         <span class="btn sm bghost" onClick="{{reset}}">重置</span>
-        <span class="btn sm bs">保存为常用视图</span>
+        <span class="flabel">行密度</span>
+        <span class="seg">
+          <span class="{{dnDetail}}" onClick="{{pickDetail}}">详细</span>
+          <span class="{{dnCompact}}" onClick="{{pickCompact}}">紧凑</span>
+        </span>
       </div>
 
       <sc-if value="{{batchOpen}}" hint-placeholder-val="{{false}}">
@@ -192,9 +200,107 @@ UP-20836
       <section class="card" style="flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden">
         <header class="chead">
           <h2 class="ctitle">{{listTitle}}</h2>
-          <span style="font-size:12px;color:#a1a1aa">舒适 40px · 主图取自 task_products.image_url · 点任意一行弹出订单详情</span>
+          <span style="font-size:12px;color:#a1a1aa">{{densityNote}}</span>
         </header>
         <div style="flex:1;overflow:hidden">
+
+          <!-- 详细:照厂商那一行,8 组字段竖着堆在各自的格子里 -->
+          <sc-if value="{{isDetail}}" hint-placeholder-val="{{true}}">
+          <table>
+            <tr>
+              <th class="th" style="width:172px">上游订单</th>
+              <th class="th" style="width:236px">买家信息</th>
+              <th class="th" style="width:220px">产品信息</th>
+              <th class="th" style="width:228px">订单信息</th>
+              <th class="th" style="width:168px">费用信息</th>
+              <th class="th" style="width:228px">物流信息</th>
+              <th class="th" style="width:196px">买家号信息</th>
+              <th class="th">其他信息</th>
+            </tr>
+            <sc-for list="{{rows}}" as="r" hint-placeholder-count="10">
+              <tr class="rd" style="{{r.rowStyle}}" onClick="{{r.pick}}">
+
+                <td class="td">
+                  <div style="display:flex;flex-direction:column;gap:3px">
+                    <span class="id" style="font-size:13px;color:#18181b">{{r.upstream}}</span>
+                    <span class="id" style="font-size:11px;color:#a1a1aa">{{r.lineKey}}</span>
+                    <span style="font-size:11.5px;color:#71717a;margin-top:2px">US · amazon.com</span>
+                  </div>
+                </td>
+
+                <td class="td">
+                  <div style="display:flex;flex-direction:column;gap:2px">
+                    <span style="font-size:12.5px;font-weight:500;color:#18181b">{{r.shipName}}</span>
+                    <span class="dl"><svg class="ic" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#c4c4c8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M20 10c0 6-8 12-8 12s-8-6-8-12a8 8 0 0 1 16 0Z"/><circle cx="12" cy="10" r="3"/></svg>US, {{r.shipCityState}}</span>
+                    <span class="dl"><svg class="ic" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#c4c4c8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>{{r.shipLine1}}</span>
+                    <span class="dl"><svg class="ic" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#c4c4c8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="14" x="3" y="5" rx="2"/><path d="m3 7 9 6 9-6"/></svg><span class="id" style="font-size:11.5px">{{r.shipZip}}</span></span>
+                    <span class="dl"><svg class="ic" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#c4c4c8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><path d="M22 16.9v3a2 2 0 0 1-2.2 2 19.8 19.8 0 0 1-8.6-3.1 19.5 19.5 0 0 1-6-6A19.8 19.8 0 0 1 2.1 4.2 2 2 0 0 1 4.1 2h3a2 2 0 0 1 2 1.7c.1.9.3 1.8.6 2.6a2 2 0 0 1-.4 2.1L8 9.7a16 16 0 0 0 6 6l1.3-1.3a2 2 0 0 1 2.1-.4c.8.3 1.7.5 2.6.6a2 2 0 0 1 1.7 2Z"/></svg><span class="id" style="font-size:11.5px">{{r.shipPhone}}</span></span>
+                  </div>
+                </td>
+
+                <td class="td">
+                  <div style="display:flex;gap:10px;align-items:flex-start">
+                    <span class="thumb lg">
+                      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="#c4c4c8" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
+                    </span>
+                    <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:2px">
+                      <span class="id" style="font-size:12.5px;color:#18181b">{{r.asin}}</span>
+                      <span class="dl"><span class="dk">限价</span><span class="id" style="font-size:11.5px;color:#18181b">{{r.cap}}</span><span style="color:#a1a1aa">{{r.qtyText}}</span></span>
+                      <span class="dl"><span class="dk">实付</span><span class="id" style="font-size:11.5px;{{r.unitStyle}}">{{r.unit}}</span></span>
+                    </div>
+                  </div>
+                </td>
+
+                <td class="td">
+                  <div style="display:flex;flex-direction:column;gap:3px">
+                    <span class="id" style="font-size:12px;{{r.amzStyle}}">{{r.amz}}</span>
+                    <span class="dl" style="margin-top:1px"><span class="{{r.assertDotCls}}" style="{{r.assertDotStyle}}"></span><span style="color:{{r.assertColor}};font-size:11.5px">{{r.assertText}}</span></span>
+                    <span class="dl"><span class="dk">下单</span><span class="id" style="font-size:11.5px;color:#71717a">{{r.purchasedAt}}</span></span>
+                  </div>
+                </td>
+
+                <td class="td">
+                  <div style="display:flex;flex-direction:column;gap:3px">
+                    <span class="dl"><span class="dk">运费</span><span class="num" style="margin-left:auto;font-size:11.5px">{{r.feeShipping}}</span></span>
+                    <span class="dl"><span class="dk">税前</span><span class="num" style="margin-left:auto;font-size:11.5px">{{r.feeBeforeTax}}</span></span>
+                    <span class="dl"><span class="dk">税费</span><span class="num" style="margin-left:auto;font-size:11.5px">{{r.feeTax}}</span></span>
+                    <span class="dl" style="border-top:1px solid #f4f4f5;padding-top:3px;margin-top:1px"><span class="dk" style="color:#18181b">总计</span><span class="num" style="margin-left:auto;font-size:12px;{{r.totalStyle}}">{{r.feeTotal}}</span></span>
+                  </div>
+                </td>
+
+                <td class="td">
+                  <div style="display:flex;flex-direction:column;gap:3px">
+                    <span class="dl"><span class="dk">物流商</span>{{r.carrier}}</span>
+                    <span class="dl"><span class="dk">运单号</span><span class="id" style="font-size:11px">{{r.tracking}}</span></span>
+                    <span class="dl"><span class="dk">状态</span><span class="{{r.shipTagCls}}" style="{{r.shipTagStyle}}">{{r.shipStatus}}</span></span>
+                    <span class="dl"><span class="dk">预计</span>{{r.deliveryDate}}</span>
+                  </div>
+                </td>
+
+                <td class="td">
+                  <div style="display:flex;flex-direction:column;gap:3px">
+                    <span style="font-size:12.5px;color:#18181b">{{r.env}}</span>
+                    <span class="id" style="font-size:11px;color:#71717a">{{r.customerId}}</span>
+                    <span class="dl"><span class="dk">信用卡</span><span class="id" style="font-size:11.5px">{{r.last4}}</span></span>
+                    <span class="dl"><span class="dk">实例</span><span class="id" style="font-size:11px;color:#71717a">{{r.instance}}</span></span>
+                  </div>
+                </td>
+
+                <td class="td">
+                  <div style="display:flex;flex-direction:column;gap:4px">
+                    <span><span class="{{r.tagCls}}" style="{{r.tagStyle}}">{{r.status}}</span></span>
+                    <span><span class="{{r.codeCls}}" style="{{r.codeStyle}}">{{r.code}}</span></span>
+                    <span class="dl"><span class="dk">创建</span><span class="id" style="font-size:11.5px;color:#71717a">{{r.createdAt}}</span></span>
+                    <span class="dl"><span class="dk">采购</span><span class="id" style="font-size:11.5px;color:#71717a">{{r.purchasedAt}}</span></span>
+                  </div>
+                </td>
+              </tr>
+            </sc-for>
+          </table>
+          </sc-if>
+
+          <!-- 紧凑:一行一条,扫桶用 -->
+          <sc-if value="{{isCompact}}" hint-placeholder-val="{{false}}">
           <table>
             <tr>
               <th class="th" style="width:236px">商品</th>
@@ -231,6 +337,7 @@ UP-20836
               </tr>
             </sc-for>
           </table>
+          </sc-if>
         </div>
         <div style="height:36px;flex:none;border-top:1px solid #f4f4f5;display:flex;align-items:center;padding:0 12px;gap:10px">
           <span style="font-size:12px;color:#71717a">{{footNote}}</span>
@@ -409,12 +516,13 @@ UP-20836
   </sc-if>
 </div>
 </x-dc>
-<script data-dc-script data-props='{"$preview": {"width": 1760, "height": 1120}}'>
+<script data-dc-script data-props='{"$preview": {"width": 1920, "height": 1280}}'>
 class Component extends DCLogic {
   constructor(props) {
     super(props);
     this.state = {
-      filter: "manual", env: "all", range: "7d", dateMode: "created",
+      filter: "all", env: "all", range: "7d", dateMode: "created",
+      density: "detail", // 详细 = 照厂商那一行,8 组字段竖着堆;紧凑 = 一行一条,扫桶用
       batchOpen: false, batchOn: false, envOpen: false, confirm: false,
       sel: ""            // 详情默认不开:点行才弹
     };
@@ -610,6 +718,16 @@ class Component extends DCLogic {
     const [assertDotCls, assertDotStyle, assertColor, assertText] = assertMap[s.assert] || assertMap.na;
 
     const [shipTagCls, shipTagStyle, shipLabel] = this.shipTagOf(s.shipStatus);
+
+    // 记录行里的费用四行。没下单但读到过实付的(被护栏拦下),总计照样显示,标红
+    const blocked = !bought && s.paid && s.paid !== "—";
+    const flat = bought
+      ? { feeShipping: s.shipping,
+          feeBeforeTax: (Number(s.unit) * s.qty + Number(s.shipping)).toFixed(2),
+          feeTax: s.tax, feeTotal: s.total, totalStyle: "color:#18181b;font-weight:600" }
+      : { feeShipping: "—", feeBeforeTax: "—", feeTax: "—",
+          feeTotal: blocked ? s.paid : "—",
+          totalStyle: blocked ? "color:#b91c1c;font-weight:600" : "color:#a1a1aa" };
     const codeStyled = s.code
       ? (s.status === "manual"
           ? ["tag mono", "background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe"]
@@ -630,8 +748,12 @@ class Component extends DCLogic {
       bought, notBought: !bought, notBoughtWhy: s.notBoughtWhy, fees,
       capVerdict: bought ? ("总计 " + s.total + " ≤ 限价 " + s.cap + " · 护栏放行") : "",
       hasShip: !!s.tracking, noShip: !s.tracking,
-      carrier: s.carrier, tracking: s.tracking, shipTagCls, shipTagStyle, shipStatus: shipLabel,
-      deliveryDate: s.deliveryDate, deliveryRaw: s.deliveryRaw, shipWhen: s.shipWhen,
+      carrier: s.carrier || "—", tracking: s.tracking || "—",
+      shipTagCls: s.tracking ? shipTagCls : "",
+      shipTagStyle: s.tracking ? shipTagStyle : "color:#a1a1aa;font-size:12px",
+      shipStatus: s.tracking ? shipLabel : "—",
+      deliveryDate: s.deliveryDate || "—", deliveryRaw: s.deliveryRaw, shipWhen: s.shipWhen,
+      ...flat,
       env: s.env, customerId: meta.customerId, instance: s.status === "ready" ? "—" : meta.instance,
       last4: s.last4 || "—",
       code: s.code || "—", codeCls: codeStyled[0], codeStyle: codeStyled[1],
@@ -705,6 +827,7 @@ class Component extends DCLogic {
       const [noteCls, noteStyle] = this.noteOf(r);
       const on = st.sel === r.upstream;
       return {
+        ...this.detailOf(r),
         upstream: r.upstream, asin: r.asin, qtyText: "× " + r.qty, env: r.env,
         shipShort: r.shipName + " · " + r.shipCityState,
         cap: r.cap, paid: r.paid, status: r.status,
@@ -722,6 +845,13 @@ class Component extends DCLogic {
     return {
       chips, ranges, rangeText, rows, sel, events,
       hasSel: !!sel, listTitle, footNote,
+      isDetail: st.density === "detail", isCompact: st.density === "compact",
+      densityNote: st.density === "detail"
+        ? "记录行 · 8 组字段竖排,一屏 8 条 · 点任意一行弹出完整详情与事件时间线"
+        : "紧凑 40px · 一行一条,扫桶用 · 点任意一行弹出完整详情",
+      dnDetail: st.density === "detail" ? "on" : "", dnCompact: st.density === "compact" ? "on" : "",
+      pickDetail: () => this.setState({ density: "detail" }),
+      pickCompact: () => this.setState({ density: "compact" }),
       timeCol: st.dateMode === "created" ? "创建时间" : "采购时间",
       dmCreated: st.dateMode === "created" ? "on" : "",
       dmPurchased: st.dateMode === "purchased" ? "on" : "",
@@ -738,7 +868,7 @@ class Component extends DCLogic {
       batchHit: hit, batchMiss: (batch.length - hit) + " 个没找到",
       applyBatch: () => this.setState({ batchOn: true, batchOpen: false }),
       clearBatch: () => this.setState({ batchOn: false, batchOpen: false }),
-      reset: () => this.setState({ filter: "manual", env: "all", range: "7d", dateMode: "created",
+      reset: () => this.setState({ filter: "all", env: "all", range: "7d", dateMode: "created",
                                    batchOn: false, batchOpen: false, envOpen: false }),
       closeSel: () => this.setState({ sel: "", confirm: false }),
       confirmOpen: st.confirm,
