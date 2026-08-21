@@ -228,6 +228,19 @@ def detail(conn, task_id: int) -> dict[str, Any] | None:
     out["executed_by_uid"] = next(
         (e["instance_uid"] for e in reversed(out["events"])
          if e["kind"] == "claimed" and e["instance_uid"]), None)
+    # 上游那几行。单子卡住时,运营要能一步跳回飞书里对应的行 ——
+    # 不然就得拿着上游单号去表里手工搜,而那张表可能有几千行。
+    out["sources"] = [dict(r) for r in conn.execute(
+        """SELECT source, external_id, pushed_at, push_error, gone_at
+             FROM procure.task_sources WHERE task_id = %(task_id)s
+            ORDER BY id""", {"task_id": task_id}).fetchall()]
+    base = settings.feishu_table_url()
+    table = settings.feishu_table_id()
+    for src in out["sources"]:
+        # 没配人看的域名就不拼链接 —— 一个点了没反应的链接比没有链接更让人恼火。
+        src["url"] = (f"{base}?table={table}&record={src['external_id']}"
+                      if base and table and src["source"] == "feishu" else None)
+
     ship = conn.execute(
         "SELECT id, carrier, tracking_no, tracking_url, status, delivered_at "
         "  FROM logistics.shipments WHERE task_id = %(task_id)s ORDER BY id DESC LIMIT 1",

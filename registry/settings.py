@@ -141,3 +141,16 @@ def feishu_sync_max_age_minutes() -> int:
     会把人训练成忽略红色,等真出事时没人看。
     """
     return int(os.environ.get("AMZ_FEISHU_SYNC_MAX_AGE_MIN", "120"))
+
+
+def feishu_table_url() -> str:
+    """输入:无 → 输出:多维表格的**人看的** URL 前缀(可选)。
+
+    与 feishu_base() 不是一回事:那个是 API 域名(open.feishu.cn),
+    这个是租户自己的域名(xxx.feishu.cn),运营点进去看表用的。
+    形如 https://xxx.feishu.cn/base/basXXXX
+
+    没配就只显示 record_id,不拼一个点不开的链接 ——
+    一个点了没反应的链接比没有链接更让人恼火。
+    """
+    return os.environ.get("AMZ_FEISHU_TABLE_URL", "").rstrip("/")

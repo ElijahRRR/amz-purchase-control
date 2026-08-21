@@ -79,6 +79,19 @@ export interface ShipmentEvent {
   seq: number;
 }
 
+export interface TaskSource {
+  source: string;
+  /** 飞书的 record_id。 */
+  external_id: string;
+  pushed_at: string | null;
+  push_error: string | null;
+  /** 上游把这一行删了。删了就不再重试。 */
+  gone_at: string | null;
+  /** 点进去看那一行。没配 AMZ_FEISHU_TABLE_URL 时是 null ——
+   *  不拼一个点了没反应的链接。 */
+  url: string | null;
+}
+
 export interface Shipment {
   carrier: string | null;
   tracking_no: string | null;
@@ -105,6 +118,8 @@ export interface TaskDetail extends Omit<TaskRow, "carrier" | "tracking_no" | "s
   executed_by_uid: string | null;
   events: TaskEvent[];
   shipment: Shipment | null;
+  /** 这张任务对应上游(飞书)的哪几行。一张单在表里通常占几行。 */
+  sources: TaskSource[];
 }
 
 export interface InstanceRow {

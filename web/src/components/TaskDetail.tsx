@@ -223,6 +223,40 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
               <span className="id text-xs+ text-zinc-500 break-all">{t.line_key.slice(0, 24)}…</span>
             </KV>
             <KV k="站点">{t.marketplace} · amazon.com</KV>
+
+            {/* 上游那几行。单子卡住时,运营要能一步跳回飞书里对应的行 ——
+                不然就得拿着上游单号去几千行的表里手工搜。
+                一张单在表里通常占几行(一行一个商品),所以这里是个列表。 */}
+            {!!t.sources?.length && (
+              <KV k="上游行">
+                <span className="flex flex-col gap-0.5 min-w-0">
+                  {t.sources.map((src) => (
+                    <span key={src.external_id} className="flex items-center gap-1.5 min-w-0">
+                      {src.url
+                        ? <a href={src.url} target="_blank" rel="noreferrer"
+                             className="id text-xs+ text-sky-700 hover:text-sky-900 truncate">
+                            {src.external_id}
+                          </a>
+                        : <CopyText value={src.external_id} className="id text-xs+" icon={false} />}
+                      {src.gone_at
+                        ? <Tag tone="solid-zinc">上游已删</Tag>
+                        : src.push_error
+                          ? <Tag tone="solid-red">回写失败</Tag>
+                          : src.pushed_at
+                            ? <Tag tone="solid-emerald">已回写</Tag>
+                            : null}
+                    </span>
+                  ))}
+                </span>
+              </KV>
+            )}
+            {t.sources?.find((s) => s.push_error && !s.gone_at) && (
+              <Hint>
+                <span className="text-red-700">
+                  回写失败:{t.sources.find((s) => s.push_error && !s.gone_at)!.push_error}
+                </span>
+              </Hint>
+            )}
             <Hint>店铺留在上游 ERP,这里不存。行唯一键 = sha256(上游单号|ASIN×数量)</Hint>
           </Group>
 

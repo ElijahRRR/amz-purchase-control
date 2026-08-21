@@ -770,3 +770,52 @@ def test_a_misconfigured_column_keeps_being_retried(conn, feishu_table):
     task_source.mark_failed(conn, sid, error="FieldNameNotFound", gone=False)
     conn.commit()
     assert len(task_source.pending(conn)) == 1, "配置错的行还该出现在待写列表里"
+
+
+def test_detail_carries_the_upstream_rows_so_you_can_jump_back(conn, feishu_table,
+                                                               monkeypatch):
+    """单子卡住时,运营要能一步跳回飞书里对应的行。
+
+    不然就得拿着上游单号去表里手工搜,而那张表可能有几千行。
+    """
+    from registry import settings
+    from services import task_query
+    from workflows import feishu_sync
+
+    conn.execute("INSERT INTO procure.buyer_envs (code) VALUES ('env-172')")
+    conn.commit()
+    feishu_table([_rec("r1", ASIN="B0AAAAAAAA"), _rec("r2", ASIN="B0BBBBBBBB")])
+    feishu_sync.run({"release": True})
+
+    task_id = conn.execute("SELECT id FROM procure.tasks").fetchone()["id"]
+
+    # 没配人看的域名时不拼链接 —— 点了没反应的链接比没有链接更让人恼火
+    monkeypatch.setattr(settings, "feishu_table_url", lambda: "")
+    got = task_query.detail(conn, task_id)
+    assert [s["external_id"] for s in got["sources"]] == ["r1", "r2"]
+    assert all(s["url"] is None for s in got["sources"])
+
+    monkeypatch.setattr(settings, "feishu_table_url",
+                        lambda: "https://acme.feishu.cn/base/basDEMO")
+    got = task_query.detail(conn, task_id)
+    assert got["sources"][0]["url"] == \
+        "https://acme.feishu.cn/base/basDEMO?table=tbl&record=r1"
+
+
+def test_detail_shows_when_a_writeback_failed(conn, feishu_table):
+    """回写失败要在详情里看得见 —— 只落在库里的话没人会去查。"""
+    from services import task_query, task_source
+    from workflows import feishu_sync
+
+    conn.execute("INSERT INTO procure.buyer_envs (code) VALUES ('env-172')")
+    conn.commit()
+    feishu_table([_rec("r1", ASIN="B0AAAAAAAA")])
+    feishu_sync.run({"release": True})
+
+    sid = conn.execute("SELECT id FROM procure.task_sources").fetchone()["id"]
+    task_source.mark_failed(conn, sid, error="FieldNameNotFound: 采购状态")
+    conn.commit()
+
+    task_id = conn.execute("SELECT id FROM procure.tasks").fetchone()["id"]
+    src = task_query.detail(conn, task_id)["sources"][0]
+    assert "FieldNameNotFound" in src["push_error"] and src["gone_at"] is None

@@ -88,7 +88,14 @@ AMZ_FEISHU_APP_SECRET=xxxxxxxx
 AMZ_FEISHU_APP_TOKEN=xxxxxxxx     # 表格 URL 里 /base/ 后面那一段
 AMZ_FEISHU_TABLE_ID=tblxxxxxxxx   # URL 里 ?table= 后面那一段
 AMZ_FEISHU_VIEW_ID=vewxxxxxxxx    # 可选:只拉这个视图
+AMZ_FEISHU_TABLE_URL=https://acme.feishu.cn/base/xxxxxxxx   # 可选:运营台上「跳回那一行」的链接
 ```
+
+`AMZ_FEISHU_TABLE_URL` 与上面那个 `AMZ_FEISHU_BASE` 不是一回事:后者是 API 域名
+(`open.feishu.cn`),前者是你们租户自己的域名,运营点进去看表用的。
+配了之后,订单详情里的「上游行」就是可点的 —— 单子卡住时一步跳回飞书里对应的那几行,
+不用拿着单号去几千行的表里手工搜。没配就只显示 record_id,
+不拼一个点了没反应的链接。
 
 飞书那边要做两件事:建一个**自建应用**,开 `bitable:app:readonly` 权限;
 把这个应用**加进那张表格的协作者**(只给应用授权是不够的,表格本身也要授权)。
@@ -240,6 +247,7 @@ python cli.py task_sweep
 | `AMZ_FEISHU_APP_ID` / `_APP_SECRET` | 空 | 飞书自建应用凭据,放 `.env` |
 | `AMZ_FEISHU_APP_TOKEN` / `_TABLE_ID` | 空 | 表格与数据表标识(从表格 URL 里取) |
 | `AMZ_FEISHU_VIEW_ID` | 空 | 只拉某个视图。让运营在飞书里用「待采购」视图圈范围,改条件不用发版 |
+| `AMZ_FEISHU_TABLE_URL` | 空 | 运营台「跳回上游那一行」的链接前缀(租户域名,不是 API 域名) |
 | `AMZ_FEISHU_MAX_RECORDS` | `5000` | 一轮最多读多少条。兜底用:表被误操作灌成十万行时宁可报错停下 |
 | `AMZ_FEISHU_SYNC_MAX_AGE_MIN` | `120` | 拉单/回写多久没跑算不正常。**改低频跑要一起调大** |
 | `AMZ_PG_DSN` | `dbname=amz_purchase` | 数据库连接串 |
