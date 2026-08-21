@@ -19,6 +19,24 @@ SELECT id, workflow, params, started_at, finished_at, status, summary, operator,
  LIMIT %(limit)s
 """
 
+#: 每条工作流的**最后一次真跑**。单独查,不从上面那份「最近 N 次」里挑。
+#:
+#: 从那份里挑会出这种事:task_intake 一小时跑了 60 次,把 task_sweep 一小时前
+#: 那次挤出了窗口 —— 界面于是报「从没跑过 + 逾期」,而它其实好好的。
+#: **在监控页上误报,比不报还坏**:红旗一旦会自己冒出来,就没人再信红旗。
+#:
+#: `NOT (params ? 'dry_run' AND params->>'dry_run' = 'true')` —— 空跑不算跑过。
+#: 空跑什么都没清扫。定时器停了、有人手工 --dry-run 试了一下,那一格就从红变绿,
+#: 而 claimed 的任务照样堆着。这正是「看起来有护栏、实际防不住」。
+_LAST_REAL_SQL = """
+SELECT DISTINCT ON (workflow)
+       id, workflow, params, started_at, finished_at, status, summary, operator,
+       EXTRACT(EPOCH FROM (coalesce(finished_at, now()) - started_at))::int AS seconds
+  FROM ops.runs
+ WHERE coalesce(params->>'dry_run', 'false') <> 'true'
+ ORDER BY workflow, started_at DESC
+"""
+
 #: 停在 running 超过这么久,就不是「在跑」而是「开跑后再没消息」。
 #: 取一小时:项目里最长的一条(task_intake 批量落库)也是分钟级。
 STUCK_AFTER = timedelta(hours=1)
@@ -60,20 +78,27 @@ def recent(conn, *, limit: int = 60) -> dict[str, Any]:
     包括从来没跑过的。一条从没跑过的 task_sweep 在「最近运行」列表里
     是看不见的(它没有行),而那恰恰是最该报警的情况。
     """
+    limit = max(1, min(int(limit), 500))   # 负数会让 LIMIT 直接报错,超大值把内存喂满
     rows = [dict(r) for r in conn.execute(_RECENT_SQL, {"limit": limit}).fetchall()]
     now = datetime.now(timezone.utc)
 
-    for r in rows:
+    def mark_stuck(r: dict[str, Any]) -> dict[str, Any]:
         # 停在 running 又超过时限的,不是在跑,是没了下文。
         # 界面上这两种必须分开:一个是等它,一个是去查它。
         r["stuck"] = (r["status"] == "running"
                       and r["started_at"] is not None
                       and now - r["started_at"] > STUCK_AFTER)
+        return r
 
+    for r in rows:
+        mark_stuck(r)
+
+    # 「最后一次跑」单独查,不从上面那 limit 行里挑 —— 挑的话,一条跑得频繁的
+    # 工作流会把另一条挤出窗口,于是健康的那条被报成「从没跑过 + 逾期」。
     latest: dict[str, dict[str, Any] | None] = {name: None for name in _workflow_names()}
-    for r in rows:                       # rows 已按 started_at DESC,第一次见到的就是最后一次跑的
-        if r["workflow"] in latest and latest[r["workflow"]] is None:
-            latest[r["workflow"]] = r
+    for r in conn.execute(_LAST_REAL_SQL).fetchall():
+        if r["workflow"] in latest:
+            latest[r["workflow"]] = mark_stuck(dict(r))
 
     by_workflow = []
     for name in latest:

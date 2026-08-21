@@ -48,7 +48,7 @@ SELECT t.id, t.line_key, t.upstream_order_no, t.marketplace, t.status,
        WHERE task_id = t.id ORDER BY id DESC LIMIT 1
   ) s ON TRUE
  WHERE {where}
- ORDER BY t.{order_col} DESC NULLS LAST, t.id DESC
+ ORDER BY {order_by}
  LIMIT %(limit)s OFFSET %(offset)s
 """
 
@@ -99,6 +99,7 @@ def search(
     asin: str | None = None,
     page: int = 1,
     page_size: int = 50,
+    after_id: int | None = None,
 ) -> dict[str, Any]:
     """输入:筛选条件 → 输出:{items, total, page, page_size, missing_order_numbers}。
 
@@ -115,6 +116,22 @@ def search(
 
     clauses = ["TRUE"]
     params: dict[str, Any] = {"limit": page_size, "offset": (page - 1) * page_size}
+
+    # keyset 模式:导出用。按 id 递减一路走下去,不用 OFFSET。
+    #
+    # OFFSET 翻页在「边导边有人写库」时会漂:导到一半有单离开筛选集,
+    # 后面的行整体左移 —— 有一行**永远不会被导出**;反过来有新单落到最前,
+    # 后面的页整体右移 —— 同一行**导两次**。而 CSV 里没有任何提示。
+    # 拿这份表去对账的人不会知道自己少了一行。
+    #
+    # keyset 对这两种都免疫:游标是「上一页最后那条的 id」,
+    # 不管前面增删多少行,下一页永远接着它往下走。
+    keyset = after_id is not None
+    if keyset:
+        params["offset"] = 0
+        if after_id > 0:
+            clauses.append("t.id < %(after_id)s")
+            params["after_id"] = after_id
 
     amz, upstream = split_order_numbers(order_numbers)
     by_number = bool(amz or upstream)
@@ -147,7 +164,9 @@ def search(
         params["asin"] = asin
 
     where = " AND ".join(clauses)
-    items = conn.execute(_LIST_SQL.format(where=where, order_col=order_col), params).fetchall()
+    order_by = ("t.id DESC" if keyset
+                else f"t.{order_col} DESC NULLS LAST, t.id DESC")
+    items = conn.execute(_LIST_SQL.format(where=where, order_by=order_by), params).fetchall()
     total = conn.execute(_COUNT_SQL.format(where=where), params).fetchone()["n"]
 
     missing: list[str] = []
@@ -272,6 +291,12 @@ def summary(
     rows = conn.execute(_SUMMARY_SQL.format(where=" AND ".join(clauses)), params).fetchall()
     by_status = {s: 0 for s in vocab.STATUS_LABELS}
     for r in rows:
+        # 集合外的值也照原样带上,**不能 KeyError**。
+        # `tasks.status` 是 text、没有 CHECK,封闭集只写在注释和 vocab 里 ——
+        # 库里真出现一个没见过的值(手工 UPDATE、以后加了状态但没同步 vocab),
+        # 整个状态桶接口 500,运营台首屏直接打不开。
+        # 界面对陌生键的处理本来就是「原样显示英文」,那比整页挂掉强得多:
+        # 一个陌生的英文词至少告诉人「这儿有个新东西」。
         by_status[r["status"]] = r["n"]
 
     # 顶栏那两个数字是**全局**的,不跟着筛选走 —— 它们回答的是「今天整体怎么样」,
@@ -287,22 +312,39 @@ def summary(
     return {"by_status": by_status, "purchased_today": today, "queue_depth": queue}
 
 
+#: 错误码分布看的是**失败发生的时间**,不是任务创建的时间。
+#:
+#: 原先两个 SQL 都拿 `tasks.created_at` 筛窗口、分天,结果是:
+#:   · 20 天前下发的单今天才失败 —— 默认 14 天窗口按创建时间筛,这条**整个看不见**
+#:   · 5 天前下发的单今天失败 —— 趋势图把它记在**5 天前**那根柱子上
+#: 而这一页的标题就是「是一直这样,还是昨天开始的」。按创建时间分天,
+#: 那张图回答的是另一个问题,却长得像在回答这个。
+#:
+#: 所以改成读 `task_events` 里 kind='error' / 'guard_block' 的那些行 ——
+#: 它们由 task_queue.fail / 护栏裁决在**失败发生的那一刻**写下,时间是准的。
+#:
+#: 顺带解决另一件事:重置过的单 `error_code` 被清空了,按 tasks 查根本查不到,
+#: 可它确实失败过。事件是只追加的,重置不会抹掉历史。
+#: 代价是同一单失败两次会计两次 —— 对「哪儿容易卡」这个问题,那正是想要的。
 _ERROR_STATS_SQL = """
-SELECT t.error_code, e.code AS env_code, count(*) AS n
-  FROM procure.tasks t
-  JOIN procure.buyer_envs e ON e.id = t.buyer_env_id
- WHERE t.error_code IS NOT NULL
-   AND t.created_at >= %(date_from)s
-   AND t.created_at < (%(date_to)s::date + 1)
- GROUP BY t.error_code, e.code
+SELECT e.code, b.code AS env_code, count(*) AS n
+  FROM procure.task_events e
+  JOIN procure.tasks t ON t.id = e.task_id
+  JOIN procure.buyer_envs b ON b.id = t.buyer_env_id
+ WHERE e.kind IN ('error', 'guard_block')
+   AND e.code IS NOT NULL
+   AND e.created_at >= %(date_from)s
+   AND e.created_at < (%(date_to)s::date + 1)
+ GROUP BY e.code, b.code
 """
 
 _ERROR_TREND_SQL = """
-SELECT date_trunc('day', t.created_at)::date AS day, t.error_code, count(*) AS n
-  FROM procure.tasks t
- WHERE t.error_code IS NOT NULL
-   AND t.created_at >= %(date_from)s
-   AND t.created_at < (%(date_to)s::date + 1)
+SELECT date_trunc('day', e.created_at)::date AS day, e.code, count(*) AS n
+  FROM procure.task_events e
+ WHERE e.kind IN ('error', 'guard_block')
+   AND e.code IS NOT NULL
+   AND e.created_at >= %(date_from)s
+   AND e.created_at < (%(date_to)s::date + 1)
  GROUP BY 1, 2
  ORDER BY 1
 """
@@ -315,19 +357,19 @@ def error_stats(conn, *, date_from: date, date_to: date) -> dict[str, Any]:
     总数说明轻重,分买家号说明是不是某一台机器的问题(比如某个买家号被风控了),
     按天说明是一直这样还是昨天开始的 —— 后者往往对应一次亚马逊改版。
 
-    只统计 `error_code` 非空的行。注意它**不等于**失败:走到 `manual` 的单也带码,
-    那正是要看的重点。界面按 error_codes 的三个集合(可重试/转人工/可能已下单)分色。
+    统计的是**失败事件**,按事件发生的时间归窗口、归天(见上面 SQL 的注释)。
+    界面按 error_codes 的四个集合(可重试/转人工/业务拦截/可能已下单)分色。
     """
     rows = conn.execute(_ERROR_STATS_SQL, {"date_from": date_from, "date_to": date_to}).fetchall()
 
     totals: dict[str, int] = {}
     by_env: dict[str, dict[str, int]] = {}
     for r in rows:
-        totals[r["error_code"]] = totals.get(r["error_code"], 0) + r["n"]
-        by_env.setdefault(r["error_code"], {})[r["env_code"]] = r["n"]
+        totals[r["code"]] = totals.get(r["code"], 0) + r["n"]
+        by_env.setdefault(r["code"], {})[r["env_code"]] = r["n"]
 
     trend = [
-        {"day": r["day"].isoformat(), "code": r["error_code"], "n": r["n"]}
+        {"day": r["day"].isoformat(), "code": r["code"], "n": r["n"]}
         for r in conn.execute(_ERROR_TREND_SQL,
                               {"date_from": date_from, "date_to": date_to}).fetchall()
     ]
@@ -383,7 +425,10 @@ def export_rows(conn, *, page_size: int, **filters) -> Any:
     只导当前页是这个项目最怕的那种错:导出来的表看着完整、其实少了后面几千行,
     而且没有任何地方提示少了 —— 拿它去对账会得出一个错的结论。
 
-    所以这里自己翻页,一页一页往下走到没有为止。
+    所以这里自己翻页,一页一页往下走到没有为止 —— 而且走的是 **keyset**(按 id 递减),
+    不是 OFFSET。OFFSET 在「边导边有人写库」时会漂:有单离开筛选集,后面的行整体左移,
+    有一行永远不会被导出;有新单落到最前,后面的页整体右移,同一行导两次。
+    两种都不会在 CSV 里留下任何提示,拿它去对账的人不会知道自己少了一行。
 
     多商品的单会展开成多行(一行一个 ASIN),每行都带上整单的费用与单号 ——
     表格软件里按 ASIN 筛的人要的就是这个。整单金额因此会在多行里重复,
@@ -392,9 +437,9 @@ def export_rows(conn, *, page_size: int, **filters) -> Any:
     """
     from services import error_codes, vocab
 
-    page = 1
+    cursor = 0            # 0 = 从头开始(id 都是正的)
     while True:
-        got = search(conn, page=page, page_size=page_size, **filters)
+        got = search(conn, page_size=page_size, after_id=cursor, **filters)
         if not got["items"]:
             return
         for t in got["items"]:
@@ -422,6 +467,8 @@ def export_rows(conn, *, page_size: int, **filters) -> Any:
                     "actual_unit_price": p.get("actual_unit_price"),
                     "over_cap": "是" if over else "",
                 }
-        if page * page_size >= got["total"]:
+        # 游标 = 这一页最后那条的 id。不管这期间前面增删了多少行,
+        # 下一页永远接着它往下走 —— 不漏也不重。
+        cursor = got["items"][-1]["id"]
+        if len(got["items"]) < page_size:
             return
-        page += 1

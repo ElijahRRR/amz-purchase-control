@@ -9,6 +9,7 @@
 import csv
 import io
 from datetime import date, timedelta
+from typing import Literal
 
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse, StreamingResponse
@@ -36,6 +37,21 @@ def _refused(exc: task_admin.AdminRefused) -> JSONResponse:
     })
 
 
+def _bad_range(date_from: date | None, date_to: date | None) -> JSONResponse | None:
+    """起止日期反了就明说,别返回一个空结果。
+
+    反着传会让所有查询都返回 0 条,而「0 条」跟「这段时间确实没有单」长得一模一样。
+    这个项目最怕的就是这种:界面给了一个看着正常的答案,而它回答的是另一个问题。
+    """
+    if date_from and date_to and date_from > date_to:
+        return JSONResponse(status_code=422, content={
+            "ok": False, "data": None,
+            "error": {"code": "BAD_DATE_RANGE",
+                      "message": f"起止日期反了:{date_from} 晚于 {date_to}"},
+        })
+    return None
+
+
 @router.get("/meta")
 def meta() -> schemas.Envelope:
     """封闭集连中文标签一起吐给前端,让前端不必存副本。
@@ -61,13 +77,18 @@ def meta() -> schemas.Envelope:
 @router.get("/summary")
 def summary(
     env_code: str | None = None,
-    date_field: str = "created",
+    # Literal 而不是 str:传个 "updated" 进来,原先会一路走到
+    # task_query.summary 里 raise ValueError → 500。500 的意思是「服务坏了」,
+    # 而实际情况是「你传错了」—— 让 FastAPI 在门口回 422 说清楚是哪个字段。
+    date_field: Literal["created", "purchased"] = "created",
     date_from: date | None = None,
     date_to: date | None = None,
     conn=Depends(conn_ctx),
-) -> schemas.Envelope:
+):
     """状态桶的计数。接的是与列表**同一套** env/时间条件,只是不接 status ——
     否则筛了买家号之后那排数字还是全局的,点进去数量对不上,像是界面丢了单。"""
+    if (bad := _bad_range(date_from, date_to)) is not None:
+        return bad
     got = task_query.summary(conn, env_code=env_code, date_field=date_field,
                              date_from=date_from, date_to=date_to)
     return schemas.Envelope(ok=True, data=got)
@@ -78,9 +99,11 @@ def error_stats(
     date_from: date | None = None,
     date_to: date | None = None,
     conn=Depends(conn_ctx),
-) -> schemas.Envelope:
+):
     """错误码分布。默认看最近 14 天 —— 够看出趋势,又不至于把一次早就修好的
     旧故障混进今天的判断里。"""
+    if (bad := _bad_range(date_from, date_to)) is not None:
+        return bad
     today = date.today()
     got = task_query.error_stats(conn,
                                  date_from=date_from or today - timedelta(days=13),
@@ -96,7 +119,9 @@ def runs(limit: int = 60, conn=Depends(conn_ctx)) -> schemas.Envelope:
 
 
 @router.post("/tasks/search")
-def search(req: schemas.TaskSearchReq, conn=Depends(conn_ctx)) -> schemas.Envelope:
+def search(req: schemas.TaskSearchReq, conn=Depends(conn_ctx)):
+    if (bad := _bad_range(req.date_from, req.date_to)) is not None:
+        return bad
     got = task_query.search(
         conn, status=req.status, env_code=req.env_code, date_field=req.date_field,
         date_from=req.date_from, date_to=req.date_to,

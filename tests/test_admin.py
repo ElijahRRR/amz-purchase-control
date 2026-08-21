@@ -441,12 +441,26 @@ def test_summary_top_bar_numbers_stay_global(client, conn, seed):
     assert scoped["queue_depth"] == 4            # 顶栏不跟
 
 
+def _fail(conn, task_id, code, *, hours_ago=0):
+    """按真实路径造一次失败:落 task_events 那一行。
+
+    直接 UPDATE tasks.error_code 是造不出这一页要的数据的 ——
+    这一页统计的是**失败事件**,而事件才是带着「什么时候失败的」那个时间戳的东西。
+    """
+    conn.execute(
+        """INSERT INTO procure.task_events (task_id, kind, code, payload, created_at)
+           VALUES (%s, 'error', %s, '{}'::jsonb, now() - make_interval(hours => %s))""",
+        (task_id, code, hours_ago))
+    conn.execute("UPDATE procure.tasks SET status='exception', error_code=%s WHERE id=%s",
+                 (code, task_id))
+
+
 def test_error_stats_splits_by_env_and_by_day(client, conn, seed):
     """分买家号是为了看出「是不是某一台机器的问题」(比如某个买家号被风控了)。"""
     _env, _inst, tasks = seed
-    _set(conn, tasks[0], status="manual", error_code="ORDER_NO_AMBIGUOUS")
-    _set(conn, tasks[1], status="exception", error_code="PRICE_CAP_EXCEEDED")
-    _set(conn, tasks[2], status="exception", error_code="PRICE_CAP_EXCEEDED")
+    _fail(conn, tasks[0], "ORDER_NO_AMBIGUOUS")
+    _fail(conn, tasks[1], "PRICE_CAP_EXCEEDED")
+    _fail(conn, tasks[2], "PRICE_CAP_EXCEEDED")
     conn.commit()
 
     data = client.get("/v1/admin/error-stats").json()["data"]
@@ -457,7 +471,7 @@ def test_error_stats_splits_by_env_and_by_day(client, conn, seed):
     assert sum(p["n"] for p in data["trend"]) == 3
 
 
-def test_error_stats_ignores_rows_without_a_code(client, conn, seed):
+def test_error_stats_ignores_tasks_that_never_failed(client, conn, seed):
     """没出过错的行不该进分布图 —— 那张图是用来找卡点的,不是统计总量的。"""
     _env, _inst, tasks = seed
     _set(conn, tasks[0], status="purchased", amazon_order_no="111-0000001-0000001")
@@ -465,25 +479,59 @@ def test_error_stats_ignores_rows_without_a_code(client, conn, seed):
     assert client.get("/v1/admin/error-stats").json()["data"]["total"] == 0
 
 
-def test_list_does_not_duplicate_a_task_that_synced_twice(client, conn, seed):
-    """一单同步过两次轨迹,列表里还是一行。
+def test_error_stats_windows_by_when_it_failed_not_when_it_was_created(client, conn, seed):
+    """20 天前下发的单今天失败,必须出现在默认 14 天窗口里。
 
-    列表为了「详细」密度要带物流列,拿的是 LEFT JOIN LATERAL 的最后一条。
-    换成普通 JOIN 的话,这条任务会裂成两行,`total` 也跟着虚高 ——
-    运营看到的「待处理 41」就不再是 41 张单。
+    原先两个 SQL 都拿 `tasks.created_at` 筛窗口 —— 这条**整个看不见**。
+    而这一页的问题是「最近在哪儿卡住」,不是「最近下发的单里有多少卡住」。
     """
     _env, _inst, tasks = seed
-    for tracking in ("1Z-OLD", "1Z-NEW"):
-        conn.execute(
-            "INSERT INTO logistics.shipments (task_id, carrier, tracking_no, status)"
-            " VALUES (%s,'UPS',%s,'in_transit')", (tasks[0], tracking))
+    conn.execute("UPDATE procure.tasks SET created_at = now() - interval '20 days' "
+                 " WHERE id = %s", (tasks[0],))
+    _fail(conn, tasks[0], "CAPTCHA_ENCOUNTERED")      # 今天失败的
     conn.commit()
 
-    data = client.post("/v1/admin/tasks/search", json={}).json()["data"]
-    assert data["total"] == 3
-    rows = [i for i in data["items"] if i["id"] == tasks[0]]
-    assert len(rows) == 1
-    assert rows[0]["tracking_no"] == "1Z-NEW"      # 取最后一条,不是第一条
+    data = client.get("/v1/admin/error-stats").json()["data"]
+    assert data["total"] == 1, "20 天前下发、今天才失败的单被窗口筛掉了"
+
+
+def test_error_stats_buckets_on_the_day_it_failed(client, conn, seed):
+    """5 天前下发、今天失败的单,要记在**今天**那根柱子上。
+
+    按创建时间分天的话,趋势图会把今天的故障画在 5 天前 ——
+    而这张图的标题就是「是一直这样,还是昨天开始的」。
+    """
+    from datetime import date
+
+    _env, _inst, tasks = seed
+    conn.execute("UPDATE procure.tasks SET created_at = now() - interval '5 days' "
+                 " WHERE id = %s", (tasks[0],))
+    _fail(conn, tasks[0], "CHECKOUT_TIMEOUT")
+    conn.commit()
+
+    trend = client.get("/v1/admin/error-stats").json()["data"]["trend"]
+    assert len(trend) == 1
+    assert trend[0]["day"] == date.today().isoformat(), \
+        f"记在了 {trend[0]['day']},应该是今天"
+
+
+def test_error_stats_still_sees_a_failure_that_was_later_reset(client, conn, seed):
+    """重置过的单 `error_code` 被清空了,但它确实失败过 —— 分布图不该忘了它。
+
+    事件是只追加的,重置不会抹掉历史。按 tasks.error_code 统计的话,
+    「这周被重置掉的那 30 次超时」会从图上整个消失,
+    而那 30 次正是最该被看见的东西。
+    """
+    _env, _inst, tasks = seed
+    _fail(conn, tasks[0], "CHECKOUT_TIMEOUT")
+    conn.commit()
+    assert client.get("/v1/admin/error-stats").json()["data"]["total"] == 1
+
+    client.post(f"/v1/admin/tasks/{tasks[0]}/reset", json={"acknowledged": False})
+    assert conn.execute("SELECT error_code FROM procure.tasks WHERE id=%s",
+                        (tasks[0],)).fetchone()["error_code"] is None
+    assert client.get("/v1/admin/error-stats").json()["data"]["total"] == 1, \
+        "重置把它从分布图上抹掉了"
 
 
 # ── 工作流运行记录 ──────────────────────────────────────────────────────
@@ -805,3 +853,171 @@ def test_asset_route_refuses_to_walk_out_of_the_assets_dir(client, tmp_path, mon
             raise AssertionError(f"{path} 竟然读到了")
         except HTTPException as exc:
             assert exc.status_code == 404
+
+
+def test_a_busy_workflow_does_not_push_another_out_of_the_freshness_window(client, conn):
+    """一条跑得频繁的工作流,不能把另一条挤成「从没跑过」。
+
+    task_intake 一小时跑 60 次,把 task_sweep 一小时前那次挤出了「最近 N 次」——
+    界面于是报「从没跑过 + 逾期」,而它其实好好的。
+    **在监控页上误报比不报还坏**:红旗一旦会自己冒出来,就没人再信红旗。
+    """
+    conn.execute("""INSERT INTO ops.runs (workflow, params, started_at, finished_at,
+                                          status, summary, operator)
+                    VALUES ('task_sweep','{}'::jsonb, now() - interval '60 minutes',
+                            now() - interval '59 minutes','success','清扫完成:0 条','cron')""")
+    for i in range(60):
+        conn.execute("""INSERT INTO ops.runs (workflow, params, started_at, finished_at,
+                                              status, summary, operator)
+                        VALUES ('task_intake','{}'::jsonb,
+                                now() - make_interval(secs => %s), now(),
+                                'success','ok','cron')""", (i * 30,))
+    conn.commit()
+
+    by = {r["workflow"]: r
+          for r in client.get("/v1/admin/runs").json()["data"]["by_workflow"]}
+    assert by["task_sweep"]["last"] is not None
+    assert by["task_sweep"]["overdue"] is False, "1 小时前刚跑过,阈值是 2 小时"
+
+
+def test_a_dry_run_does_not_reset_the_overdue_clock(client, conn):
+    """空跑不算跑过。
+
+    空跑什么都没清扫。定时器停了、有人手工 --dry-run 试了一下,那一格就从红变绿,
+    而 claimed 的任务照样堆着 —— 这正是「看起来有护栏、实际防不住」。
+    """
+    conn.execute("""INSERT INTO ops.runs (workflow, params, started_at, finished_at,
+                                          status, summary, operator)
+                    VALUES ('task_sweep','{}'::jsonb, now() - interval '3 hours',
+                            now() - interval '3 hours','success','清扫完成:0 条','cron')""")
+    conn.commit()
+    before = {r["workflow"]: r
+              for r in client.get("/v1/admin/runs").json()["data"]["by_workflow"]}
+    assert before["task_sweep"]["overdue"] is True
+
+    # 一次空跑
+    conn.execute("""INSERT INTO ops.runs (workflow, params, started_at, finished_at,
+                                          status, summary, operator)
+                    VALUES ('task_sweep','{"dry_run": true}'::jsonb, now(), now(),
+                            'success','dry-run:0 条任务超过 15 分钟未回传','manual')""")
+    conn.commit()
+
+    after = {r["workflow"]: r
+             for r in client.get("/v1/admin/runs").json()["data"]["by_workflow"]}
+    assert after["task_sweep"]["overdue"] is True, "一次空跑把「该清扫却没清扫」这面红旗抹掉了"
+    # 流水里照样看得见那次空跑 —— 只是不算数,不是不记
+    assert any(r["params"].get("dry_run") is True
+               for r in client.get("/v1/admin/runs").json()["data"]["items"])
+
+
+def test_runs_limit_is_clamped_instead_of_blowing_up(client, conn):
+    """负数 LIMIT 会让 SQL 直接报错。夹住就好,不必为此 400 —— 这是个内部只读接口。"""
+    assert client.get("/v1/admin/runs", params={"limit": -1}).status_code == 200
+    assert client.get("/v1/admin/runs", params={"limit": 10**9}).status_code == 200
+
+
+def test_export_does_not_drop_a_row_when_the_set_shrinks_mid_export(conn, seed, monkeypatch):
+    """导到一半有单离开筛选集,不能让另一行**永远不被导出**。
+
+    OFFSET 翻页在这里会漂:前面少了一行,后面的行整体左移,第二页跳过一条。
+    CSV 里没有任何提示 —— 拿它去对账的人不会知道自己少了一行。
+    """
+    from registry import settings
+    from services import task_query
+
+    monkeypatch.setattr(settings, "admin_page_size_max", lambda: 2)
+    _env, _inst, tasks = seed
+    conn.commit()
+
+    gen = task_query.export_rows(conn, page_size=2, status="ready")
+    first = [next(gen), next(gen)]              # 拿完第一页
+
+    # 第一页那两条离开筛选集(被拍掉了)
+    conn.execute("UPDATE procure.tasks SET status='purchased' WHERE id = ANY(%s)",
+                 ([tasks[2], tasks[1]],))
+    conn.commit()
+
+    rest = list(gen)
+    got = {r["upstream_order_no"] for r in first} | {r["upstream_order_no"] for r in rest}
+    assert "UP-0" in got, f"第一页之后那条被漏掉了:拿到 {sorted(got)}"
+
+
+def test_export_does_not_emit_the_same_row_twice_when_new_tasks_arrive(conn, seed,
+                                                                      monkeypatch):
+    """反过来:导到一半有新单落库,同一行不能导两次。
+
+    OFFSET 下新单排在最前,后面的页整体右移 —— 上一页最后那条会再来一次。
+    """
+    from registry import settings
+    from services import task_query
+
+    monkeypatch.setattr(settings, "admin_page_size_max", lambda: 2)
+    env_id = conn.execute("SELECT id FROM procure.buyer_envs LIMIT 1").fetchone()["id"]
+    conn.commit()
+
+    gen = task_query.export_rows(conn, page_size=2, status="ready")
+    first = [next(gen), next(gen)]
+
+    for i in range(3):                          # 导到一半灌进来三条新的
+        conn.execute(
+            """INSERT INTO procure.tasks
+                 (line_key, upstream_order_no, buyer_env_id, ship_name, ship_phone,
+                  ship_line1, ship_city, ship_state, ship_postcode, price_cap, status)
+               VALUES (%s,%s,%s,'N','1','1 St','SA','CA','92707',9.99,'ready')""",
+            (f"key-new-{i}", f"UP-NEW{i}", env_id))
+    conn.commit()
+
+    all_rows = first + list(gen)
+    numbers = [r["upstream_order_no"] for r in all_rows]
+    assert len(numbers) == len(set(numbers)), f"有行被导了两次:{numbers}"
+
+
+def test_summary_survives_a_status_outside_the_closed_set(client, conn, seed):
+    """库里出现集合外的状态,状态桶接口不能 500。
+
+    `tasks.status` 是 text、没有 CHECK,封闭集只写在注释和 vocab 里。
+    手工 UPDATE 过、或者以后加了状态没同步 vocab,整个接口 500 的话
+    运营台首屏直接打不开 —— 为了一个陌生的枚举值,整页挂掉。
+    """
+    _env, _inst, tasks = seed
+    conn.execute("UPDATE procure.tasks SET status='frobnicated' WHERE id=%s", (tasks[0],))
+    conn.commit()
+
+    r = client.get("/v1/admin/summary")
+    assert r.status_code == 200
+    by = r.json()["data"]["by_status"]
+    assert by["frobnicated"] == 1, "陌生的值要原样带上,界面会把它显示成英文"
+    assert by["ready"] == 2
+
+
+def test_a_bad_date_field_is_a_422_not_a_500(client, conn, seed):
+    """传错字段名不是「服务坏了」。
+
+    原先 `date_field=updated` 会一路走到 task_query 里 raise ValueError → 500。
+    500 会让人去查服务端日志,而实际情况是调用方传错了。
+    """
+    r = client.get("/v1/admin/summary", params={"date_field": "updated"})
+    assert r.status_code == 422
+    assert "date_field" in r.text
+
+
+def test_a_reversed_date_range_is_refused_instead_of_returning_zero(client, conn, seed):
+    """起止日期反了要明说,别返回一个空结果。
+
+    反着传会让所有查询都返回 0 条,而「0 条」跟「这段时间确实没有单」长得一模一样。
+    这个项目最怕的就是这种:界面给了一个看着正常的答案,而它回答的是另一个问题。
+    """
+    rev = {"date_from": "2026-08-21", "date_to": "2026-08-01"}
+
+    r = client.post("/v1/admin/tasks/search", json=rev)
+    assert r.status_code == 422 and r.json()["error"]["code"] == "BAD_DATE_RANGE"
+
+    r = client.get("/v1/admin/summary", params=rev)
+    assert r.status_code == 422 and r.json()["error"]["code"] == "BAD_DATE_RANGE"
+
+    r = client.get("/v1/admin/error-stats", params=rev)
+    assert r.status_code == 422 and r.json()["error"]["code"] == "BAD_DATE_RANGE"
+
+    # 同一天不算反
+    same = {"date_from": "2026-08-21", "date_to": "2026-08-21"}
+    assert client.get("/v1/admin/summary", params=same).status_code == 200
