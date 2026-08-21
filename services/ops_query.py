@@ -118,8 +118,15 @@ def recent(conn, *, limit: int = 60) -> dict[str, Any]:
             "overdue": overdue,
         })
 
+    # 顶栏那个数字要是**真的总数**,不是 items 的长度。
+    # 拿 len(items) 当总数的话,超过 limit 之后它会永远停在 60 —— 一个不动的
+    # 计数器比没有计数器更坏,它会让人以为「最近就跑了这么多次」。
+    total = conn.execute("SELECT count(*) AS n FROM ops.runs").fetchone()["n"]
+
     return {
         "items": rows,
+        "total": total,
+        "limit": limit,
         "by_workflow": by_workflow,
         "stuck_after_seconds": int(STUCK_AFTER.total_seconds()),
     }

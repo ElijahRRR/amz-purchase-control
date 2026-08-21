@@ -83,14 +83,15 @@ def summary(
     date_field: Literal["created", "purchased"] = "created",
     date_from: date | None = None,
     date_to: date | None = None,
+    asin: str | None = None,
     conn=Depends(conn_ctx),
 ):
-    """状态桶的计数。接的是与列表**同一套** env/时间条件,只是不接 status ——
-    否则筛了买家号之后那排数字还是全局的,点进去数量对不上,像是界面丢了单。"""
+    """状态桶的计数。接的是与列表**同一套**条件(env / 时间 / ASIN),只是不接
+    status —— 否则筛了之后那排数字还是全局的,点进去数量对不上,像是界面丢了单。"""
     if (bad := _bad_range(date_from, date_to)) is not None:
         return bad
     got = task_query.summary(conn, env_code=env_code, date_field=date_field,
-                             date_from=date_from, date_to=date_to)
+                             date_from=date_from, date_to=date_to, asin=asin)
     return schemas.Envelope(ok=True, data=got)
 
 
@@ -246,10 +247,15 @@ def import_tasks(req: schemas.IntakeReq, conn=Depends(conn_ctx)) -> schemas.Enve
 
 
 @router.post("/tasks/{task_id}/release")
-def release_task(task_id: int, conn=Depends(conn_ctx)):
-    """pending → ready。放行闸口:落库与放行分开,中间那一格留给上游或人来把关。"""
+def release_task(task_id: int, req: schemas.OperatorReq | None = None,
+                 conn=Depends(conn_ctx)):
+    """pending → ready。放行闸口:落库与放行分开,中间那一格留给上游或人来把关。
+
+    收 operator —— 原先这条路由不接请求体,「操作人」在放行这一个动作上永远记 null。
+    """
     try:
-        got = task_admin.release(conn, task_id)
+        got = task_admin.release(conn, task_id,
+                                 operator=req.operator if req else None)
     except task_admin.AdminRefused as exc:
         return _refused(exc)
     return schemas.Envelope(ok=True, data=got)

@@ -26,6 +26,10 @@ export type Density = "detail" | "compact";
 /** 行高。虚拟滚动要先知道估计值,估得准滚动条才不会跳。 */
 const ROW_H: Record<Density, number> = { detail: 124, compact: 40 };
 
+/** 表头高度(h-th 36 + 下边框 1)。表头在流内 sticky,占着滚动容器内容区的顶部,
+ *  虚拟器得把这段算进 paddingStart,否则它算的位置整体偏 37px。 */
+const HEAD_H = 37;
+
 function Thumb({ url, size = 32 }: { url?: string | null; size?: number }) {
   return (
     <span
@@ -149,7 +153,9 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
         cell: ({ row }) => {
           const r = row.original;
           return (
-            <span className="text-xs text-zinc-700 truncate">
+            // truncate 要 block/flex 才生效:overflow:hidden 与 text-overflow
+            // 对非替换的**行内**框不起作用,长收件人名会压过右边的限价/实付两列。
+            <span className="block min-w-0 truncate text-xs text-zinc-700">
               {r.ship_name} · {r.ship_city}, {r.ship_state}
             </span>
           );
@@ -374,11 +380,19 @@ export function TaskTable({
   const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel() });
   const scrollRef = useRef<HTMLDivElement>(null);
 
+  // 表头是**流内**的 sticky,占掉滚动容器内容区顶部 37px(h-th 36 + 下边框 1)。
+  // 虚拟器不知道这件事的话,它算出来的 start 与真实位置差 37px ——
+  // scrollToIndex 会把行滚到刚好被表头压住、或者卡在视口下沿之外。
+  // 切换密度时也要让它重算行高缓存:itemSizeCache 只在 count/paddingStart/
+  // scrollMargin/getItemKey 变化时才清,estimateSize 变了它不管。
   const virt = useVirtualizer({
     count: rows.length,
     getScrollElement: () => scrollRef.current,
     estimateSize: () => ROW_H[density],
     overscan: 8,
+    paddingStart: HEAD_H,
+    // 密度进 key:换档时 key 全变,缓存作废,行高按新档重算。
+    getItemKey: (i) => `${density}:${rows[i]?.id ?? i}`,
   });
 
   // 游标跟着 J/K 走,列表得跟着游标滚。
@@ -431,7 +445,8 @@ export function TaskTable({
                 selectedId === r.id && "bg-zinc-50 shadow-rowsel",
                 cursor === v.index && selectedId !== r.id && "bg-sky-50/40 shadow-rowsel",
               )}
-              style={{ gridTemplateColumns: template, transform: `translateY(${v.start}px)` }}
+              style={{ gridTemplateColumns: template,
+                       transform: `translateY(${v.start - HEAD_H}px)` }}
             >
               {row.getVisibleCells().map((cell) => (
                 <div key={cell.id}

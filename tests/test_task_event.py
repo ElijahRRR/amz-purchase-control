@@ -156,3 +156,18 @@ def test_extension_error_codes_match_the_server():
 
     retry_block = src[src.index("export const RETRYABLE"):src.index("export const TO_MANUAL")]
     assert set(re.findall(r'"([A-Z_]+)"', retry_block)) == set(error_codes.RETRYABLE)
+
+    # **中文标签也要一字不差。**
+    #
+    # 这条断言是 2026-08-21 补的。在此之前这个测试只比码名和两个分组,
+    # 而 19 个标签已经悄悄分叉了 10 个:「结算页跳转超时」/「结算页超时」、
+    # 「无法确定哪个单号属于本单」/「单号对不上」……
+    # 运营在插件面板和运营台上看到的是两套说法,同一个错误看着像两件事。
+    #
+    # 而 services/vocab.py 的注释一直写着「有测试盯着」—— 一条声称有测试盯着、
+    # 实际没有的注释,比根本不写那句话更危险:后来的人会照着它放心地在一边改。
+    label_block = src[src.index("ERROR_LABEL"):src.index("/** 可自动重试")]
+    ext_labels = dict(re.findall(r'(\w+):\s*"([^"]+)"', label_block))
+    drift = {k: (v, ext_labels.get(k)) for k, v in error_codes.LABELS.items()
+             if ext_labels.get(k) != v}
+    assert not drift, f"标签两边不一致(码: (服务端, 插件)):{drift}"

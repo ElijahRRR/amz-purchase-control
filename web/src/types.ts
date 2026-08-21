@@ -88,7 +88,15 @@ export interface Shipment {
   events?: ShipmentEvent[];
 }
 
-export interface TaskDetail extends TaskRow {
+/** 详情接口返回的东西。
+ *
+ *  **不能直接 extends TaskRow**:TaskRow 里的 carrier / tracking_no /
+ *  shipment_status 是列表那条 SQL 用 LATERAL 拼出来的,`_DETAIL_SQL` 是
+ *  `SELECT t.*`,那三列压根不在 procure.tasks 上,详情里根本没有。
+ *  照 TaskRow 继承的话,类型系统会承诺三个运行时是 undefined 的非空字段 ——
+ *  哪天有人照着类型写 `t.carrier.toUpperCase()`,编译器一句话不说,线上白屏。
+ *  物流在详情里走 `shipment` 那个对象。 */
+export interface TaskDetail extends Omit<TaskRow, "carrier" | "tracking_no" | "shipment_status"> {
   ship_country: string;
   max_delivery_days: number;
   delivery_raw: string | null;
@@ -114,6 +122,9 @@ export interface InstanceRow {
   manual_count: number;
   purchased_today: number;
   liveness: "never" | "online" | "stale" | "paused";
+  /** 今天拍满了配额。`daily_cap = 0` 表示不限,那时永远是 false。 */
+  at_daily_cap: boolean;
+  /** 与 task_queue.CLAIM_SQL 那道真闸算同一件事:在线**且**没到日上限。 */
   dispatchable: boolean;
 }
 
@@ -191,6 +202,10 @@ export interface WorkflowRun {
 
 export interface RunsOut {
   items: WorkflowRun[];
+  /** 真的总数。`items` 只是最近 `limit` 条 —— 拿 items.length 当总数的话,
+   *  它会永远停在 60,而一个不动的计数器比没有计数器更坏。 */
+  total: number;
+  limit: number;
   /** 每条工作流的最后一次运行。**从没跑过的也在里面**(last 为 null)——
    *  一条从没跑过的 task_sweep 在「最近运行」列表里是看不见的,
    *  而那恰恰是最该报警的情况。 */

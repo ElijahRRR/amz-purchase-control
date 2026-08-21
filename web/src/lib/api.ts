@@ -105,7 +105,10 @@ export const api = {
   taskDetail: (id: number) => call<TaskDetail>(`/v1/admin/tasks/${id}`),
   meta: () => call<Meta>("/v1/admin/meta"),
   summary: (q: { env_code?: string | null; date_field?: string;
-                 date_from?: string | null; date_to?: string | null }) =>
+                 date_from?: string | null; date_to?: string | null;
+                 /** 状态桶必须跟列表用**同一套**条件,ASIN 也算一条 ——
+                  *  漏了它,桶上写「待拍单 12」、点进去 3 条,运营会以为界面丢了单。 */
+                 asin?: string | null }) =>
     call<Summary>(`/v1/admin/summary?${qs(q)}`),
   errorStats: (q: { date_from?: string | null; date_to?: string | null }) =>
     call<ErrorStats>(`/v1/admin/error-stats?${qs(q)}`),

@@ -8,7 +8,7 @@ from datetime import date
 from decimal import Decimal
 from typing import Any, Literal
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, Field, field_validator
 
 # ── 通用信封 ────────────────────────────────────────────────────────────
 
@@ -212,19 +212,68 @@ class ResetReq(BaseModel):
 
 
 class ForceBackfillReq(BaseModel):
-    amazon_order_no: str
+    """强制回填。整套后台里唯一一个「跳过断言直接写库」的动作。
+
+    单号形状必须校验,而且这里的理由比「填错了报个错」重得多:
+    **首尾一个空格就能绕开唯一索引** —— `" 111-…"` 与 `"111-…"` 在库里是两个
+    不同的值,同一张亚马逊订单于是能被钉到两条任务上,后面对账、物流、退款全跟着错。
+    偏偏这个动作跳过的正是拦这种事的那道断言。
+    """
+
+    #: 形如 111-1234567-1234567。与 services/task_query.AMZ_ORDER_RE 同一条规则。
+    amazon_order_no: str = Field(pattern=r"^\d{3}-\d{7}-\d{7}$")
     #: 必填。事后追责时「当时为什么敢写」必须留在库里。
+    #:
+    #: 这里**不加 min_length**:「说明必填」是业务规则,由 services/task_admin
+    #: 拒成 NOTE_REQUIRED —— 一个带名字的业务码,调用方能照着分支。
+    #: 而单号形状是格式规则,归 schema,回 422。
+    #: 两层各管一类,不在同一件事上给出两种拒绝码。
     note: str
     operator: str | None = None
 
+    @field_validator("amazon_order_no", "note", mode="before")
+    @classmethod
+    def _strip(cls, v):
+        return v.strip() if isinstance(v, str) else v
+
 
 class AddressReq(BaseModel):
-    ship_name: str | None = None
-    ship_phone: str | None = None
-    ship_line1: str | None = None
-    ship_city: str | None = None
-    ship_state: str | None = None
-    ship_postcode: str | None = None
+    """改收货地址。
+
+    每个字段 `min_length=1` 且首尾去空白 —— 六项在库里都是 NOT NULL 的必填项,
+    空串写进去等于把地址弄残,而包裹要照着它寄。
+    前端也挡了一道,但前端那道是**便利**,不是**保证**:接口是公开的,
+    curl 一下就绕过去了。真正的规则必须在服务端。
+    """
+
+    ship_name: str | None = Field(None, min_length=1)
+    ship_phone: str | None = Field(None, min_length=1)
+    ship_line1: str | None = Field(None, min_length=1)
+    ship_city: str | None = Field(None, min_length=1)
+    ship_state: str | None = Field(None, min_length=1)
+    ship_postcode: str | None = Field(None, min_length=1)
+    operator: str | None = None
+
+    @field_validator("ship_name", "ship_phone", "ship_line1", "ship_city",
+                     "ship_state", "ship_postcode")
+    @classmethod
+    def _strip(cls, v: str | None) -> str | None:
+        if v is None:
+            return None
+        v = v.strip()
+        if not v:
+            raise ValueError("不能是空白")
+        return v
+
+
+class OperatorReq(BaseModel):
+    """只带一个操作人的请求体。放行用。
+
+    原先这条路由压根不收请求体,于是「操作人」审计在**放行这一个动作上永远是 null**——
+    前端 api.act() 明明每次都把名字送过来了,服务端把它丢在门口。
+    一份有一格永远空着的审计,比没有审计更容易让人误判(「哦这条没人操作过」)。
+    """
+
     operator: str | None = None
 
 

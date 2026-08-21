@@ -66,7 +66,7 @@ export default function RunsPage() {
       <div className="h-12 shrink-0 bg-white border-b border-zinc-100 flex items-center gap-3 px-4">
         <span className="text-[13px] font-medium">工作流记录</span>
         <span className="text-xs text-zinc-500">
-          共 <span className="num text-zinc-900">{data?.items.length ?? "—"}</span> 次运行
+          共 <span className="num text-zinc-900">{data?.total ?? "—"}</span> 次运行
         </span>
         <span className="ml-auto text-xs text-zinc-400">
           停在「正在跑」超过 {data ? Math.floor(data.stuck_after_seconds / 60) : "—"} 分钟
@@ -122,7 +122,9 @@ export default function RunsPage() {
         </div>
 
         <Card className="overflow-hidden">
-          <CardHead right={<span className="text-xs text-zinc-400">最近 60 次,新的在前</span>}>
+          <CardHead right={<span className="text-xs text-zinc-400">
+            最近 {data?.limit ?? "—"} 次,新的在前
+          </span>}>
             运行流水
           </CardHead>
           <table className="w-full">

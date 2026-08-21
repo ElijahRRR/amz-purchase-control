@@ -171,7 +171,15 @@ def search(
 
     missing: list[str] = []
     if by_number:
-        hit = conn.execute(_FOUND_SQL.format(where=where), params).fetchall()
+        # 算「哪些号一个都没匹配上」时**不带 asin 条件**。
+        #
+        # 带上的话,一个明明在库里、只是不含这个 ASIN 的号,会被列进「查不到」——
+        # 而这个字段存在的全部意义是「别让运营以为都查到了」。
+        # 报一个其实存在的号「查不到」,会把人支去上游翻一张好好的单,
+        # 比不报还费时间。
+        number_clauses = [c for c in clauses if "task_products" not in c]
+        hit = conn.execute(
+            _FOUND_SQL.format(where=" AND ".join(number_clauses)), params).fetchall()
         found = {r["amazon_order_no"] for r in hit if r["amazon_order_no"]}
         found |= {r["upstream_order_no"] for r in hit}
         missing = [n for n in (amz + upstream) if n not in found]
@@ -254,6 +262,7 @@ def summary(
     date_field: str = "created",
     date_from: date | None = None,
     date_to: date | None = None,
+    asin: str | None = None,
 ) -> dict[str, Any]:
     """输入:除状态外的筛选条件 → 输出:每个状态桶各有多少 + 今日已拍单。
 
@@ -287,6 +296,12 @@ def summary(
         params["date_to"] = date_to
     if date_field == "purchased":
         clauses.append("t.purchased_at IS NOT NULL")
+    if asin:
+        # 漏掉 asin 正好戳中这个接口存在的理由:填了 ASIN 之后,
+        # 桶上写「拍单异常 12」,点进去只有 3 条 —— 运营会以为界面丢了单。
+        clauses.append("EXISTS (SELECT 1 FROM procure.task_products p "
+                       "WHERE p.task_id = t.id AND p.asin = %(asin)s)")
+        params["asin"] = asin
 
     rows = conn.execute(_SUMMARY_SQL.format(where=" AND ".join(clauses)), params).fetchall()
     by_status = {s: 0 for s in vocab.STATUS_LABELS}

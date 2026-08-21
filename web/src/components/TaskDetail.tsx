@@ -72,6 +72,14 @@ function eventText(e: { kind: string; code: string | null; payload: Record<strin
 
 /** 可改的收货字段。与 services/task_admin._ADDRESS_FIELDS 一一对应 ——
  *  多一个服务端会以 BAD_FIELD 拒掉,少一个是界面自己把能力藏了。 */
+/** AMZ 单号形状。与 services/task_query.AMZ_ORDER_RE 同一条规则。
+ *
+ *  不校验的后果不是「填错了报个错」——是**首尾一个空格就能绕开唯一索引**:
+ *  `" 111-…"` 与 `"111-…"` 在库里是两个不同的值,同一张亚马逊订单于是能被
+ *  钉到两条任务上,后面对账、物流、退款全跟着错。而这个动作恰恰是
+ *  「跳过断言直接写库」的那一个。 */
+const AMZ_ORDER_RE = /^\d{3}-\d{7}-\d{7}$/;
+
 const ADDRESS_FIELDS: [string, string][] = [
   ["ship_name", "姓名"], ["ship_phone", "电话"], ["ship_line1", "地址"],
   ["ship_city", "城市"], ["ship_state", "州"], ["ship_postcode", "邮编"],
@@ -84,6 +92,13 @@ function changedAddress(t: TD, draft: Record<string, string>): string[] {
   return ADDRESS_FIELDS
     .map(([k]) => k)
     .filter((k) => draft[k] !== undefined && draft[k] !== String(t[k as keyof TD] ?? ""));
+}
+
+/** 清空了的字段。收货六项都是 NOT NULL 的必填项,空串写进去等于把地址弄残 ——
+ *  而界面上那句「将改 N 个字段」看着像是在把关,其实一个字都没校验。 */
+function blankedAddress(draft: Record<string, string>): string[] {
+  return ADDRESS_FIELDS.map(([k]) => k)
+    .filter((k) => draft[k] !== undefined && draft[k].trim() === "");
 }
 
 const Hint = ({ children }: { children: React.ReactNode }) => (
@@ -265,13 +280,19 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
                     {money(t.actual_total)}
                   </span>
                 </div>
+                {/* 「没有这个数」不能渲染成「未超」。
+                    actual_total 为 null 时(强制回填的单必然如此,插件也可能没回传),
+                    原先整个表达式是假值 → 落进 else → 画绿点写「未超」。
+                    那是一个**从来没算过的护栏结论**,而它长得跟真算过的一模一样。 */}
                 <div className="flex items-center gap-1.5 mt-0.5">
-                  <Dot tone={t.actual_total && Number(t.actual_total) > Number(t.price_cap)
-                        ? "red" : "emerald"} />
+                  <Dot tone={t.actual_total === null ? "amber-hollow"
+                             : Number(t.actual_total) > Number(t.price_cap) ? "red" : "emerald"} />
                   <span className="text-xs+ text-zinc-600">
-                    {t.actual_total && Number(t.actual_total) > Number(t.price_cap)
-                      ? `超限价 ${money(String(Number(t.actual_total) - Number(t.price_cap)))}`
-                      : `限价 ${money(t.price_cap)},未超`}
+                    {t.actual_total === null
+                      ? `实付金额没回传,限价 ${money(t.price_cap)} 这一条没法核`
+                      : Number(t.actual_total) > Number(t.price_cap)
+                        ? `超限价 ${money(String(Number(t.actual_total) - Number(t.price_cap)))}`
+                        : `限价 ${money(t.price_cap)},未超`}
                   </span>
                 </div>
               </>
@@ -436,18 +457,23 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
             {/* 只把**真改动过**的字段发出去。整份地址原样回传的话,
                 事件流里那条 before/after 会记成「六个字段全改了」,
                 以后查「谁把州改错了」就查不出来了。 */}
-            <span className="text-xs+ text-zinc-400">
-              {changedAddress(t, draft).length
-                ? `将改 ${changedAddress(t, draft).length} 个字段`
-                : "还没有改动"}
+            <span className={cn("text-xs+",
+              blankedAddress(draft).length ? "text-red-600" : "text-zinc-400")}>
+              {blankedAddress(draft).length
+                ? `${blankedAddress(draft).map((k) =>
+                     ADDRESS_FIELDS.find(([f]) => f === k)![1]).join("、")}不能空`
+                : changedAddress(t, draft).length
+                  ? `将改 ${changedAddress(t, draft).length} 个字段`
+                  : "还没有改动"}
             </span>
             <span className="ml-auto" />
             <Button size="sm" onClick={() => { setEditing(null); setDraft({}); }}>取消</Button>
             <Button size="sm" variant="primary"
-                    disabled={busy || changedAddress(t, draft).length === 0}
+                    disabled={busy || changedAddress(t, draft).length === 0
+                              || blankedAddress(draft).length > 0}
                     onClick={() => {
                       const fields = Object.fromEntries(
-                        changedAddress(t, draft).map((k) => [k, draft[k]]));
+                        changedAddress(t, draft).map((k) => [k, draft[k].trim()]));
                       void run(api.updateAddress(t.id, fields));
                     }}>
               保存
@@ -503,8 +529,9 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
             断言正是当初把它挡在这儿的那道闸。写完不可撤销。
           </div>
           <Button size="sm" onClick={() => setConfirm(null)}>再想想</Button>
-          <Button size="sm" variant="danger" disabled={busy || !forceNo || !note}
-                  onClick={() => void run(api.forceBackfill(t.id, forceNo, note))}>
+          <Button size="sm" variant="danger"
+                  disabled={busy || !AMZ_ORDER_RE.test(forceNo) || !note.trim()}
+                  onClick={() => void run(api.forceBackfill(t.id, forceNo, note.trim()))}>
             <Zap className="w-3 h-3" />确认写入
           </Button>
         </div>
@@ -539,9 +566,12 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
         <CopyBlock value={addressBlock} label="复制收货地址"
                    className="h-7 px-2 border border-zinc-300 rounded-md bg-white text-xs" />
 
-        {/* 已下单/已取消的不给改:服务端会拒(BAD_STATUS),按钮也就不该亮着 ——
-            一个点下去必然被拒的按钮,是在让人以为自己做错了什么。 */}
-        {!["purchased", "cancelled"].includes(t.status) && (
+        {/* 与服务端 services/task_admin._FROZEN_FOR_EDIT 一一对应。
+            **claimed 是最要紧的那个**:插件此刻正拿着这一单的旧快照在亚马逊上下单,
+            改了它会买错东西或者寄错地方。已下单/已取消则是货已在路上或单已作废。
+            服务端都会拒,按钮也就不该亮着 —— 点下去必然被拒的按钮,
+            是在让人以为自己做错了什么。 */}
+        {!["claimed", "purchased", "cancelled"].includes(t.status) && (
           <>
             <Button size="sm" onClick={() => { setDraft({}); setEditing("address"); }}>改地址</Button>
             <Button size="sm" onClick={() => { setDraft({}); setEditing("asin"); }}>改 ASIN</Button>
@@ -573,13 +603,22 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
 
         <span className="ml-auto" />
 
-        {(t.status === "exception" || t.status === "manual") && !bought && (
+        {/* 只对 manual 亮:services/task_admin.force_backfill 只接受 manual。
+            对 exception 也亮的话,人会走完整条红色确认条,然后吃一个 BAD_STATUS ——
+            一个必然被拒的危险按钮,比没有按钮更伤信任。 */}
+        {t.status === "manual" && !bought && (
           <>
-            <Input value={forceNo} onChange={(e) => setForceNo(e.target.value)}
-                   placeholder="111-1234567-1234567" className="w-[172px] font-mono" />
+            <Input value={forceNo}
+                   onChange={(e) => setForceNo(e.target.value.trim())}
+                   placeholder="111-1234567-1234567"
+                   className={cn("w-[172px] font-mono",
+                                 forceNo && !AMZ_ORDER_RE.test(forceNo) && "border-red-400")} />
             <Input value={note} onChange={(e) => setNote(e.target.value)}
                    placeholder="为什么要强填(必填)" className="w-[200px]" />
-            <Button size="sm" variant="danger" disabled={busy || !forceNo || !note}
+            <Button size="sm" variant="danger"
+                    disabled={busy || !AMZ_ORDER_RE.test(forceNo) || !note.trim()}
+                    title={forceNo && !AMZ_ORDER_RE.test(forceNo)
+                      ? "AMZ 单号形如 111-1234567-1234567" : ""}
                     onClick={() => setConfirm("force")}>
               <Zap className="w-3 h-3" />强制回填单号
             </Button>

@@ -44,7 +44,17 @@ def reset_to_queue(conn, task_id: int, *, acknowledged: bool = False,
     if t["status"] not in ("exception", "manual"):
         raise AdminRefused("BAD_STATUS", f"只有拍单异常/待人工能重置,当前是 {t['status']}")
 
-    risky = t["status"] == "manual" and t["error_code"] in error_codes.POSSIBLY_ORDERED
+    # 按 **error_code** 判,不按 status。
+    #
+    # 原先是 `status == "manual" and error_code in POSSIBLY_ORDERED` —— 那等于
+    # 把「要不要人先去看一眼」的决定权交给了插件:状态是插件在 /fail 里用自己算的
+    # to_manual 布尔定的。插件那侧漏判一次(版本旧了、TO_MANUAL 两边分叉、
+    # 或者干脆算错),同一个 ORDER_CONFIRM_TIMEOUT 就会落成 exception,
+    # 于是这道闸整个绕过去,而运营台上那条紫色警告照样在喊「可能已经下单」——
+    # **喊完了静默重置**。这正是「看起来有护栏、实际防不住」。
+    #
+    # 错误码是服务端校验过的封闭集(task_event.validate),比状态可靠。
+    risky = t["error_code"] in error_codes.POSSIBLY_ORDERED
     if risky and not acknowledged:
         raise AdminRefused(
             "NEEDS_ACK",
@@ -107,6 +117,27 @@ def force_backfill(conn, task_id: int, amazon_order_no: str, *,
     return {"task_id": task_id, "status": "purchased"}
 
 
+#: 这几个状态下不许改单。
+#:
+#: purchased / cancelled 好理解:货已经在路上或者这单已经作废,改库里的值只会让
+#: 库和现实对不上,是在制造一个更难查的问题。
+#:
+#: **claimed 是补上的那个**,而它才是最危险的一个:插件此刻正拿着这一单的快照
+#: 在亚马逊上下单。这时候改 ASIN,插件买的还是旧的那个,回填时 ASIN 断言不符 ——
+#: 一张真花了钱的订单挂不到任何任务上,成了孤儿单;而任务停在待人工,
+#: 界面还会热情地建议你「强制回填」或者「重置回队列」,后者就是再买一遍。
+#: 改地址同理:插件填的是旧地址,库里写的是新地址,包裹寄到哪儿只有亚马逊知道。
+_FROZEN_FOR_EDIT = ("claimed", "purchased", "cancelled")
+
+
+def _why_frozen(status: str, action: str) -> str:
+    if status == "claimed":
+        return (f"这一单正被插件拍着(claimed),不能{action} —— "
+                f"插件拿的是改之前的快照,改了会买错东西、或者寄错地方。"
+                f"等它跑完,或者先让它超时转人工。")
+    return f"{status} 的单不能{action}"
+
+
 _ADDRESS_FIELDS = ("ship_name", "ship_phone", "ship_line1", "ship_city",
                    "ship_state", "ship_postcode")
 
@@ -125,8 +156,8 @@ def update_address(conn, task_id: int, fields: dict[str, str], *,
         raise AdminRefused("NOTHING_TO_DO", "没有要改的字段")
 
     t = _task(conn, task_id)
-    if t["status"] in ("purchased", "cancelled"):
-        raise AdminRefused("BAD_STATUS", f"{t['status']} 的单不能改地址")
+    if t["status"] in _FROZEN_FOR_EDIT:
+        raise AdminRefused("BAD_STATUS", _why_frozen(t["status"], "改地址"))
 
     before = conn.execute(
         f"SELECT {', '.join(_ADDRESS_FIELDS)} FROM procure.tasks WHERE id = %s", (task_id,),
@@ -151,8 +182,8 @@ def update_asin(conn, task_id: int, old_asin: str, new_asin: str, *,
     不是内容摘要 —— 所以这里**不重算**它,只在事件里把这件事记下来。
     """
     t = _task(conn, task_id)
-    if t["status"] in ("purchased", "cancelled"):
-        raise AdminRefused("BAD_STATUS", f"{t['status']} 的单不能改 ASIN")
+    if t["status"] in _FROZEN_FOR_EDIT:
+        raise AdminRefused("BAD_STATUS", _why_frozen(t["status"], "改 ASIN"))
 
     row = conn.execute(
         "SELECT id FROM procure.task_products WHERE task_id = %s AND asin = %s",

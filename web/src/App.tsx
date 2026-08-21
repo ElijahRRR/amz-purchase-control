@@ -157,7 +157,12 @@ export default function App() {
       </nav>
 
       <main className="flex-1 flex flex-col min-w-0">
-        {page === "tasks" && <TasksPage summary={summary} onMutate={reloadSummary} />}
+        {/* 顶栏那两个数字由任务页顺手带回来:它每次搜索都会取一份全局 summary,
+            取回来又丢掉的话,顶栏会停在进页面那一刻的数值不动 ——
+            运营盯着「今日已拍单 128」看半天,以为一单都没再拍出去。 */}
+        {page === "tasks" && (
+          <TasksPage summary={summary} onMutate={reloadSummary} onSummary={setSummary} />
+        )}
         {page === "instances" && <InstancesPage />}
         {page === "runs" && <RunsPage />}
         {page === "errors" && (

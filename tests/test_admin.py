@@ -1021,3 +1021,200 @@ def test_a_reversed_date_range_is_refused_instead_of_returning_zero(client, conn
     # 同一天不算反
     same = {"date_from": "2026-08-21", "date_to": "2026-08-21"}
     assert client.get("/v1/admin/summary", params=same).status_code == 200
+
+
+def test_dispatchable_respects_the_daily_cap_like_the_claim_sql_does(client, conn, seed):
+    """「可派单」必须跟真正那道闸算同一件事。
+
+    真正的闸在 task_queue.CLAIM_SQL:`daily_cap = 0 OR done_today < daily_cap`。
+    界面只看在线的话,拍满配额的买家号仍然显示绿色「可派」——
+    运营看着一台「可派」的机器一整天不动,只能去猜是不是插件坏了。
+    """
+    env, inst, tasks = seed
+    conn.execute("UPDATE procure.buyer_envs SET daily_cap = 2 WHERE id = %s", (env,))
+    conn.execute("UPDATE procure.plugin_instances SET last_seen_at = now() WHERE id = %s",
+                 (inst,))
+    conn.commit()
+
+    row = client.get("/v1/admin/instances").json()["data"]["items"][0]
+    assert row["liveness"] == "online" and row["dispatchable"] is True
+
+    # 今天拍满两单
+    for i, tid in enumerate(tasks[:2]):
+        conn.execute("UPDATE procure.tasks SET status='purchased', purchased_at=now(),"
+                     " amazon_order_no=%s WHERE id=%s",
+                     (f"111-000000{i}-000000{i}", tid))
+    conn.commit()
+
+    row = client.get("/v1/admin/instances").json()["data"]["items"][0]
+    assert row["purchased_today"] == 2
+    assert row["at_daily_cap"] is True
+    assert row["dispatchable"] is False, "拍满了日上限还说可派"
+    assert row["liveness"] == "online", "到上限不等于离线 —— 两件事,界面上要分开说"
+
+
+def test_daily_cap_zero_still_means_unlimited(client, conn, seed):
+    """0 是「不限」,不是「一单都不许拍」。"""
+    env, inst, tasks = seed
+    conn.execute("UPDATE procure.buyer_envs SET daily_cap = 0 WHERE id = %s", (env,))
+    conn.execute("UPDATE procure.plugin_instances SET last_seen_at = now() WHERE id = %s",
+                 (inst,))
+    conn.execute("UPDATE procure.tasks SET status='purchased', purchased_at=now(),"
+                 " amazon_order_no='111-0000009-0000009' WHERE id=%s", (tasks[0],))
+    conn.commit()
+
+    row = client.get("/v1/admin/instances").json()["data"]["items"][0]
+    assert row["at_daily_cap"] is False and row["dispatchable"] is True
+
+
+def test_cannot_edit_a_task_while_the_plugin_is_buying_it(client, conn, seed):
+    """claimed 的单不许改 —— 插件此刻正拿着旧快照在亚马逊上下单。
+
+    这时候改 ASIN,插件买的还是旧的那个,回填时断言不符:一张真花了钱的订单
+    挂不到任何任务上,成了孤儿单;而任务停在待人工,界面还会热情地建议
+    「强制回填」或者「重置回队列」—— 后者就是再买一遍。
+    """
+    _env, inst, tasks = seed
+    conn.execute("UPDATE procure.tasks SET status='claimed', claimed_by=%s, claimed_at=now()"
+                 " WHERE id=%s", (inst, tasks[0]))
+    conn.commit()
+
+    r = client.post(f"/v1/admin/tasks/{tasks[0]}/address", json={"ship_city": "Irvine"})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "BAD_STATUS"
+    assert "插件" in r.json()["error"]["message"], "拒绝的理由要说人话,不能只甩一个状态名"
+
+    r = client.post(f"/v1/admin/tasks/{tasks[0]}/asin",
+                    json={"old_asin": "B0FB3VS68J", "new_asin": "B0NEWASIN1"})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "BAD_STATUS"
+
+    assert conn.execute("SELECT ship_city FROM procure.tasks WHERE id=%s",
+                        (tasks[0],)).fetchone()["ship_city"] == "Santa Ana"
+
+
+def test_needs_ack_keys_on_the_error_code_not_the_status(client, conn, seed):
+    """「要不要人先去看一眼」不能由插件的一个布尔说了算。
+
+    原先条件是 `status == "manual" and error_code in POSSIBLY_ORDERED`,
+    而状态是插件在 /fail 里用自己算的 to_manual 定的。插件漏判一次,
+    同一个 ORDER_CONFIRM_TIMEOUT 就落成 exception —— 这道闸整个绕过去,
+    而运营台上那条紫色警告照样在喊「可能已经下单」,**喊完了静默重置**。
+    """
+    _env, _inst, tasks = seed
+    # 码是「可能已下单」,状态却是 exception(插件没把 to_manual 置上)
+    _set(conn, tasks[0], status="exception", error_code="ORDER_CONFIRM_TIMEOUT")
+    conn.commit()
+
+    r = client.post(f"/v1/admin/tasks/{tasks[0]}/reset", json={"acknowledged": False})
+    assert r.status_code == 409 and r.json()["error"]["code"] == "NEEDS_ACK"
+    assert conn.execute("SELECT status FROM procure.tasks WHERE id=%s",
+                        (tasks[0],)).fetchone()["status"] == "exception"
+
+    r = client.post(f"/v1/admin/tasks/{tasks[0]}/reset", json={"acknowledged": True})
+    assert r.status_code == 200
+
+
+def test_summary_follows_the_asin_filter_like_the_list_does(client, conn, seed):
+    """漏掉 asin 正好戳中这个接口存在的理由。
+
+    填了 ASIN 之后,桶上写「待拍单 12」、点进去只有 3 条 —— 运营会以为界面丢了单。
+    """
+    _env, _inst, tasks = seed
+    conn.execute("UPDATE procure.task_products SET asin='B0ONLYONE1' WHERE task_id=%s",
+                 (tasks[0],))
+    conn.commit()
+
+    scoped = client.get("/v1/admin/summary", params={"asin": "B0ONLYONE1"}).json()["data"]
+    listed = client.post("/v1/admin/tasks/search",
+                         json={"status": "ready", "asin": "B0ONLYONE1"}).json()["data"]
+    assert scoped["by_status"]["ready"] == 1
+    assert listed["total"] == scoped["by_status"]["ready"], "桶上的数字和点进去的条数要对得上"
+
+
+def test_missing_order_numbers_is_not_poisoned_by_the_asin_filter(client, conn, seed):
+    """一个明明在库里、只是不含这个 ASIN 的号,不能被列进「查不到」。
+
+    这个字段存在的全部意义是「别让运营以为都查到了」。报一个其实存在的号
+    「查不到」,会把人支去上游翻一张好好的单 —— 比不报还费时间。
+    """
+    _env, _inst, _tasks = seed
+    data = client.post("/v1/admin/tasks/search",
+                       json={"order_numbers": ["UP-0", "UP-NOPE"],
+                             "asin": "B0NOTHERE1"}).json()["data"]
+    assert data["total"] == 0                       # ASIN 确实筛掉了所有行
+    assert data["missing_order_numbers"] == ["UP-NOPE"], \
+        f"UP-0 在库里,不该被报成查不到:{data['missing_order_numbers']}"
+
+
+def test_release_records_who_released_it(client, conn, seed):
+    """放行也要留下操作人。
+
+    原先这条路由压根不收请求体,于是「操作人」审计在放行这一个动作上永远是 null ——
+    前端每次都把名字送过来了,服务端把它丢在门口。
+    一份有一格永远空着的审计,比没有审计更容易让人误判(「哦这条没人操作过」)。
+    """
+    _env, _inst, tasks = seed
+    _set(conn, tasks[0], status="pending")
+    conn.commit()
+
+    client.post(f"/v1/admin/tasks/{tasks[0]}/release", json={"operator": "小李"})
+    row = conn.execute(
+        "SELECT payload FROM procure.task_events WHERE task_id=%s AND kind='admin'"
+        " ORDER BY id DESC LIMIT 1", (tasks[0],)).fetchone()
+    assert row["payload"]["operator"] == "小李"
+
+
+def test_release_still_works_without_a_body(client, conn, seed):
+    """没带请求体也要能放行 —— 别为了加一个可选字段把原来的调用方打死。"""
+    _env, _inst, tasks = seed
+    _set(conn, tasks[0], status="pending")
+    conn.commit()
+    assert client.post(f"/v1/admin/tasks/{tasks[0]}/release").status_code == 200
+
+
+def test_force_backfill_refuses_an_order_number_with_stray_whitespace(client, conn, seed):
+    """首尾一个空格就能绕开唯一索引 —— 而这个动作跳过的正是拦这种事的那道断言。
+
+    `" 111-…"` 与 `"111-…"` 在库里是两个不同的值,同一张亚马逊订单于是能被钉到
+    两条任务上,后面对账、物流、退款全跟着错。
+    """
+    _env, _inst, tasks = seed
+    _set(conn, tasks[0], status="manual", error_code="ORDER_NO_AMBIGUOUS")
+    _set(conn, tasks[1], status="manual", error_code="ORDER_NO_AMBIGUOUS")
+    conn.commit()
+
+    ok = client.post(f"/v1/admin/tasks/{tasks[0]}/force-backfill",
+                     json={"amazon_order_no": "  111-4820193-7736441  ", "note": "人工核过"})
+    assert ok.status_code == 200, "首尾空白应该被去掉而不是拒绝"
+
+    # 同一张订单换个空格再钉到另一条任务上,必须被唯一索引拦住
+    dup = client.post(f"/v1/admin/tasks/{tasks[1]}/force-backfill",
+                      json={"amazon_order_no": " 111-4820193-7736441", "note": "再来一次"})
+    assert dup.status_code != 200, "同一张订单被钉到了两条任务上"
+
+
+def test_force_backfill_refuses_a_malformed_order_number(client, conn, seed):
+    _env, _inst, tasks = seed
+    _set(conn, tasks[0], status="manual", error_code="ORDER_NO_AMBIGUOUS")
+    conn.commit()
+    for bad in ("111-123-456", "not-an-order", "1114820193 7736441", ""):
+        r = client.post(f"/v1/admin/tasks/{tasks[0]}/force-backfill",
+                        json={"amazon_order_no": bad, "note": "试试"})
+        assert r.status_code == 422, f"{bad!r} 被放过去了"
+
+
+def test_address_cannot_be_blanked_out(client, conn, seed):
+    """收货六项在库里都是 NOT NULL 的必填项,空串写进去等于把地址弄残 ——
+    而包裹要照着它寄。前端挡的那道是便利,不是保证:curl 一下就绕过去了。"""
+    _env, _inst, tasks = seed
+    conn.commit()
+    for blank in ("", "   "):
+        r = client.post(f"/v1/admin/tasks/{tasks[0]}/address", json={"ship_city": blank})
+        assert r.status_code == 422, f"{blank!r} 被写进去了"
+    assert conn.execute("SELECT ship_city FROM procure.tasks WHERE id=%s",
+                        (tasks[0],)).fetchone()["ship_city"] == "Santa Ana"
+
+    # 正常改动照样通过,首尾空白去掉
+    r = client.post(f"/v1/admin/tasks/{tasks[0]}/address", json={"ship_city": "  Irvine  "})
+    assert r.status_code == 200
+    assert conn.execute("SELECT ship_city FROM procure.tasks WHERE id=%s",
+                        (tasks[0],)).fetchone()["ship_city"] == "Irvine"

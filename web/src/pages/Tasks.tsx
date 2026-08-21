@@ -5,7 +5,7 @@
  * 买家号、批量单号、ASIN。
  */
 
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { Download, List, RotateCcw } from "lucide-react";
 import { TaskTable, type Density } from "@/components/TaskTable";
 import { TaskDetailModal } from "@/components/TaskDetail";
@@ -64,8 +64,11 @@ const Fld = ({ on, children, ...p }: React.ButtonHTMLAttributes<HTMLButtonElemen
   )}>{children}</button>
 );
 
-export default function TasksPage({ summary, onMutate }: {
-  summary: Summary | null; onMutate: () => void;
+export default function TasksPage({ summary, onMutate, onSummary }: {
+  summary: Summary | null;
+  onMutate: () => void;
+  /** 把顺手取到的全局计数递给外壳,免得顶栏停在进页面那一刻的数值不动。 */
+  onSummary: (s: Summary) => void;
 }) {
   const meta = useMeta();
 
@@ -108,9 +111,16 @@ export default function TasksPage({ summary, onMutate }: {
     asin: asin.trim() || null,
   });
 
+  /** 请求序号。ASIN 输入框每敲一个字符就发一次查询,慢的那次可能后回来 ——
+   *  无条件 `setOut` 会让表格显示上一次筛选的结果,而筛选条上写的是新条件。
+   *  这种「界面和条件对不上」最难被当成 bug 报:看起来只是查错了。 */
+  const seq = useRef(0);
+
   const load = useCallback(async () => {
+    const mine = ++seq.current;
     setLoading(true);
     const r = await api.searchTasks({ ...query(), page, page_size: 50 });
+    if (mine !== seq.current) return;          // 已经有更新的一次发出去了,这次的结果作废
     setLoading(false);
     if (r.ok) { setOut(r.data); setErr(null); }
     // 「查不到」和「服务挂了」在界面上是两句话。混成一句会让人跑去上游翻一张其实好好的单。
@@ -122,9 +132,19 @@ export default function TasksPage({ summary, onMutate }: {
   // 状态桶上的数字要跟着其它筛选走,否则点进去数量对不上,像是界面丢了单。
   useEffect(() => {
     if (batchOn) return;   // 批量单号盖过状态桶,那时整排藏起来
-    void api.summary({ env_code: envCode, date_field: dateField, ...dates })
-      .then((r) => { if (r.ok) setScoped(r.data); });
-  }, [envCode, dateField, dates, batchOn, out]);
+    let alive = true;
+    // 无筛选的那一份是给顶栏用的(全局,不跟筛选走);带筛选的那份给状态桶。
+    void api.summary({}).then((r) => { if (alive && r.ok) onSummary(r.data); });
+    void api.summary({ env_code: envCode, date_field: dateField, asin: asin.trim() || null,
+                       ...dates })
+      .then((r) => {
+        if (!alive) return;
+        // 失败就清空,**不留着上一套条件的数字**。留着的话桶上写「拍单异常 12」、
+        // 点进去 3 条,而那 12 是三个筛选条之前的事 —— 界面在用一个陈旧的数字撒谎。
+        setScoped(r.ok ? r.data : null);
+      });
+    return () => { alive = false; };
+  }, [envCode, dateField, dates, asin, batchOn, out]);
 
   useEffect(() => { setPage(1); }, [status, envCode, dateField, range, asin, batchOn]);
   useEffect(() => { setCursor(0); }, [out]);
@@ -143,7 +163,14 @@ export default function TasksPage({ summary, onMutate }: {
       if (!n) return;
       if (e.key === "j" || e.key === "ArrowDown") { e.preventDefault(); setCursor((c) => Math.min(c + 1, n - 1)); }
       else if (e.key === "k" || e.key === "ArrowUp") { e.preventDefault(); setCursor((c) => Math.max(c - 1, 0)); }
-      else if (e.key === "Enter") { e.preventDefault(); setSelected(out!.items[cursor].id); }
+      else if (e.key === "Enter") {
+        e.preventDefault();
+        // 下标要校验。把 cursor 归零的 effect 和注册监听的 effect 是两个,
+        // 新结果到达那一帧监听器先带着旧 cursor 挂上 —— 旧 cursor 越界的话,
+        // `out.items[cursor].id` 直接抛,整个控制台白屏。
+        const row = out?.items[cursor];
+        if (row) setSelected(row.id);
+      }
     };
     window.addEventListener("keydown", on);
     return () => window.removeEventListener("keydown", on);

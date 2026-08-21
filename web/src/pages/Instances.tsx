@@ -38,14 +38,16 @@ export default function InstancesPage() {
     return () => { alive = false; window.clearInterval(id); };
   }, []);
 
-  const online = rows?.filter((r) => r.liveness === "online").length ?? 0;
+  // 还没回来 / 首次就失败时 rows 是 null。硬写 0 的话,「在线 0」跟
+  // 「真的一台都没在线」长得一模一样 —— 而这两件事的处置完全不同。
+  const online = rows ? rows.filter((r) => r.liveness === "online").length : null;
 
   return (
     <>
       <div className="h-12 shrink-0 bg-white border-b border-zinc-100 flex items-center gap-3 px-4">
         <span className="text-[13px] font-medium">买家号</span>
         <span className="text-xs text-zinc-500">
-          在线 <span className="num text-zinc-900">{online}</span> / {rows?.length ?? "—"}
+          在线 <span className="num text-zinc-900">{online ?? "—"}</span> / {rows?.length ?? "—"}
         </span>
         <span className="ml-auto text-xs text-zinc-400">
           超过 {stale || "—"} 秒没心跳算失联 · 每 10 秒刷新
@@ -108,18 +110,27 @@ export default function InstancesPage() {
                     </td>
                     <td className="px-3"><Tag tone={L.tone}>{L.label}</Tag></td>
                     <td className="px-3 text-xs">
+                      {/* 「已到日上限」这一支以前永远走不到 ——
+                          服务端的 dispatchable 只看在线,不看 daily_cap,与真正
+                          那道闸(task_queue.CLAIM_SQL)分叉着。现在两边算同一件事了。 */}
                       {r.dispatchable
                         ? <span className="text-emerald-700">可派</span>
-                        : <span className="text-zinc-400">
+                        : <span className={r.at_daily_cap ? "text-amber-700" : "text-zinc-400"}>
                             {r.liveness === "paused" ? "已暂停"
-                             : r.liveness === "online" ? "已到日上限" : "没有心跳"}
+                             : r.at_daily_cap ? "已到日上限"
+                             : r.liveness === "online" ? "在线但不可派" : "没有心跳"}
                           </span>}
                     </td>
                   </tr>
                 );
               })}
+              {rows === null && (
+                <tr><td colSpan={12} className="h-20 text-center text-xs text-zinc-400">
+                  {err ? "读不到买家号列表" : "读取中…"}
+                </td></tr>
+              )}
               {rows?.length === 0 && (
-                <tr><td colSpan={11} className="h-20 text-center text-xs text-zinc-400">
+                <tr><td colSpan={12} className="h-20 text-center text-xs text-zinc-400">
                   还没有买家号 —— 先在库里建 procure.buyer_envs,再让插件连上来
                 </td></tr>
               )}

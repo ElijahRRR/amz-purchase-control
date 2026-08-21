@@ -54,10 +54,20 @@ export default function ErrorsPage() {
     const to = new Date();
     const from = new Date();
     from.setDate(from.getDate() - (days - 1));
+    let alive = true;
+    setData(null);       // 换了时间范围就先清空,别拿旧窗口的数据顶着新窗口的坐标轴
     void api.errorStats({ date_from: ymd(from), date_to: ymd(to) }).then((r) => {
+      if (!alive) return;
       if (r.ok) { setData(r.data); setErr(null); }
-      else setErr(r.kind === "transport" ? `连不上服务端:${r.message}` : `${r.code} · ${r.message}`);
+      else {
+        // 失败也要清空。留着旧数据的话:x 轴已经按新的 days 铺满并预置 0,
+        // 只有旧窗口那几天被覆盖上真值 —— **其余那些 0 是编出来的**,
+        // 而一张画着 0 的折线图看起来跟「那几天确实一件没出」一模一样。
+        setData(null);
+        setErr(r.kind === "transport" ? `连不上服务端:${r.message}` : `${r.code} · ${r.message}`);
+      }
     });
+    return () => { alive = false; };
   }, [days]);
 
   // 顺序有讲究:possibly_ordered 是 to_manual 的子集,必须先判,
@@ -114,7 +124,7 @@ export default function ErrorsPage() {
       <div className="h-12 shrink-0 bg-white border-b border-zinc-100 flex items-center gap-3 px-4">
         <span className="text-[13px] font-medium">错误码分布</span>
         <span className="text-xs text-zinc-500">
-          共 <span className="num text-zinc-900">{data?.total ?? "—"}</span> 条带码的任务
+          共 <span className="num text-zinc-900">{data?.total ?? "—"}</span> 次失败
         </span>
         <span className="ml-auto" />
         {[7, 14, 30].map((d) => (

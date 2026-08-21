@@ -111,6 +111,15 @@ def list_with_liveness(conn, *, stale_seconds: int) -> list[dict]:
             row["last_seen_age_seconds"] = age
             liveness = "online" if age <= stale_seconds else "stale"
         row["liveness"] = liveness
-        row["dispatchable"] = liveness == "online"
+        # 「可派单」必须跟真正那道闸算同一件事。
+        #
+        # 真正的闸在 task_queue.CLAIM_SQL 里:`status='ready'` 且
+        # `daily_cap = 0 OR done_today < daily_cap`。原先这里只看在线,
+        # 于是拍满当天配额的买家号在界面上仍然是绿色「可派」——
+        # 运营看着一台「可派」的机器一整天不动,只能去猜是不是插件坏了。
+        # 而运营台自己还渲染着一个「已到日上限」的分支,那个分支永远走不到。
+        capped = bool(row["daily_cap"]) and row["purchased_today"] >= row["daily_cap"]
+        row["at_daily_cap"] = capped
+        row["dispatchable"] = liveness == "online" and not capped
         out.append(row)
     return out
