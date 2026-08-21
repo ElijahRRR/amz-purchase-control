@@ -124,7 +124,7 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
               <td class="td num">14</td>
               <td class="td num">41</td>
               <td class="td num" style="color:#6d28d9;font-weight:600">2</td>
-              <td class="td"><span style="font-size:12px;color:#71717a">08:56 · <span class="tag mono" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">CLAIM_TIMEOUT</span></span></td>
+              <td class="td"><span style="font-size:12px;color:#71717a">08:56 · <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">认领超时未回传</span><span class="id" style="font-size:10px;color:#a1a1aa">CLAIM_TIMEOUT</span></span></span></td>
             </tr>
 
             <tr class="rz">
@@ -222,10 +222,10 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
           <header class="chead"><h2 class="ctitle">领走 15 分钟没回传</h2></header>
           <div style="padding:12px 16px;display:flex;flex-direction:column;gap:9px;font-size:12.5px;color:#52525b;line-height:1.65">
             <div style="display:flex;align-items:center;gap:7px">
-              <span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">claimed</span>
+              <span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">拍单中</span>
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#a1a1aa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
-              <span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">manual</span>
-              <span style="margin-left:auto;font-size:11px;color:#a1a1aa">不是 ready</span>
+              <span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">待人工</span>
+              <span style="margin-left:auto;font-size:11px;color:#a1a1aa">不是待拍单</span>
             </div>
             <div>超时的单<span style="color:#18181b">不退回队列</span>。插件那一侧可能已经在亚马逊上真下了单,自动重试就是照着重复下一遍。</div>
             <div>所以它去 manual:先有人去买家号里看一眼到底下没下成,再决定是补回单号还是放回队列。</div>

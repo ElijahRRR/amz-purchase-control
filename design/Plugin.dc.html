@@ -180,7 +180,7 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
             <div style="margin:8px 14px 0;border:1px solid #ddd6fe;background:#f5f3ff;border-radius:6px;padding:11px 12px;display:flex;flex-direction:column;gap:7px">
               <div style="display:flex;align-items:center;gap:6px">
                 <span class="dot" style="background:#8b5cf6"></span>
-                <span class="tag mono" style="background:#fff;color:#6d28d9;border-color:#ddd6fe">PRICE_CAP_EXCEEDED</span>
+                <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fff;color:#6d28d9;border-color:#ddd6fe">实付超限价</span><span class="id" style="font-size:10px;color:#a1a1aa">PRICE_CAP_EXCEEDED</span></span>
               </div>
               <div style="font-size:12px;color:#52525b;line-height:1.6">结算页实付 <span class="id" style="color:#b91c1c;font-weight:600">31.80</span> 高于上游限价 <span class="id" style="color:#3f3f46">24.00</span>。已在下单前停住,购物车已清空,<span style="color:#3f3f46">没有产生任何订单</span>。</div>
               <div style="font-size:12px;color:#52525b;line-height:1.6">这不是可重试的失败:同样的价再跑一遍还是这个结果。任务带错误码回服务端转人工。</div>
@@ -258,7 +258,7 @@ class Component extends DCLogic {
         sec: ["btn sm bghost","color:#a1a1aa","暂停接单"], act: ["btn sm bs","","","手动拉一次"]
       },
       claimed: {
-        label: "已认领", tag: "claimed", tagCls: "tag tagdash", tagStyle: "background:#fff;color:#b45309;border-color:#fde68a",
+        label: "已认领", tag: "拍单中", tagCls: "tag tagdash", tagStyle: "background:#fff;color:#b45309;border-color:#fde68a",
         note: "领到 1 单,尚未动页面", heartbeat: "认领 4s 前",
         url: "amazon.com/dp/B0FB3VS68J",
         pagePrice: "$10.79", paid: "—", cut: 0, mark: null,
@@ -267,7 +267,7 @@ class Component extends DCLogic {
         sec: ["btn sm bs","","退回队列"], act: ["btn sm bp","","","开始执行"]
       },
       running: {
-        label: "执行中", tag: "claimed", tagCls: "tag tagdash", tagStyle: "background:#fff;color:#b45309;border-color:#fde68a",
+        label: "执行中", tag: "拍单中", tagCls: "tag tagdash", tagStyle: "background:#fff;color:#b45309;border-color:#fde68a",
         note: "第 4 步 · 读结算页", heartbeat: "上报 2s 前",
         url: "amazon.com/gp/buy/spc/handlers/display.html",
         pagePrice: "$10.79", paid: "读取中", cut: 3, mark: "cur",
@@ -278,7 +278,7 @@ class Component extends DCLogic {
         sec: ["btn sm bs","","中止并清车"], act: ["btn sm bghost","color:#a1a1aa","","执行中…"]
       },
       confirm: {
-        label: "下单确认", tag: "claimed", tagCls: "tag tagdash", tagStyle: "background:#fff;color:#b45309;border-color:#fde68a",
+        label: "下单确认", tag: "拍单中", tagCls: "tag tagdash", tagStyle: "background:#fff;color:#b45309;border-color:#fde68a",
         note: "护栏已放行,等人按下单", heartbeat: "停留 12s",
         url: "amazon.com/gp/buy/spc/handlers/display.html",
         pagePrice: "$10.79", paid: "10.79", cut: 5, mark: "cur",
@@ -288,25 +288,25 @@ class Component extends DCLogic {
         sec: ["btn sm bs","","取消并清车"], act: ["btn sm bdanger","","⚡ ","确认下单 $10.79"]
       },
       blocked: {
-        label: "护栏拦截", tag: "manual", tagCls: "tag", tagStyle: "background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe",
+        label: "护栏拦截", tag: "待人工", tagCls: "tag", tagStyle: "background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe",
         note: "已停在下单前,车已清空", heartbeat: "上报 1s 前",
         url: "amazon.com/gp/buy/spc/handlers/display.html",
         pagePrice: "$31.80", paid: "31.80", cut: 4, mark: "block",
         logs: [["09:04:49","结算页实付 31.80 · 交期 08-29","dim"],
                ["09:04:52","护栏:31.80 > 限价 24.00 → 拦截","err"],
                ["09:04:55","清空购物车 · 剩余 0 件","dim"],
-               ["09:04:55","上报 PRICE_CAP_EXCEEDED · 任务转 manual","warn"]],
+               ["09:04:55","上报 PRICE_CAP_EXCEEDED · 任务转待人工","warn"]],
         sec: ["btn sm bghost","color:#a1a1aa","已上报"], act: ["btn sm bs","","","拉下一单"]
       },
       done: {
-        label: "已完成", tag: "purchased", tagCls: "tag", tagStyle: "background:#ecfdf5;color:#047857;border-color:#a7f3d0",
+        label: "已完成", tag: "已拍单", tagCls: "tag", tagStyle: "background:#ecfdf5;color:#047857;border-color:#a7f3d0",
         note: "单号已回填", heartbeat: "完成 8s 前",
         url: "amazon.com/gp/buy/thankyou.html",
         pagePrice: "$10.79", paid: "10.79", cut: 7, mark: null,
         logs: [["09:12:44","下单 · thankyou 页出现","ok"],
                ["09:12:52","读订单历史第一张卡:111-4820193-7736514","dim"],
                ["09:12:52","卡上 ASIN = B0FB3VS68J,与任务一致 → 允许回填","ok"],
-               ["09:12:53","回传服务端 200 · 任务 purchased","ok"]],
+               ["09:12:53","回传服务端 200 · 任务转已拍单","ok"]],
         sec: ["btn sm bs","","查看订单"], act: ["btn sm bp","","","拉下一单"]
       }
     };

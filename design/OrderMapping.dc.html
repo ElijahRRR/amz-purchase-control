@@ -130,7 +130,7 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
       <div class="mgrp">物流信息 <span class="sub">来自 updateTrackingInfo(§5.2,20 字段)</span></div>
       <div class="mrow"><span class="msrc">platformTrackCarrier</span><span class="mar">→</span><span class="mdst"><span class="f">shipments.carrier</span> <span class="n">· 他们这个值是页面文本 split(" ")[2] 盲取第 3 个词,截图里就是 --</span></span></div>
       <div class="mrow"><span class="msrc">platformTrackNo</span><span class="mar">→</span><span class="mdst"><span class="f">shipments.tracking_no</span></span></div>
-      <div class="mrow"><span class="msrc">orderStatus</span><span class="mar">→</span><span class="mdst"><span class="f">shipments.status</span> <span class="n">· not_shipped / in_transit / delivered / cancelled</span></span></div>
+      <div class="mrow"><span class="msrc">orderStatus</span><span class="mar">→</span><span class="mdst"><span class="f">shipments.status</span> <span class="n">· 未发货 / 运输中 / 已签收 / 已取消(库值 not_shipped / in_transit / delivered / cancelled)。他们的「未同步 (0)」在我们这儿不是枚举值,是这行还不存在</span></span></div>
       <div class="mrow"><span class="msrc">deliveryTime</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.delivery_date</span></span></div>
       <div class="mrow"><span class="msrc">origDeliveryTime</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.delivery_raw</span> <span class="n">· Amazon 原文,解析失败时的唯一线索,必须留着</span></span></div>
       <div class="mrow"><span class="msrc">events[]</span><span class="mar">→</span><span class="mdst"><span class="f">logistics.shipment_events</span> <span class="n">· day / time / 描述 / city / state,seq 0 最新</span></span></div>
@@ -144,7 +144,7 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
       <div class="mrow"><span class="msrc">同步时间</span><span class="mar">→</span><span class="mdst"><span class="xtag">没这概念</span>那是「等插件回传」的等待态 <span class="n">· 我们用 plugin_instances.last_seen_at + task_events</span></span></div>
 
       <div class="mgrp">其他信息</div>
-      <div class="mrow"><span class="msrc">status</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.status</span> <span class="n">· 他们 4 个(待审核/待拍单/已拍单/拍单异常),我们 7 个,多出 claimed 与 manual</span></span></div>
+      <div class="mrow"><span class="msrc">status</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.status</span> <span class="n">· 他们 4 个,我们 7 个。界面上沿用他们的说法(待拍单 / 已拍单 / 拍单异常),多出的两个自己起名:<span style="color:#3f3f46">拍单中</span>、<span style="color:#3f3f46">待人工</span>。英文只在库和 API 里,界面不出现 —— 完整对照见设计系统板</span></span></div>
       <div class="mrow"><span class="msrc">failContent</span><span class="mar">→</span><span class="mdst"><span class="ntag">换了做法</span><span class="f">error_code</span> + <span class="f">error_detail</span> + <span class="f">task_events</span> 全流 <span class="n">· 一个自由文本字段换成 18 个封闭错误码加只追加的事件流</span></span></div>
       <div class="mrow"><span class="msrc">createTime</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.created_at</span></span></div>
       <div class="mrow"><span class="msrc">purchaseTime</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.purchased_at</span></span></div>

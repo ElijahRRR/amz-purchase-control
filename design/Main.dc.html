@@ -104,12 +104,12 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
 
     <div style="height:48px;flex:none;background:#fff;border-bottom:1px solid #f4f4f5;display:flex;align-items:center;gap:12px;padding:0 16px">
       <span style="font-size:13px;font-weight:500">任务队列</span>
-      <span class="pill" style="color:#71717a;font-size:12px">今日已下单 <span class="num" style="color:#18181b;font-size:12.5px">128</span></span>
+      <span class="pill" style="color:#71717a;font-size:12px">今日已拍单 <span class="num" style="color:#18181b;font-size:12.5px">128</span></span>
       <span class="pill" style="color:#71717a;font-size:12px">队列待拍 <span class="num" style="color:#18181b;font-size:12.5px">41</span></span>
       <span style="margin-left:auto"></span>
       <span class="btn sm bs">导出 CSV</span>
       <span class="btn sm bs">批量更新发货状态</span>
-      <span class="btn sm bp">批量重置回队列</span>
+      <span class="btn sm bp">批量重置回待拍单</span>
     </div>
 
     <div style="flex:none;background:#fff;border-bottom:1px solid #e4e4e7;display:flex;flex-direction:column">
@@ -289,7 +289,10 @@ UP-20836
                 <td class="td">
                   <div style="display:flex;flex-direction:column;gap:4px">
                     <span><span class="{{r.tagCls}}" style="{{r.tagStyle}}">{{r.status}}</span></span>
-                    <span><span class="{{r.codeCls}}" style="{{r.codeStyle}}">{{r.code}}</span></span>
+                    <span style="display:flex;align-items:center;gap:5px;min-width:0">
+                      <span class="{{r.codeCls}}" style="{{r.codeStyle}}">{{r.code}}</span>
+                      <span class="id" style="font-size:10px;color:#a1a1aa">{{r.codeMono}}</span>
+                    </span>
                     <span class="dl"><span class="dk">创建</span><span class="id" style="font-size:11.5px;color:#71717a">{{r.createdAt}}</span></span>
                     <span class="dl"><span class="dk">采购</span><span class="id" style="font-size:11.5px;color:#71717a">{{r.purchasedAt}}</span></span>
                   </div>
@@ -332,7 +335,10 @@ UP-20836
                 <td class="td num">{{r.cap}}</td>
                 <td class="td num" style="{{r.paidStyle}}">{{r.paid}}</td>
                 <td class="td"><span class="{{r.tagCls}}" style="{{r.tagStyle}}">{{r.status}}</span></td>
-                <td class="td"><span class="{{r.noteCls}}" style="{{r.noteStyle}}">{{r.note}}</span></td>
+                <td class="td">
+                  <span class="{{r.noteCls}}" style="{{r.noteStyle}}">{{r.noteMain}}</span>
+                  <span class="id" style="font-size:10.5px;color:#a1a1aa;margin-left:6px">{{r.noteSub}}</span>
+                </td>
                 <td class="td id" style="font-size:11.5px;color:#71717a">{{r.timeText}}</td>
               </tr>
             </sc-for>
@@ -454,8 +460,8 @@ UP-20836
 
         <div class="cell" style="border-right:none">
           <div class="gt">执行信息</div>
-          <div class="kv"><span class="kvk">状态</span><span class="kvv"><span class="{{sel.tagCls}}" style="{{sel.tagStyle}}">{{sel.status}}</span></span></div>
-          <div class="kv"><span class="kvk">错误码</span><span class="kvv"><span class="{{sel.codeCls}}" style="{{sel.codeStyle}}">{{sel.code}}</span></span></div>
+          <div class="kv"><span class="kvk">状态</span><span class="kvv"><span class="{{sel.tagCls}}" style="{{sel.tagStyle}}">{{sel.status}}</span> <span class="id" style="font-size:11px;color:#a1a1aa">{{sel.statusEnum}}</span></span></div>
+          <div class="kv"><span class="kvk">错误码</span><span class="kvv"><span class="{{sel.codeCls}}" style="{{sel.codeStyle}}">{{sel.code}}</span> <span class="id" style="font-size:11px;color:#a1a1aa">{{sel.codeMono}}</span></span></div>
           <div class="kv"><span class="kvk">创建时间</span><span class="kvv id" style="font-size:12px">{{sel.createdAt}}</span></div>
           <div class="kv"><span class="kvk">采购时间</span><span class="kvv id" style="font-size:12px">{{sel.purchasedAt}}</span></div>
           <div style="font-size:11.5px;color:#a1a1aa;line-height:1.55">没有「创建者」—— 单子由上游下发,不是人在这里建的</div>
@@ -495,7 +501,7 @@ UP-20836
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>
           <div style="font-size:12.5px;color:#52525b;line-height:1.6;flex:1">
             要写进库的是:把 <span class="id" style="color:#3f3f46">{{sel.upstream}}</span> 的 AMZ 单号钉成人工填的值,状态改成
-            <span class="tag" style="background:#ecfdf5;color:#047857;border-color:#a7f3d0">purchased</span>,并跳过 ASIN 断言 ——
+            <span class="tag" style="background:#ecfdf5;color:#047857;border-color:#a7f3d0">已拍单</span>,并跳过 ASIN 断言 ——
             断言正是当初把它挡在这儿的那道闸。写完不可撤销。
           </div>
           <span class="btn sm bs" onClick="{{cancelConfirm}}">再想想</span>
@@ -557,7 +563,7 @@ class Component extends DCLogic {
         assert:"na", amz:"—",
         notBoughtWhy:"结算页读到实付 31.80,高于限价 24.00。护栏在下单前停住,购物车已清空 —— 没有订单,也就没有费用明细。",
         blockDetail:"这不是可重试的失败:同样的价再跑一遍还是这个结果。要么等降价,要么让上游改限价,要么放弃这一单。厂商面板的 priceCheck 字段前端 0 处引用 —— 护栏字段存在、界面不用,等于没有。",
-        act:"primary", actLabel:"重置回队列",
+        act:"primary", actLabel:"重置回待拍单",
         events:[["claimed","认领 · env-172","09:04:11"],["step","加购","09:04:29"],["block","PRICE_CAP_EXCEEDED","09:04:52"],
                 ["step","清空购物车","09:04:55"],["err","转人工","09:04:55"]] },
 
@@ -566,7 +572,7 @@ class Component extends DCLogic {
         shipName:"Rivera Ana", shipPhone:"+1 760-***-9930", shipLine1:"704 W 5th Ave", shipCityState:"Escondido, CA", shipZip:"92025",
         assert:"na", amz:"—",
         notBoughtWhy:"领走 15 分钟没有任何回传。不退回队列 —— 插件那侧可能已经真下了单,自动重试就是照着重复下一遍。",
-        blockDetail:"先去买家号里翻一眼有没有这一单:有就强制回填单号,没有再重置回队列。这是整套设计里唯一一处宁可卡住也不自动往前走的地方。",
+        blockDetail:"先去买家号里翻一眼有没有这一单:有就强制回填单号,没有再重置回待拍单。这是整套设计里唯一一处宁可卡住也不自动往前走的地方。",
         act:"danger", actLabel:"强制回填单号",
         events:[["claimed","认领 · env-183","08:41:20"],["step","清空购物车","08:41:24"],["step","加购","08:41:39"],
                 ["dim","(此后无回传)","—"],["err","CLAIM_TIMEOUT · 转人工","08:56:20"]] },
@@ -575,14 +581,14 @@ class Component extends DCLogic {
         paid:"—", status:"exception", code:"OUT_OF_STOCK", day:0, createdAt:"08-21 08:22", purchasedAt:"",
         shipName:"Nguyen Minh", shipPhone:"+1 510-***-3388", shipLine1:"88 Grand Ave", shipCityState:"Oakland, CA", shipZip:"94612",
         assert:"na", amz:"—", notBoughtWhy:"商品页显示 Currently unavailable,没有加购。购物车已清空。", blockDetail:"",
-        act:"primary", actLabel:"重置回队列",
+        act:"primary", actLabel:"重置回待拍单",
         events:[["claimed","认领 · env-183","08:22:04"],["step","打开商品页","08:22:09"],["err","OUT_OF_STOCK","08:22:12"],["step","清空购物车","08:22:14"]] },
 
       { upstream:"UP-20830", lineKey:"92bc3e01d5f7…", asin:"B0F8NB1T8Y", qty:1, env:"env-172", cap:"15.00", capDays:"08-28 前",
         paid:"—", status:"exception", code:"NOT_FBA", day:0, createdAt:"08-21 08:15", purchasedAt:"",
         shipName:"Park Jisoo", shipPhone:"+1 305-***-7742", shipLine1:"3300 NE 2nd Ave", shipCityState:"Miami, FL", shipZip:"33137",
         assert:"na", amz:"—", notBoughtWhy:"加购成功,但结算页配送方不是 Amazon 自营。按规则不下单,购物车已清空。", blockDetail:"",
-        act:"primary", actLabel:"重置回队列",
+        act:"primary", actLabel:"重置回待拍单",
         events:[["claimed","认领 · env-172","08:15:41"],["step","加购成功","08:15:58"],["err","NOT_FBA","08:16:22"],["step","清空购物车","08:16:25"]] },
 
       { upstream:"UP-20845", lineKey:"c7481ab0e396…", asin:"B0C1J4KZ2P", qty:1, env:"env-172", cap:"11.20", capDays:"08-28 前",
@@ -633,6 +639,26 @@ class Component extends DCLogic {
     ];
   }
 
+  // 界面上只出现中文。英文是库里的值,只在详情弹窗、设计系统板和 API 里露面。
+  // 词沿用厂商面板的说法(他们那边就是这么叫的),只有他们没有的状态才自己起名。
+  statusLabel(v) {
+    return { pending:"待放行", ready:"待拍单", claimed:"拍单中", purchased:"已拍单",
+             exception:"拍单异常", manual:"待人工", cancelled:"已取消" }[v] || v;
+  }
+
+  codeLabel(v) {
+    return {
+      OUT_OF_STOCK:"商品无货", QTY_UNAVAILABLE:"数量不可选", ADD_TO_CART_FAILED:"加购后未跳转",
+      BUNDLE_PRODUCT:"捆绑商品", NOT_FBA:"非 Amazon 配送", CART_MISMATCH:"购物车与任务不符",
+      ADDRESS_FORM_TIMEOUT:"地址表单超时", ADDRESS_STATE_UNMATCHED:"州匹配失败",
+      ADDRESS_SUGGESTION_BLOCKED:"地址不可投递", PRICE_CAP_EXCEEDED:"实付超限价",
+      DELIVERY_TOO_LATE:"交期超限", DELIVERY_UNPARSEABLE:"交期无法解析",
+      CHECKOUT_TIMEOUT:"结算页超时", ORDER_CONFIRM_TIMEOUT:"未见确认页",
+      ORDER_NO_AMBIGUOUS:"单号对不上", CAPTCHA_ENCOUNTERED:"命中验证码",
+      CLAIM_TIMEOUT:"认领超时未回传", PLUGIN_INTERNAL:"插件内部异常"
+    }[v] || v;
+  }
+
   tagOf(s) {
     const m = {
       pending:   ["tag tagdash","background:#fff;color:#52525b;border-color:#d4d4d8"],
@@ -659,8 +685,8 @@ class Component extends DCLogic {
 
   noteOf(r) {
     if (r.status === "purchased") return ["id","color:#3f3f46"];
-    if (r.status === "manual")    return ["tag mono","background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe"];
-    if (r.status === "exception") return ["tag mono","background:#fef2f2;color:#b91c1c;border-color:#fecaca"];
+    if (r.status === "manual")    return ["tag","background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe"];
+    if (r.status === "exception") return ["tag","background:#fef2f2;color:#b91c1c;border-color:#fecaca"];
     return ["", "font-size:12px;color:#a1a1aa"];
   }
 
@@ -730,12 +756,13 @@ class Component extends DCLogic {
           totalStyle: blocked ? "color:#b91c1c;font-weight:600" : "color:#a1a1aa" };
     const codeStyled = s.code
       ? (s.status === "manual"
-          ? ["tag mono", "background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe"]
-          : ["tag mono", "background:#fef2f2;color:#b91c1c;border-color:#fecaca"])
+          ? ["tag", "background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe"]
+          : ["tag", "background:#fef2f2;color:#b91c1c;border-color:#fecaca"])
       : ["", "color:#a1a1aa;font-size:12px"];
 
     return {
-      upstream: s.upstream, lineKey: s.lineKey, status: s.status, tagCls, tagStyle,
+      upstream: s.upstream, lineKey: s.lineKey,
+      status: this.statusLabel(s.status), statusEnum: s.status, tagCls, tagStyle,
       shipName: s.shipName, shipPhone: s.shipPhone, shipLine1: s.shipLine1,
       shipCityState: s.shipCityState, shipZip: s.shipZip,
       asin: s.asin, qty: s.qty, cap: s.cap,
@@ -749,14 +776,16 @@ class Component extends DCLogic {
       capVerdict: bought ? ("总计 " + s.total + " ≤ 限价 " + s.cap + " · 护栏放行") : "",
       hasShip: !!s.tracking, noShip: !s.tracking,
       carrier: s.carrier || "—", tracking: s.tracking || "—",
-      shipTagCls: s.tracking ? shipTagCls : "",
-      shipTagStyle: s.tracking ? shipTagStyle : "color:#a1a1aa;font-size:12px",
-      shipStatus: s.tracking ? shipLabel : "—",
+      shipTagCls: s.tracking ? shipTagCls : (bought ? "tag tagdash" : ""),
+      shipTagStyle: s.tracking ? shipTagStyle
+                  : (bought ? "background:#fff;color:#71717a;border-color:#e4e4e7" : "color:#a1a1aa;font-size:12px"),
+      shipStatus: s.tracking ? shipLabel : (bought ? "未同步" : "—"),
       deliveryDate: s.deliveryDate || "—", deliveryRaw: s.deliveryRaw, shipWhen: s.shipWhen,
       ...flat,
       env: s.env, customerId: meta.customerId, instance: s.status === "ready" ? "—" : meta.instance,
       last4: s.last4 || "—",
-      code: s.code || "—", codeCls: codeStyled[0], codeStyle: codeStyled[1],
+      code: s.code ? this.codeLabel(s.code) : "—", codeMono: s.code || "",
+      codeCls: codeStyled[0], codeStyle: codeStyled[1],
       showBlock: !!s.blockDetail, blockDetail: s.blockDetail,
       actCls, actStyle, actLabel: s.actLabel,
       actClick: s.act === "danger" ? () => this.setState({ confirm: true }) : () => {}
@@ -776,8 +805,8 @@ class Component extends DCLogic {
       footNote = "批量单号盖过了状态桶与时间范围 · 全库匹配";
     } else {
       shown = st.filter === "all" ? scope : scope.filter(r => r.status === st.filter);
-      const titles = { manual:"待人工 · 每天必须清空的桶", exception:"异常 · 可重置回队列",
-                       claimed:"执行中", ready:"队列待拍", purchased:"已下单", all:"全部任务" };
+      const titles = { manual:"待人工 · 每天必须清空的桶", exception:"拍单异常 · 可重置回待拍单",
+                       claimed:"拍单中", ready:"待拍单", purchased:"已拍单", all:"全部任务" };
       listTitle = titles[st.filter] || "任务";
       const dim = st.dateMode === "created" ? "创建时间" : "采购时间";
       footNote = shown.length + " / " + scope.length + " 条 · 作用域:"
@@ -787,8 +816,8 @@ class Component extends DCLogic {
 
     const counts = { all: scope.length };
     for (const r of scope) counts[r.status] = (counts[r.status] || 0) + 1;
-    const chips = [["manual","待人工"],["exception","异常"],["claimed","执行中"],
-                   ["ready","队列"],["purchased","已下单"],["all","全部"]].map(([k,label]) => {
+    const chips = [["manual","待人工"],["exception","拍单异常"],["claimed","拍单中"],
+                   ["ready","待拍单"],["purchased","已拍单"],["all","全部"]].map(([k,label]) => {
       const on = !st.batchOn && st.filter === k;
       return {
         label, count: counts[k] || 0,
@@ -830,8 +859,9 @@ class Component extends DCLogic {
         ...this.detailOf(r),
         upstream: r.upstream, asin: r.asin, qtyText: "× " + r.qty, env: r.env,
         shipShort: r.shipName + " · " + r.shipCityState,
-        cap: r.cap, paid: r.paid, status: r.status,
-        note: r.status === "purchased" ? r.amz : (r.code || "—"),
+        cap: r.cap, paid: r.paid, status: this.statusLabel(r.status),
+        noteMain: r.status === "purchased" ? r.amz : (r.code ? this.codeLabel(r.code) : "—"),
+        noteSub: r.status === "purchased" ? "" : (r.code || ""),
         tagCls, tagStyle, noteCls, noteStyle,
         timeText: st.dateMode === "created" ? r.createdAt : (r.purchasedAt || "—"),
         paidStyle: r.code === "PRICE_CAP_EXCEEDED" ? "color:#b91c1c;font-weight:600" : "",

@@ -62,52 +62,98 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
 
     <section class="card"><header class="chead"><h2 class="ctitle">任务状态 · 7 个,映射到既有的中间态/终态规则</h2></header>
     <div style="padding:16px;display:flex;flex-direction:column;gap:14px">
-      <div style="display:flex;align-items:center;gap:16px">
-        <span style="font-size:12px;color:#a1a1aa;width:76px;flex:none">中间态(虚线)</span>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <span class="tag tagdash" style="background:#fff;color:#52525b;border-color:#d4d4d8">pending</span>
-          <span class="tag tagdash" style="background:#fff;color:#0369a1;border-color:#bae6fd">ready</span>
-          <span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">claimed</span>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div style="display:flex;align-items:center;gap:10px;font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.05em;color:#a1a1aa">
+          <span style="width:64px;flex:none;text-align:center">界面</span>
+          <span style="width:82px;flex:none">库里的值</span>
+          <span>厂商面板对应</span>
         </div>
-      </div>
-      <div style="display:flex;align-items:center;gap:16px">
-        <span style="font-size:12px;color:#a1a1aa;width:76px;flex:none">终态(实心)</span>
-        <div style="display:flex;gap:8px;flex-wrap:wrap">
-          <span class="tag" style="background:#ecfdf5;color:#047857;border-color:#a7f3d0">purchased</span>
-          <span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">exception</span>
-          <span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">manual</span>
-          <span class="tag" style="background:#f4f4f5;color:#3f3f46;border-color:#e4e4e7">cancelled</span>
+        <div style="font-size:11.5px;color:#a1a1aa;padding:1px 0">中间态(虚线)</div>
+        <div style="display:flex;align-items:center;gap:10px;font-size:12px">
+          <span class="tag tagdash" style="background:#fff;color:#52525b;border-color:#d4d4d8;width:64px;justify-content:center">待放行</span>
+          <span class="id" style="width:82px;flex:none;color:#71717a;font-size:11.5px">pending</span>
+          <span style="color:#a1a1aa">厂商 待审核 (0)</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;font-size:12px">
+          <span class="tag tagdash" style="background:#fff;color:#0369a1;border-color:#bae6fd;width:64px;justify-content:center">待拍单</span>
+          <span class="id" style="width:82px;flex:none;color:#71717a;font-size:11.5px">ready</span>
+          <span style="color:#a1a1aa">厂商 待拍单 (21)</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;font-size:12px">
+          <span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a;width:64px;justify-content:center">拍单中</span>
+          <span class="id" style="width:82px;flex:none;color:#71717a;font-size:11.5px">claimed</span>
+          <span style="color:#a1a1aa">厂商 无 —— 插件自己拉活,面板看不到</span>
+        </div>
+        <div style="font-size:11.5px;color:#a1a1aa;padding:3px 0 1px">终态(实心)</div>
+        <div style="display:flex;align-items:center;gap:10px;font-size:12px">
+          <span class="tag" style="background:#ecfdf5;color:#047857;border-color:#a7f3d0;width:64px;justify-content:center">已拍单</span>
+          <span class="id" style="width:82px;flex:none;color:#71717a;font-size:11.5px">purchased</span>
+          <span style="color:#a1a1aa">厂商 已拍单 (1)</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;font-size:12px">
+          <span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca;width:64px;justify-content:center">拍单异常</span>
+          <span class="id" style="width:82px;flex:none;color:#71717a;font-size:11.5px">exception</span>
+          <span style="color:#a1a1aa">厂商 拍单异常 (99)</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;font-size:12px">
+          <span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe;width:64px;justify-content:center">待人工</span>
+          <span class="id" style="width:82px;flex:none;color:#71717a;font-size:11.5px">manual</span>
+          <span style="color:#a1a1aa">厂商 无 —— 异常单停在 99 等人处理</span>
+        </div>
+        <div style="display:flex;align-items:center;gap:10px;font-size:12px">
+          <span class="tag" style="background:#f4f4f5;color:#3f3f46;border-color:#e4e4e7;width:64px;justify-content:center">已取消</span>
+          <span class="id" style="width:82px;flex:none;color:#71717a;font-size:11.5px">cancelled</span>
+          <span style="color:#a1a1aa">厂商 无</span>
         </div>
       </div>
       <div style="height:1px;background:#f4f4f5"></div>
+      <div style="display:flex;flex-direction:column;gap:6px">
+        <div style="font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.05em;color:#a1a1aa">物流状态 · 与任务状态完全独立</div>
+        <div style="display:flex;gap:7px;flex-wrap:wrap;align-items:center">
+          <span class="tag tagdash" style="background:#fff;color:#52525b;border-color:#d4d4d8">未发货</span>
+          <span class="tag tagdash" style="background:#fff;color:#0369a1;border-color:#bae6fd">运输中</span>
+          <span class="tag" style="background:#ecfdf5;color:#047857;border-color:#a7f3d0">已签收</span>
+          <span class="tag" style="background:#f4f4f5;color:#3f3f46;border-color:#e4e4e7">已取消</span>
+          <span style="color:#d4d4d8">|</span>
+          <span class="tag tagdash" style="background:#fff;color:#71717a;border-color:#e4e4e7">未同步</span>
+          <span style="font-size:11.5px;color:#a1a1aa">= 还没有 shipments 行,不是枚举值</span>
+        </div>
+        <div style="font-size:11.5px;color:#71717a;line-height:1.7">
+          厂商把「运输中」渲染成<span style="color:#b91c1c">红标签</span>。红色一旦用来表示正常在途,真出事时就没有颜色可用了 ——
+          在途归天蓝虚线,红色只留给「坏了」。
+        </div>
+      </div>
       <div style="font-size:12px;color:#71717a;line-height:1.8">
-        <b>claimed 用琥珀虚线,不用灰。</b>灰是既有系统里「忙 · 上一轮还在跑」的颜色,那是<i>被别人占着</i>;
-        claimed 是<i>这一单正在被执行</i>,属于 executing 家族。<br>
-        <b>manual 用紫色实心,是本系统唯一要人动手的状态。</b>紫色在既有色板里是「特例」。它不是失败(单子可能已经成了),
+        <b>拍单中用琥珀虚线,不用灰。</b>灰是既有系统里「忙 · 上一轮还在跑」的颜色,那是<i>被别人占着</i>;
+        拍单中是<i>这一单正在被执行</i>,属于 executing 家族。<br>
+        <b>待人工用紫色实心,是本系统唯一要人动手的状态。</b>紫色在既有色板里是「特例」。它不是失败(单子可能已经成了),
         也不是成功,而是<b>系统主动停下来等人裁决</b>——例如下单后没见到确认页、订单卡 ASIN 与本单不符、认领超时。
-        列表默认按 manual 置顶,这是运营每天唯一必须清空的桶。
+        列表默认按待人工置顶,这是运营每天唯一必须清空的桶。<br>
+        <b>界面上只出现中文。</b>英文是库里的值,只在这块板、详情弹窗和 API 里露面 ——
+        运营读的是「已拍单」,不是 <span class="id">purchased</span>。词沿用厂商面板的说法,
+        他们那边就是这么叫的;只有他们没有的状态才自己起名。
       </div>
     </div></section>
 
     <section class="card"><header class="chead"><h2 class="ctitle">状态机 · 唯一入口是认领,唯一出口是四个终态</h2></header>
     <div style="padding:16px 16px 18px;display:flex;flex-direction:column;gap:10px">
       <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:#3f3f46">
-        <span class="tag tagdash" style="background:#fff;color:#52525b;border-color:#d4d4d8">pending</span>
+        <span class="tag tagdash" style="background:#fff;color:#52525b;border-color:#d4d4d8">待放行</span>
         <span style="color:#a1a1aa">— 放行 →</span>
-        <span class="tag tagdash" style="background:#fff;color:#0369a1;border-color:#bae6fd">ready</span>
+        <span class="tag tagdash" style="background:#fff;color:#0369a1;border-color:#bae6fd">待拍单</span>
         <span style="color:#a1a1aa">— 插件认领 →</span>
-        <span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">claimed</span>
+        <span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">拍单中</span>
       </div>
       <div style="padding-left:24px;border-left:2px solid #f4f4f5;margin-left:8px;display:flex;flex-direction:column;gap:7px;font-size:12px;color:#3f3f46">
-        <div style="display:flex;align-items:center;gap:8px"><span style="color:#a1a1aa;width:96px;flex:none">下单成功</span><span class="tag" style="background:#ecfdf5;color:#047857;border-color:#a7f3d0">purchased</span><span style="color:#a1a1aa">回填 AMZ 单号</span></div>
-        <div style="display:flex;align-items:center;gap:8px"><span style="color:#a1a1aa;width:96px;flex:none">结构化失败</span><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">exception</span><span style="color:#a1a1aa">带错误码,可重置回 ready</span></div>
-        <div style="display:flex;align-items:center;gap:8px"><span style="color:#a1a1aa;width:96px;flex:none">可能已下单</span><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">manual</span><span style="color:#a1a1aa">禁止自动重试</span></div>
-        <div style="display:flex;align-items:center;gap:8px"><span style="color:#a1a1aa;width:96px;flex:none">插件主动放弃</span><span class="tag tagdash" style="background:#fff;color:#0369a1;border-color:#bae6fd">ready</span><span style="color:#a1a1aa">退回队列</span></div>
-        <div style="display:flex;align-items:center;gap:8px"><span style="color:#a1a1aa;width:96px;flex:none">认领超时</span><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">manual</span><span style="color:#a1a1aa">不退回 ready</span></div>
+        <div style="display:flex;align-items:center;gap:8px"><span style="color:#a1a1aa;width:96px;flex:none">下单成功</span><span class="tag" style="background:#ecfdf5;color:#047857;border-color:#a7f3d0">已拍单</span><span style="color:#a1a1aa">回填 AMZ 单号</span></div>
+        <div style="display:flex;align-items:center;gap:8px"><span style="color:#a1a1aa;width:96px;flex:none">结构化失败</span><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">拍单异常</span><span style="color:#a1a1aa">带错误码,可重置回待拍单</span></div>
+        <div style="display:flex;align-items:center;gap:8px"><span style="color:#a1a1aa;width:96px;flex:none">可能已下单</span><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">待人工</span><span style="color:#a1a1aa">禁止自动重试</span></div>
+        <div style="display:flex;align-items:center;gap:8px"><span style="color:#a1a1aa;width:96px;flex:none">插件主动放弃</span><span class="tag tagdash" style="background:#fff;color:#0369a1;border-color:#bae6fd">待拍单</span><span style="color:#a1a1aa">退回队列</span></div>
+        <div style="display:flex;align-items:center;gap:8px"><span style="color:#a1a1aa;width:96px;flex:none">认领超时</span><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">待人工</span><span style="color:#a1a1aa">不退回待拍单</span></div>
       </div>
       <div style="font-size:12px;color:#71717a;line-height:1.8;margin-top:2px">
-        <b>超时不退回 ready,这条要在界面上写死。</b>插件可能已经在 Amazon 上真下了单只是没回传,
-        自动重试就是重复下单。所以超时走 manual,人确认过才决定放回还是回填。
+        <b>超时不退回待拍单,这条要在界面上写死。</b>插件可能已经在 Amazon 上真下了单只是没回传,
+        自动重试就是重复下单。所以超时走待人工,人确认过才决定放回还是回填。
       </div>
     </div></section>
   </div>
@@ -117,41 +163,41 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
     <section class="card"><header class="chead"><h2 class="ctitle">错误码 · 18 个,按「能不能自动重试」分两组</h2></header>
     <div style="padding:16px;display:flex;flex-direction:column;gap:12px">
       <div>
-        <div style="font-size:12px;color:#71717a;margin-bottom:7px">可重试(虚线)——重置回 ready 即可,通常是页面慢或结构没等到</div>
+        <div style="font-size:12px;color:#71717a;margin-bottom:7px">可重试(虚线)——重置回待拍单即可,通常是页面慢或结构没等到</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <span class="tag tagdash mono" style="background:#fff;color:#b45309;border-color:#fde68a">ADD_TO_CART_FAILED</span>
-          <span class="tag tagdash mono" style="background:#fff;color:#b45309;border-color:#fde68a">CART_MISMATCH</span>
-          <span class="tag tagdash mono" style="background:#fff;color:#b45309;border-color:#fde68a">ADDRESS_FORM_TIMEOUT</span>
-          <span class="tag tagdash mono" style="background:#fff;color:#b45309;border-color:#fde68a">CHECKOUT_TIMEOUT</span>
-          <span class="tag tagdash mono" style="background:#fff;color:#b45309;border-color:#fde68a">PLUGIN_INTERNAL</span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">加购后未跳转</span><span class="id" style="font-size:10px;color:#a1a1aa">ADD_TO_CART_FAILED</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">购物车与任务不符</span><span class="id" style="font-size:10px;color:#a1a1aa">CART_MISMATCH</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">地址表单超时</span><span class="id" style="font-size:10px;color:#a1a1aa">ADDRESS_FORM_TIMEOUT</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">结算页超时</span><span class="id" style="font-size:10px;color:#a1a1aa">CHECKOUT_TIMEOUT</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">插件内部异常</span><span class="id" style="font-size:10px;color:#a1a1aa">PLUGIN_INTERNAL</span></span>
         </div>
       </div>
       <div>
         <div style="font-size:12px;color:#71717a;margin-bottom:7px">不可重试(实心)——数据或商品本身的问题,重试多少次都一样</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <span class="tag mono" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">OUT_OF_STOCK</span>
-          <span class="tag mono" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">QTY_UNAVAILABLE</span>
-          <span class="tag mono" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">NOT_FBA</span>
-          <span class="tag mono" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">BUNDLE_PRODUCT</span>
-          <span class="tag mono" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">ADDRESS_STATE_UNMATCHED</span>
-          <span class="tag mono" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">ADDRESS_SUGGESTION_BLOCKED</span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">商品无货</span><span class="id" style="font-size:10px;color:#a1a1aa">OUT_OF_STOCK</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">数量不可选</span><span class="id" style="font-size:10px;color:#a1a1aa">QTY_UNAVAILABLE</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">非 Amazon 配送</span><span class="id" style="font-size:10px;color:#a1a1aa">NOT_FBA</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">捆绑商品</span><span class="id" style="font-size:10px;color:#a1a1aa">BUNDLE_PRODUCT</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">州匹配失败</span><span class="id" style="font-size:10px;color:#a1a1aa">ADDRESS_STATE_UNMATCHED</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">地址不可投递</span><span class="id" style="font-size:10px;color:#a1a1aa">ADDRESS_SUGGESTION_BLOCKED</span></span>
         </div>
       </div>
       <div>
         <div style="font-size:12px;color:#71717a;margin-bottom:7px">护栏拦截(紫)——不是故障,是系统按规则拒绝下单,需要人裁决</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <span class="tag mono" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">PRICE_CAP_EXCEEDED</span>
-          <span class="tag mono" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">DELIVERY_TOO_LATE</span>
-          <span class="tag mono" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">DELIVERY_UNPARSEABLE</span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">实付超限价</span><span class="id" style="font-size:10px;color:#a1a1aa">PRICE_CAP_EXCEEDED</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">交期超限</span><span class="id" style="font-size:10px;color:#a1a1aa">DELIVERY_TOO_LATE</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">交期无法解析</span><span class="id" style="font-size:10px;color:#a1a1aa">DELIVERY_UNPARSEABLE</span></span>
         </div>
       </div>
       <div>
         <div style="font-size:12px;color:#71717a;margin-bottom:7px">必须人工确认(紫)——这三个的共同点是<b>可能已经产生了真实订单</b></div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <span class="tag mono" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">ORDER_CONFIRM_TIMEOUT</span>
-          <span class="tag mono" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">ORDER_NO_AMBIGUOUS</span>
-          <span class="tag mono" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">CLAIM_TIMEOUT</span>
-          <span class="tag mono" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">CAPTCHA_ENCOUNTERED</span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">未见确认页</span><span class="id" style="font-size:10px;color:#a1a1aa">ORDER_CONFIRM_TIMEOUT</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">单号对不上</span><span class="id" style="font-size:10px;color:#a1a1aa">ORDER_NO_AMBIGUOUS</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">认领超时未回传</span><span class="id" style="font-size:10px;color:#a1a1aa">CLAIM_TIMEOUT</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">命中验证码</span><span class="id" style="font-size:10px;color:#a1a1aa">CAPTCHA_ENCOUNTERED</span></span>
         </div>
       </div>
       <div style="font-size:12px;color:#71717a;line-height:1.8;border-top:1px solid #f4f4f5;padding-top:11px">
@@ -171,7 +217,7 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
       <div style="font-size:12px;color:#71717a;line-height:1.8">
         只读动作用幽灵,常规写入用黑实心,<b>会造成真实资金后果的用红实心 + ⚡,且永远先出现预览那一步</b>。
         本系统里够格用红的只有两个:<b>强制回填单号</b>(把一个人工找到的 AMZ 单号写进任务)和
-        <b>批量重置 manual 回队列</b>(等于允许重新下单)。
+        <b>批量把待人工重置回待拍单</b>(等于允许重新下单)。
       </div>
       <div style="height:1px;background:#f4f4f5"></div>
       <div style="font-size:12px;color:#71717a;line-height:1.8">
