@@ -78,6 +78,63 @@ npm run build                             # → web/dist,由 server/app.py 挂�
 
 `rows.json` 的形状见 `server/schemas.IntakeReq`,或直接照 `tests/test_task_intake.py` 里的 `_row()`。
 
+## 上游:飞书多维表格
+
+单子从飞书的一张多维表格里定时拉过来。凭据与表标识放 `<DATA_ROOT>/.env`(不进 git):
+
+```ini
+AMZ_FEISHU_APP_ID=cli_xxxxxxxx
+AMZ_FEISHU_APP_SECRET=xxxxxxxx
+AMZ_FEISHU_APP_TOKEN=xxxxxxxx     # 表格 URL 里 /base/ 后面那一段
+AMZ_FEISHU_TABLE_ID=tblxxxxxxxx   # URL 里 ?table= 后面那一段
+AMZ_FEISHU_VIEW_ID=vewxxxxxxxx    # 可选:只拉这个视图
+```
+
+飞书那边要做两件事:建一个**自建应用**,开 `bitable:app:readonly` 权限;
+把这个应用**加进那张表格的协作者**(只给应用授权是不够的,表格本身也要授权)。
+
+接表之前先看一眼列名,别对着截图猜:
+
+```bash
+python cli.py feishu_probe
+#   表里的列(左边是飞书里的真实列名,原样复制到 refdata/feishu_fields.json):
+#       "上游单号"                    1  Text
+#       "ASIN "                      1  Text     ← 注意尾部那个空格
+#   ...
+#   ⚠ 映射里这些列在表里找不到(对不上就会整表拒收):
+#       asin → 'ASIN'
+```
+
+列名可以带空格、emoji、看不见的零宽字符 —— 猜错的表现是「全表 300 行全部拒收:
+缺字段 xxx」,看的人第一反应会是上游把表填坏了,而不是我们的列名少了一个空格。
+
+对好列名之后:
+
+```bash
+python cli.py feishu_sync --dry-run     # 先看这一轮会动到谁
+python cli.py feishu_sync               # 落成 pending,等人放行
+python cli.py feishu_sync -p release=1  # 落库即放行
+```
+
+**每轮全量拉,不做增量游标。** 去重靠 `line_key`,已经落过的行会被识别成重复。
+不做游标是因为:游标一旦跑到某一行前面,那一行**永远不会再被看见** ——
+而它可能只是当时缺了个字段被拒收,上游补好了也没人再来拉它。
+换来的是这条链**幂等且自愈**:任何一轮失败,下一轮自己补回来。
+
+**飞书里一行是一个商品,同一张上游订单的多行会被合并成一张任务。**
+这不是优化,是正确性:
+
+> 一条 task = 一张上游订单 = **一次 Amazon 下单**
+
+不合并的话,同一张上游订单变成 N 条任务,插件会在 Amazon 上**买 N 次**。
+`line_key` 拦不住 —— 它是 `sha256(上游单号|商品集合)`,每行的商品集合都不一样,
+算出来就是 N 个不同的键,每一个都是「新行」。
+如果你们表里一行就是一整张订单(ASIN 列里逗号分隔),
+把 `refdata/feishu_fields.json` 的 `_一行是什么` 改成 `order`。
+
+同一个上游单号的两行给了不同的地址或限价时,**按先出现的落库并在摘要里报出来** ——
+那多半是上游把两张不同的单填成了同一个号,静默取第一行会按错的地址寄出去。
+
 ## 验到了什么、没验到什么
 
 | | 状态 |
@@ -101,8 +158,15 @@ npm run build                             # → web/dist,由 server/app.py 挂�
 既不会自己回队列,也不会出现在任何一个人会去看的桶里 —— 它就那么**隐身**了。
 
 ```cron
-*/5 * * * *  cd /path/to/amz-purchase-control && python cli.py task_sweep >> /var/log/amz/sweep.log 2>&1
+*/5  * * * *  cd /path/to/amz-purchase-control && python cli.py task_sweep  >> /var/log/amz/sweep.log 2>&1
+*/10 * * * *  cd /path/to/amz-purchase-control && python cli.py feishu_sync >> /var/log/amz/feishu.log 2>&1
 ```
+
+第二条是上游那条链。它停了,新单一张都进不来 —— 而界面上「队列待拍 0」
+跟「今天上游确实没派单」长得一模一样,不会有人觉得不对。
+所以运营台的「工作流记录」页盯着它:超过 `AMZ_FEISHU_SYNC_MAX_AGE_MIN`
+(默认 120 分钟)没跑就标红。**改成低频跑的话记得把这个值一起调大**,
+否则那一格会永远红着 —— 而一格永远红着的卡片会把人训练成忽略红色。
 
 跑之前先空跑一次看看会动到谁:
 
@@ -131,6 +195,11 @@ python cli.py task_sweep
 
 | 环境变量 | 默认 | 说明 |
 |---|---|---|
+| `AMZ_FEISHU_APP_ID` / `_APP_SECRET` | 空 | 飞书自建应用凭据,放 `.env` |
+| `AMZ_FEISHU_APP_TOKEN` / `_TABLE_ID` | 空 | 表格与数据表标识(从表格 URL 里取) |
+| `AMZ_FEISHU_VIEW_ID` | 空 | 只拉某个视图。让运营在飞书里用「待采购」视图圈范围,改条件不用发版 |
+| `AMZ_FEISHU_MAX_RECORDS` | `5000` | 一轮最多读多少条。兜底用:表被误操作灌成十万行时宁可报错停下 |
+| `AMZ_FEISHU_SYNC_MAX_AGE_MIN` | `120` | 拉单多久没跑算不正常。**改低频跑要一起调大** |
 | `AMZ_PG_DSN` | `dbname=amz_purchase` | 数据库连接串 |
 | `AMZ_DATA_ROOT` | `~/.amz-purchase` | .env / 日志 / 锁文件所在目录 |
 | `AMZ_CLAIM_TIMEOUT_MIN` | `15` | 领走多久没回传判为异常中断(转 manual,**不**退回队列) |
@@ -235,5 +304,5 @@ python cli.py task_sweep
 | P5 | 物流同步 | ✅ |
 | — | 任务落库(上游 → procure.tasks) | ✅ |
 | P6 | 运营台 Web 前端:四页 + 点行弹出的订单详情 + 点击即复制 | ✅ |
-| 下一步 | 上游 ERP 真实接口(现走文件投放) | 待办 —— 等对方给契约 |
+| P7 | 上游接入:定时从飞书多维表格拉单 | ✅ 代码完成,**未对着真实表格跑过**(缺凭据) |
 | 下一步 | 自动重试:目前 `RETRYABLE` 那一组没有任何东西在消费它 | 待定 |

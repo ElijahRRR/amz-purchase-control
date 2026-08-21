@@ -54,11 +54,30 @@ EXPECTED_INTERVAL: dict[str, timedelta | None] = {
     # 全项目唯一必须挂定时的一条。它停了,claimed 的任务会一直堆着,
     # 而队列看起来一切正常 —— 所以它的阈值给得紧。
     "task_sweep": timedelta(hours=2),
-    # 上游有投放才跑。没有投放就没有运行,不算异常。
+    # 上游那条链。它停了,新单一张都进不来 —— 而界面上「队列待拍 0」
+    # 跟「今天上游确实没派单」长得一模一样,不会有人觉得不对。
+    # 阈值可配(AMZ_FEISHU_SYNC_MAX_AGE_MIN),因为拉单频率是运维决定的。
+    "feishu_sync": None,       # ← 运行时按 settings 取,见下面的 _expected()
+    # 接表前看一眼列名用的,按需跑。
+    "feishu_probe": None,
+    # 手工/应急投放文件时才跑。没有投放就没有运行,不算异常。
     "task_intake": None,
     # 装机时跑一次的引导脚本。
     "db_init": None,
 }
+
+
+def _expected(name: str) -> timedelta | None:
+    """输入:工作流名 → 输出:它「多久没跑算不正常」。
+
+    feishu_sync 单独走 settings —— 拉单频率是运维决定的,写死在代码里的话,
+    改成低频跑的人会得到一格永远红着的卡片。
+    """
+    if name == "feishu_sync":
+        from registry import settings
+
+        return timedelta(minutes=settings.feishu_sync_max_age_minutes())
+    return EXPECTED_INTERVAL.get(name)
 
 
 def _workflow_names() -> list[str]:
@@ -104,7 +123,7 @@ def recent(conn, *, limit: int = 60) -> dict[str, Any]:
     for name in latest:
         last = latest[name]
         age = int((now - last["started_at"]).total_seconds()) if last else None
-        expect = EXPECTED_INTERVAL.get(name)
+        expect = _expected(name)
         # 「过期」只对该定时的那几条有意义。按需跑的从没跑过是正常的,
         # 把它也标红等于教人忽略红色。
         overdue = bool(expect is not None
