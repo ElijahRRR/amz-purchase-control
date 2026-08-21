@@ -3,7 +3,7 @@
   "name": "AMZ 采购助手",
   "version": "0.1.0",
   "description": "服务端派单 + 在本浏览器环境内执行 Amazon 采购。",
-  "permissions": ["storage", "alarms"],
+  "permissions": ["storage", "alarms", "tabs"],
   "host_permissions": [
     "https://www.amazon.com/*",
     "http://127.0.0.1:8781/*"

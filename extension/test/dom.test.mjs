@@ -130,9 +130,20 @@ await withFixture("checkout.html", async (run) => {
   // 夹具的支付文案里故意先出现别的 4 位数,取"第一个 4 位数字"的写法会当场露馅
   eq("checkout 卡后四位取的是 ending in 后面那个",
      await run("amzdom.readPaymentLast4(document)"), "4417");
+
+  // #submitOrderButtonId 里排在前面的是隐藏的 anti-csrftoken-a2z。
+  // 后代选择器会选中它 —— click() 打在隐藏 input 上不报错也不跳转,
+  // 于是等满 60 秒抛 ORDER_CONFIRM_TIMEOUT,任务落进「可能已下单」桶,
+  // 运营被迫逐单登录买家号确认一个根本不存在的订单。
+  eq("checkout 下单按钮不是隐藏的 csrf input",
+     await run("amzdom.findSubmitOrderButton(document)?.type"), "submit");
+  eq("checkout 下单按钮不带 name=anti-csrftoken-a2z",
+     await run("amzdom.findSubmitOrderButton(document)?.getAttribute('name')"), null);
 });
 
 await withFixture("checkout-thirdparty.html", async (run) => {
+  eq("checkout-thirdparty 下单按钮同样不是 csrf input",
+     await run("amzdom.findSubmitOrderButton(document)?.type"), "submit");
   const panels = await run("amzdom.readCheckoutPanels(document)");
   check("checkout-thirdparty 全部面板都不是 Amazon 发货",
         panels.length > 0 && panels.every((p) => p.isFba === false),

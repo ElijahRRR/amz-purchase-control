@@ -40,8 +40,14 @@ def adjudicate(
 
     判定顺序:先 FBA(最便宜),再限价(业务上最要紧),最后交期。
     """
-    if require_fba and is_fba is False:
-        return Verdict(False, "NOT_FBA", "配送方非 Amazon 自营")
+    if require_fba and is_fba is not True:
+        # 注意是 `is not True`,不是 `is False`:**读不到配送方(None)也不放行**。
+        # 「未知即放行」等于把 require_fba 变成一句愿望 —— 选择器一旦被 Amazon 改版打掉,
+        # 护栏会在无人察觉的情况下整体失效,而库里看起来一切正常。
+        # 与交期那条同一个立场:解析不出来一律不放行,交人裁决。
+        detail = ("配送方非 Amazon 自营" if is_fba is False
+                  else "结算页读不到配送方,按不通过处理")
+        return Verdict(False, "NOT_FBA", detail)
 
     total = _to_decimal(actual_total)
     if total is None:

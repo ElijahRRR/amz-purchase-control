@@ -97,6 +97,52 @@ def guard_check(task_id: int, req: schemas.GuardCheckReq,
 def complete(task_id: int, req: schemas.CompleteReq,
              conn=Depends(conn_ctx)) -> schemas.Envelope:
     inst = require_instance(conn, req.instance_uid)
+
+    # 归属校验就地做,不走 require_task_owned 的 raise ——
+    # 因为这里要在拒绝**之前**把单号留痕。插件走到这一步意味着 Amazon 上
+    # 很可能已经真下成了单;这时候把请求原样丢掉,那个真实单号就只剩在插件的内存里,
+    # 库里、事件流里、日志里全都没有。运营看到的是一条「没回传」的任务,
+    # 而钱已经花掉了。
+    row = conn.execute(
+        "SELECT status, claimed_by FROM procure.tasks WHERE id = %s", (task_id,)
+    ).fetchone()
+    if row is None:
+        raise HTTPException(404, detail={"code": "TASK_NOT_FOUND",
+                                         "message": f"任务不存在:{task_id}"})
+    if row["status"] != "claimed" or row["claimed_by"] != inst["id"]:
+        # 典型成因:这一单跑得久,task_sweep 已经把它当超时转成 manual 了。
+        task_event.record(conn, task_id, "assert_failed", instance_id=inst["id"],
+                          payload={"reason": "late_complete", "status": row["status"],
+                                   "amazon_order_no": req.amazon_order_no,
+                                   "observed_asins": req.observed_asins,
+                                   "actual_total": str(req.actual_total or "")})
+        # 已经写过库,只能 return 不能 raise(pg_conn 遇异常会把这条留痕一起回滚)
+        return JSONResponse(status_code=409, content={
+            "ok": False, "data": None,
+            "error": {"code": "TASK_NOT_HELD",
+                      "message": f"任务 {task_id} 当前是 {row['status']},"
+                                 f"单号 {req.amazon_order_no} 已记入事件流待人工回填"},
+        })
+
+    # 单号撞库要在写之前查:UniqueViolation 会让整个事务作废,
+    # 那样连「这个单号是谁报上来的」都留不下,任务还会卡死在 claimed。
+    dup = conn.execute(
+        "SELECT id FROM procure.tasks WHERE amazon_order_no = %s AND id <> %s",
+        (req.amazon_order_no, task_id),
+    ).fetchone()
+    if dup:
+        task_event.record(conn, task_id, "assert_failed", instance_id=inst["id"],
+                          payload={"reason": "order_no_taken",
+                                   "amazon_order_no": req.amazon_order_no,
+                                   "held_by_task": dup["id"]})
+        task_queue.fail(conn, task_id, "ORDER_NO_AMBIGUOUS", instance_id=inst["id"],
+                        detail=f"{req.amazon_order_no} 已挂在任务 {dup['id']} 上", to_manual=True)
+        return JSONResponse(status_code=409, content={
+            "ok": False, "data": None,
+            "error": {"code": "ORDER_NO_TAKEN",
+                      "message": f"{req.amazon_order_no} 已经挂在任务 {dup['id']} 上,已转人工"},
+        })
+
     task = require_task_owned(conn, task_id, inst)
 
     # 零成本断言:订单卡上的 ASIN 必须是本单的。不符不静默写库,转人工。

@@ -29,6 +29,9 @@ export const SEL = {
     qtyValue: '[data-a-selector="value"]',
     qtyNonEditable: ".sc-non-editable-quantity",
     proceed: "#sc-buy-box-ptc-button > span > input",
+    /** 报告未记载:空车页的标志。用来把「车是空的」与「车还没渲染」分开 —— 
+     *  分不开的话,一个没加载完的购物车会被当成已清空。 */
+    emptyMarkers: ["#sc-active-cart", ".sc-your-amazon-cart-is-empty", "#sc-empty-cart"],
     /** 报告未记载 clearShoppingCart 的选择器,按常见形态推测。 */
     deleteButtons: [
       'input[value="Delete"]',
@@ -50,7 +53,11 @@ export const SEL = {
     panelShipper: "p.a-spacing-none span.a-size-small",
     panelDelivery: "h2",
     grandTotal: "#checkout-pyo-button-block .grand-total-cell",
-    submitOrder: "#submitOrderButtonId input",
+    // 必须带 [type="submit"]。块里排在前面的是隐藏的 anti-csrftoken-a2z,
+    // 后代选择器会选中它 —— click() 打在隐藏 input 上不报错也不跳转,
+    // 于是等满 60 秒抛 ORDER_CONFIRM_TIMEOUT,任务落进「可能已下单」桶,
+    // 运营被迫逐单登录买家号确认一个根本不存在的订单。
+    submitOrder: '#submitOrderButtonId input[type="submit"]',
   },
 
   // ── 地址表单 (报告 §4.2.3) ─────────────────────────────────────────

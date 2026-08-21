@@ -290,3 +290,67 @@ def test_complete_ignores_unit_prices_for_asins_not_in_the_task(client, conn, se
     rows = conn.execute(
         "SELECT asin FROM procure.task_products WHERE task_id = %s", (tid,)).fetchall()
     assert [x["asin"] for x in rows] == ["B0FB3VS68J"]
+
+
+def test_late_complete_keeps_the_order_number(client, conn, seed):
+    """任务在插件背后被清扫成 manual 之后再回填,单号必须留痕。
+
+    典型成因:这一单跑得久(多商品、页面慢),task_sweep 已经把它当超时转走了。
+    此刻插件那边 Amazon 上很可能已经真下成了单 —— 把请求原样丢掉的话,
+    那个真实单号就只剩在插件的内存里,库里、事件流里、日志里全都没有。
+    运营看到的是一条「没回传」的任务,而钱已经花掉了。
+    """
+    _env, _inst, tasks = seed
+    r = client.post("/v1/tasks/claim", json={"instance_uid": "inst-A"})
+    tid = r.json()["data"]["task_id"]
+
+    # 背着插件把它清扫走
+    conn.execute("""UPDATE procure.tasks SET status='manual', error_code='CLAIM_TIMEOUT',
+                           claimed_by=NULL, claimed_at=NULL WHERE id=%s""", (tid,))
+    conn.commit()
+
+    resp = client.post(f"/v1/tasks/{tid}/complete", json={
+        "instance_uid": "inst-A", "amazon_order_no": "111-0000031-0000031",
+        "actual_total": "10.79", "observed_asins": ["B0FB3VS68J"]})
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "TASK_NOT_HELD"
+
+    ev = conn.execute("""SELECT payload FROM procure.task_events
+                          WHERE task_id=%s AND kind='assert_failed'
+                          ORDER BY id DESC LIMIT 1""", (tid,)).fetchone()
+    assert ev is not None, "拒绝之前必须先把单号留痕"
+    assert ev["payload"]["amazon_order_no"] == "111-0000031-0000031"
+    assert ev["payload"]["reason"] == "late_complete"
+
+
+def test_duplicate_order_no_on_complete_does_not_500(client, conn, seed):
+    """撞上 uq_tasks_amazon_order_no 不能靠数据库抛异常来兜。
+
+    UniqueViolation 会让整个事务作废:连「这个单号是谁报上来的」都留不下,
+    任务还会卡死在 claimed —— 因为那条 UPDATE 也被一起回滚了。
+    所以写之前先查。
+    """
+    _env, _inst, tasks = seed
+    conn.execute("""UPDATE procure.tasks SET status='purchased',
+                           amazon_order_no='111-0000032-0000032' WHERE id=%s""", (tasks[2],))
+    conn.commit()
+
+    r = client.post("/v1/tasks/claim", json={"instance_uid": "inst-A"})
+    tid = r.json()["data"]["task_id"]
+
+    resp = client.post(f"/v1/tasks/{tid}/complete", json={
+        "instance_uid": "inst-A", "amazon_order_no": "111-0000032-0000032",
+        "observed_asins": ["B0FB3VS68J"]})
+    assert resp.status_code == 409
+    assert resp.json()["error"]["code"] == "ORDER_NO_TAKEN"
+
+    row = conn.execute("SELECT status, error_code FROM procure.tasks WHERE id=%s",
+                       (tid,)).fetchone()
+    assert row["status"] == "manual"          # 没卡在 claimed
+    assert row["error_code"] == "ORDER_NO_AMBIGUOUS"
+
+    ev = conn.execute("""SELECT payload FROM procure.task_events
+                          WHERE task_id=%s AND kind='assert_failed'
+                          ORDER BY id DESC LIMIT 1""", (tid,)).fetchone()
+    assert ev["payload"]["amazon_order_no"] == "111-0000032-0000032"
+    assert ev["payload"]["held_by_task"] == tasks[2]

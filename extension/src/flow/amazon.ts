@@ -17,7 +17,7 @@ import { SEL, URLS } from "./dom/selectors.js";
 import { openFrame, withFrame, type Frame } from "./dom/frame.js";
 import { sleep, waitFor, waitStable, WaitTimeout } from "./dom/wait.js";
 import {
-  cartMatches, findInterstitialButton, findQuantityOption, findTrackingLink,
+  cartMatches, findInterstitialButton, findQuantityOption, findSubmitOrderButton, findTrackingLink,
   pickQuantitySelect, readCarrier, readCartLines, readCheckoutPanels,
   readDeliveryPromise, readGrandTotal, readInStock, readOrderCards, readOrderState,
   readOrderSummary, readPaymentLast4, readProductShipper, readTrackingEvents,
@@ -72,6 +72,19 @@ export class AmazonDriver implements PageDriver {
   // ── 清车 ─────────────────────────────────────────────────────────
   async clearCart(): Promise<void> {
     await withFrame(URLS.cart(this.origin), async (f) => {
+      // 先确认购物车页真的渲染出来了。「车是空的」和「车还没渲染」看起来一样
+      // (都是 0 行),分不开的话会在一张没加载完的页面上报「已清空」,
+      // 而车里那件上一单的残留会被带进这一单。
+      try {
+        await waitFor("购物车页渲染", () =>
+          f.doc().querySelector(SEL.cart.activeItems) ||
+          f.doc().querySelector(SEL.cart.proceed) ||
+          SEL.cart.emptyMarkers.some((m) => f.doc().querySelector(m)),
+          { timeoutMs: 20_000 });
+      } catch {
+        throw new DriverError("PLUGIN_INTERNAL", "购物车页没渲染出来,不能断定车是空的");
+      }
+
       // 上限是防呆:删不动时不能在这里转圈转到天荒地老。
       for (let round = 0; round < 30; round += 1) {
         const before = readCartLines(f.doc()).length;
@@ -316,7 +329,7 @@ export class AmazonDriver implements PageDriver {
   // ── 下单 ─────────────────────────────────────────────────────────
   async placeOrder(): Promise<void> {
     const f = this.need();
-    if (!click(f.doc().querySelector(SEL.checkout.submitOrder))) {
+    if (!click(findSubmitOrderButton(f.doc()))) {
       throw new DriverError("PLUGIN_INTERNAL", "结算页找不到下单按钮");
     }
     try {

@@ -140,12 +140,32 @@ src/core/      types(契约) codes(19 个错误码) status(界面标签)
 src/flow/      driver(页面动作接口) simulated(自检用) amazon(真实驱动) run(执行时序)
                shipment(物流同步,独立一条流)
 src/flow/dom/  wait(等待原语) frame(同源 iframe) selectors(选择器,标出处) parse(纯解析)
-src/background/ loop(认领循环,不碰 chrome API) service-worker(MV3 后台)
-src/content/   panel(注入面板) styles copy(点击复制)
+src/background/ loop(认领循环,不碰 chrome API) service-worker(配置/注册/心跳/租约)
+src/content/   runner(执行器,真正跑单的地方) panel(注入面板) styles copy(点击复制)
 tools/         smoke.mjs(自检) copy-static.mjs
 ```
 
 `loop.ts` 与 `run.ts` 刻意不碰任何 chrome API —— 否则这套逻辑就只能靠手点扩展来验证。
+
+## 为什么执行器在内容脚本里,不在 service worker 里
+
+MV3 的后台是 service worker,**没有 `document`**。而 `AmazonDriver` 靠同源 iframe
+操作页面(`document.createElement("iframe")`),在 SW 里第一步就是 ReferenceError。
+
+所以分工是:
+
+| | |
+|---|---|
+| service worker | 存配置、注册、心跳、发**执行租约** |
+| 内容脚本(`content/runner.ts`) | 认领、跑单、物流同步 —— 所有要动页面的活 |
+
+代价与厂商那套一样:整个流程绑死在「操作员得开着一个 Amazon 页面」上。
+这是同源 iframe 方案换来的,不是疏漏。
+
+**租约解决的是多标签页问题。** 同一浏览器里可能开着好几个 amazon.com,
+每个都注入了内容脚本。不发租约的话两个标签页会各领一单,
+在同一个买家号上并行拍两单 —— 而整套服务端设计的前提正是「这不会发生」。
+租约 45 秒 TTL,每轮认领前现要;拿着租约的标签页被关掉时立刻释放。
 
 ## 物流同步
 

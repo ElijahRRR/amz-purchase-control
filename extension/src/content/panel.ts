@@ -9,6 +9,7 @@ import { PHASE_LABEL, type Phase } from "../core/status.js";
 import type { Config } from "../core/config.js";
 import type { Task } from "../core/types.js";
 import { wireCopy } from "./copy.js";
+import { Runner } from "./runner.js";
 import { PANEL_CSS } from "./styles.js";
 
 interface State {
@@ -16,6 +17,9 @@ interface State {
   task: Task | null;
   log: LogLine[];
   config: Config | null;
+  /** 本标签页是不是那个在跑单的。同一浏览器开着好几个 amazon.com 时,
+   *  只有拿到租约的那个会认领 —— 不显示的话,人会以为另一个标签页坏了。 */
+  hasLease: boolean;
 }
 
 const PHASE_TAG: Record<Phase, [string, string]> = {
@@ -38,7 +42,8 @@ const STEPS = [
   "回填单号 · ASIN 断言",
 ];
 
-let state: State = { phase: "off", task: null, log: [], config: null };
+let state: State = { phase: "off", task: null, log: [], config: null, hasLease: false };
+const runner = new Runner();
 let root: ShadowRoot;
 let mount: HTMLElement;
 let toast: HTMLElement;
@@ -81,7 +86,8 @@ function render(): void {
     </div>
 
     ${config?.mode === "simulate" ? `<div class="warnbar">模拟档:页面动作全是假的,只用来自检和服务端说话的时序。不会在 Amazon 上产生任何订单。</div>` : ""}
-    ${config?.mode === "live" ? `<div class="warnbar">真实档:页面动作(P3)还没实现,因此不会认领任何任务。</div>` : ""}
+    ${config?.mode === "live" && !state.hasLease ? `<div class="warnbar">另一个 Amazon 标签页正在跑单,本页只看不动。关掉那个标签页,租约会自动转到这里。</div>` : ""}
+    ${config?.mode === "live" && state.hasLease ? `<div class="warnbar">真实档:会在这个买家号上下真单。页面动作从未在真实 Amazon 上验证过,第一次请拿可弃的号试。</div>` : ""}
 
     <div class="body">
       ${task ? taskCard(task) : ""}
@@ -136,7 +142,7 @@ function wire(): void {
     chrome.runtime.sendMessage({ type: "amz.setConfig", patch: { envCode: v || null } });
   });
   root.getElementById("tick")?.addEventListener("click", () => {
-    chrome.runtime.sendMessage({ type: "amz.tick" });
+    void runner.tick();
   });
 }
 
@@ -154,17 +160,33 @@ function boot(): void {
   render();
   wireCopy(root, toast);
 
+  // 执行器就在这个内容脚本里(MV3 的后台没有 document,跑不了页面动作),
+  // 所以状态是本地的,不用跟后台来回要。
+  runner.onChange((rs) => {
+    state = { ...state, phase: rs.phase, task: rs.task, hasLease: rs.hasLease };
+    render();
+  });
+  runner.log.onChange((lines) => {
+    state = { ...state, log: [...lines] };
+    render();
+  });
+
+  // 配置仍然由后台持有(它要拿去注册和心跳),变了会广播过来
   chrome.runtime.onMessage.addListener((msg) => {
-    if (msg?.type === "amz.state") {
-      state = { phase: msg.phase, task: msg.task, log: msg.log ?? [], config: msg.config };
+    if (msg?.type === "amz.config" && msg.config) {
+      state = { ...state, config: msg.config };
+      runner.setConfig(msg.config);
+      runner.start();
       render();
     }
   });
-  chrome.runtime.sendMessage({ type: "amz.getState" }, (s) => {
-    if (s) {
-      state = { phase: s.phase, task: s.task, log: s.log ?? [], config: s.config };
-      render();
-    }
+
+  chrome.runtime.sendMessage({ type: "amz.getConfig" }, (got) => {
+    if (!got?.config) return;
+    state = { ...state, config: got.config, log: got.log ?? [] };
+    runner.setConfig(got.config);
+    runner.start();
+    render();
   });
 }
 

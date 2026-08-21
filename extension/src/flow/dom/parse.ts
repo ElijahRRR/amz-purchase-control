@@ -175,6 +175,14 @@ export function findInterstitialButton(doc: Document): Element | null {
   return null;
 }
 
+/** 下单按钮。做成纯函数是为了能对着夹具验 ——
+ *  之前它只在 amazon.ts 里被裸 querySelector 取,离线自检一条断言都覆盖不到,
+ *  于是「选中的其实是隐藏的 csrf input」这种事只能等到真实环境里才发现,
+ *  而那时的表现是「每一单都超时,而且全部落进『可能已下单』桶」。 */
+export function findSubmitOrderButton(doc: Document): HTMLInputElement | null {
+  return doc.querySelector<HTMLInputElement>(SEL.checkout.submitOrder);
+}
+
 export function readGrandTotal(doc: Document): string | undefined {
   return parseMoney(text(doc.querySelector(SEL.checkout.grandTotal)));
 }

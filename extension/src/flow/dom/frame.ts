@@ -72,7 +72,12 @@ export async function openFrame(url: string, timeoutMs = 30_000): Promise<Frame>
       `iframe 加载 ${url}`,
       () => {
         const d = el.contentDocument;
-        return d && d.readyState !== "loading" && d.body ? true : null;
+        if (!d || !d.body || d.readyState === "loading") return null;
+        // 新建的 iframe 一开始就有一个 about:blank 文档:readyState 是 complete、
+        // body 也在。只判这两样的话,函数会在目标页还没开始加载时就返回 ——
+        // 上层随即在一张空白页上读购物车,读到 0 行,得出「车是空的」这个结论。
+        if (!d.URL || d.URL === "about:blank") return null;
+        return true;
       },
       { timeoutMs, everyMs: 200 },
     );

@@ -139,7 +139,7 @@ def test_guard_takes_latest_of_many_delivery_texts():
     today = date(2026, 8, 21)
     v = adjudicate(
         price_cap=Decimal("50.00"), max_delivery_days=7,
-        actual_total="10.79",
+        actual_total="10.79", is_fba=True,
         delivery_raws=["Monday, August 24", "Thursday, August 27", "Tuesday, August 25"],
         today=today,
     )
@@ -157,7 +157,7 @@ def test_guard_rejects_when_latest_of_many_is_too_late():
 
     v = adjudicate(
         price_cap=Decimal("50.00"), max_delivery_days=7,
-        actual_total="10.79",
+        actual_total="10.79", is_fba=True,
         delivery_raws=["Monday, August 24", "Friday, September 4"],
         today=date(2026, 8, 21),
     )
@@ -179,7 +179,7 @@ def test_guard_rejects_whole_order_when_any_text_unparseable():
 
     v = adjudicate(
         price_cap=Decimal("50.00"), max_delivery_days=7,
-        actual_total="10.79",
+        actual_total="10.79", is_fba=True,
         delivery_raws=["Monday, August 24", "Arrives after the holidays"],
         today=date(2026, 8, 21),
     )
@@ -195,7 +195,57 @@ def test_guard_reports_when_checkout_had_no_delivery_text_at_all():
 
     v = adjudicate(
         price_cap=Decimal("50.00"), max_delivery_days=7,
-        actual_total="10.79", delivery_raws=[], today=date(2026, 8, 21),
+        actual_total="10.79", is_fba=True, delivery_raws=[], today=date(2026, 8, 21),
     )
     assert v.allow is False
     assert v.error_code == "DELIVERY_UNPARSEABLE"
+
+
+# ── FBA:读不到配送方不等于通过 ────────────────────────────────────────
+
+def test_guard_blocks_when_fba_is_unknown():
+    """`is_fba=None`(结算页读不到配送方)也不放行。
+
+    「未知即放行」等于把 require_fba 变成一句愿望:选择器一旦被 Amazon 改版打掉,
+    护栏会在无人察觉的情况下整体失效,而库里看起来一切正常 ——
+    每一单都是 purchased,没有任何一条错误码提示护栏已经不工作了。
+
+    与交期那条同一个立场:解析不出来一律不放行,交人裁决。
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    from services.price_guard import adjudicate
+
+    v = adjudicate(price_cap=Decimal("50.00"), max_delivery_days=7,
+                   actual_total="10.79", is_fba=None,
+                   delivery_raws=["Monday, August 24"], today=date(2026, 8, 21))
+    assert v.allow is False
+    assert v.error_code == "NOT_FBA"
+    assert "读不到配送方" in v.detail
+
+
+def test_guard_blocks_when_not_fba():
+    from datetime import date
+    from decimal import Decimal
+
+    from services.price_guard import adjudicate
+
+    v = adjudicate(price_cap=Decimal("50.00"), max_delivery_days=7,
+                   actual_total="10.79", is_fba=False,
+                   delivery_raws=["Monday, August 24"], today=date(2026, 8, 21))
+    assert v.allow is False and v.error_code == "NOT_FBA"
+    assert "非 Amazon 自营" in v.detail
+
+
+def test_guard_ignores_fba_when_not_required():
+    """require_fba=False 时读不到配送方不该拦 —— 这条闸是可关的。"""
+    from datetime import date
+    from decimal import Decimal
+
+    from services.price_guard import adjudicate
+
+    v = adjudicate(price_cap=Decimal("50.00"), max_delivery_days=7,
+                   actual_total="10.79", is_fba=None, require_fba=False,
+                   delivery_raws=["Monday, August 24"], today=date(2026, 8, 21))
+    assert v.allow is True
