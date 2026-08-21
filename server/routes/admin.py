@@ -174,6 +174,14 @@ def reset(task_id: int, req: schemas.ResetReq, conn=Depends(conn_ctx)):
     return schemas.Envelope(ok=True, data=got)
 
 
+@router.post("/tasks/batch-reset")
+def batch_reset(req: schemas.BatchResetReq, conn=Depends(conn_ctx)) -> schemas.Envelope:
+    """批量重置回待拍单。**不接受 acknowledged,永远不接受** ——
+    见 services/task_admin.batch_reset 的注释。能重的都重,不能重的原样报回来。"""
+    got = task_admin.batch_reset(conn, req.task_ids, operator=req.operator)
+    return schemas.Envelope(ok=True, data=got)
+
+
 @router.post("/tasks/{task_id}/force-backfill")
 def force_backfill(task_id: int, req: schemas.ForceBackfillReq, conn=Depends(conn_ctx)):
     try:

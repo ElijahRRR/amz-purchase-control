@@ -666,3 +666,83 @@ def test_export_marks_the_rows_that_went_over_the_cap(client, conn, seed):
     body = client.post("/v1/admin/tasks/export", json={}).text
     over = [ln for ln in body.splitlines() if "111-0000009-0000009" in ln]
     assert len(over) == 1 and "是" in over[0]
+
+
+# ── 批量重置 ────────────────────────────────────────────────────────────
+
+def test_batch_reset_refuses_to_acknowledge_on_everyones_behalf(client, conn, seed):
+    """批量重置**不接受 acknowledged,永远不接受**。
+
+    单条那道 NEEDS_ACK 闸拦的是「这一单可能已经在 Amazon 上真下成了」,
+    而回执的含义是有人去那个买家号的订单页看过了。一批 30 单给一个总的
+    「已确认」,那句话就是假的 —— 没人一单一单看过 30 个订单页。
+    真让它接受,这个按钮就从「省点击」变成「一键重复下单 30 次」。
+    """
+    _env, _inst, tasks = seed
+    _set(conn, tasks[0], status="exception", error_code="CHECKOUT_TIMEOUT")
+    _set(conn, tasks[1], status="manual", error_code="ORDER_NO_AMBIGUOUS")   # 可能已下单
+    _set(conn, tasks[2], status="purchased", amazon_order_no="111-0000002-0000002")
+    conn.commit()
+
+    r = client.post("/v1/admin/tasks/batch-reset",
+                    json={"task_ids": tasks, "acknowledged": True})   # ← 就算传了也没用
+    data = r.json()["data"]
+
+    assert data["counts"] == {"done": 1, "skipped": 1, "failed": 1}
+    assert data["done"] == [tasks[0]]
+
+    # 可能已下单的那条被原样报回来,带着错误码,让人一眼看出该先去哪儿确认
+    assert data["skipped"][0]["task_id"] == tasks[1]
+    assert data["skipped"][0]["error_code"] == "ORDER_NO_AMBIGUOUS"
+    assert data["skipped"][0]["code"] == "NEEDS_ACK"
+
+    # 已拍单的不能重置,这是「失败」不是「要你去看」——两者在界面上分开说
+    assert data["failed"][0]["task_id"] == tasks[2]
+    assert data["failed"][0]["code"] == "BAD_STATUS"
+
+    # 库里也确实只动了一条
+    got = {r["id"]: r["status"] for r in conn.execute(
+        "SELECT id, status FROM procure.tasks").fetchall()}
+    assert got[tasks[0]] == "ready"
+    assert got[tasks[1]] == "manual"      # 没被顺手重置
+    assert got[tasks[2]] == "purchased"
+
+
+def test_batch_reset_does_not_let_one_bad_row_take_down_the_rest(client, conn, seed):
+    """一条失败不牵连其它。
+
+    批量动作里最难查的就是「前 12 条成了、第 13 条炸了、后面 17 条没跑」,
+    而界面只说了一句「失败」。
+    """
+    _env, _inst, tasks = seed
+    _set(conn, tasks[0], status="exception", error_code="CHECKOUT_TIMEOUT")
+    _set(conn, tasks[2], status="exception", error_code="OUT_OF_STOCK")
+    conn.commit()
+
+    # 中间夹一个根本不存在的 id
+    data = client.post("/v1/admin/tasks/batch-reset",
+                       json={"task_ids": [tasks[0], 999999, tasks[2]]}).json()["data"]
+    assert data["counts"]["done"] == 2, "不存在的那个不该挡住后面的"
+    assert data["failed"][0]["code"] == "TASK_NOT_FOUND"
+
+
+def test_batch_reset_route_is_not_swallowed_by_the_task_id_route(client, conn, seed):
+    """`/tasks/batch-reset` 不能被 `/tasks/{task_id}/...` 吃掉。"""
+    r = client.post("/v1/admin/tasks/batch-reset", json={"task_ids": [1]})
+    assert r.status_code == 200 and r.json()["ok"] is True
+
+
+def test_batch_reset_records_who_did_it_on_every_row(client, conn, seed):
+    """批量也要逐条留痕 —— 事后查「这一批是谁点的」得答得上来。"""
+    _env, _inst, tasks = seed
+    _set(conn, tasks[0], status="exception", error_code="CHECKOUT_TIMEOUT")
+    _set(conn, tasks[1], status="exception", error_code="OUT_OF_STOCK")
+    conn.commit()
+
+    client.post("/v1/admin/tasks/batch-reset",
+                json={"task_ids": [tasks[0], tasks[1]], "operator": "小李"})
+    rows = conn.execute(
+        "SELECT payload FROM procure.task_events WHERE kind='admin' ORDER BY id").fetchall()
+    assert len(rows) == 2
+    assert all(r["payload"]["operator"] == "小李" for r in rows)
+    assert all(r["payload"]["acknowledged"] is False for r in rows)

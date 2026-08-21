@@ -206,3 +206,13 @@ export interface RunsOut {
   }[];
   stuck_after_seconds: number;
 }
+
+export interface BatchResetOut {
+  done: number[];
+  /** 「这一条得你亲自去看」—— 可能已经真下过单,不是失败。界面上要跟 failed 分开说。 */
+  skipped: { task_id: number; upstream_order_no: string | null; status: string | null;
+             error_code: string | null; code: string; message: string }[];
+  failed: { task_id: number; upstream_order_no: string | null; status: string | null;
+            error_code: string | null; code: string; message: string }[];
+  counts: { done: number; skipped: number; failed: number };
+}

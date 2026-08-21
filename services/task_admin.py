@@ -183,3 +183,47 @@ def release(conn, task_id: int, *, operator: str | None = None) -> dict[str, Any
     task_event.record(conn, task_id, "admin",
                       payload={"action": "release", "operator": operator})
     return {"task_id": task_id, "status": "ready"}
+
+
+def batch_reset(conn, task_ids: list[int], *, operator: str | None = None) -> dict[str, Any]:
+    """输入:一批任务 id → 输出:{done, skipped, failed} 三份逐条清单。
+
+    **这个接口不接受 acknowledged,永远不接受。**
+
+    单条重置那道 `NEEDS_ACK` 闸拦的是「这一单可能已经在 Amazon 上真下成了」,
+    而回执的含义是**有人去那个买家号的订单页看过了**。一批 30 单给一个总的
+    「已确认」,那句话就成了假的 —— 没人一单一单看过 30 个订单页。
+    真让它接受,这个按钮就从「省点击」变成「一键重复下单 30 次」。
+
+    所以这里的规矩是:能重的都重了,不能重的**原样报回来**,让人逐条去点。
+    报回来的那几条带上错误码,人一眼能看出该先去哪儿确认。
+
+    一条失败不牵连其它 —— 每条各自提交。批量动作里最难查的就是
+    「前 12 条成了、第 13 条炸了、后面 17 条没跑」,而界面只说了一句「失败」。
+    """
+    done: list[int] = []
+    skipped: list[dict[str, Any]] = []
+    failed: list[dict[str, Any]] = []
+
+    for task_id in task_ids:
+        try:
+            reset_to_queue(conn, task_id, acknowledged=False, operator=operator)
+            done.append(task_id)
+        except AdminRefused as exc:
+            row = conn.execute(
+                "SELECT upstream_order_no, status, error_code FROM procure.tasks WHERE id = %s",
+                (task_id,)).fetchone()
+            item = {
+                "task_id": task_id,
+                "upstream_order_no": row["upstream_order_no"] if row else None,
+                "status": row["status"] if row else None,
+                "error_code": row["error_code"] if row else None,
+                "code": exc.code,
+                "message": exc.message,
+            }
+            # NEEDS_ACK 不是「失败」,是「这一条得你亲自去看」—— 界面要分开说,
+            # 混进失败里会让人以为系统出了问题,于是重试,于是绕过那道闸。
+            (skipped if exc.code == "NEEDS_ACK" else failed).append(item)
+
+    return {"done": done, "skipped": skipped, "failed": failed,
+            "counts": {"done": len(done), "skipped": len(skipped), "failed": len(failed)}}

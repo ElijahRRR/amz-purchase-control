@@ -62,6 +62,42 @@ function totalTone(total: string | null, cap: string): string {
   return Number(total) > Number(cap) ? "text-red-600 font-medium" : "text-zinc-800";
 }
 
+/** 勾选列。放在最前面,两种密度都有 —— 批量动作不该只在某一档才够得着。 */
+function selectColumn(
+  selectedIds: Set<number>,
+  onToggle: (id: number, on: boolean) => void,
+  rows: TaskRow[],
+  onToggleAll: (on: boolean) => void,
+): ColumnDef<TaskRow> {
+  // 只勾**能重置的**那些。已拍单/待拍单的单子重置一定被服务端拒,
+  // 让它们能被勾上,只会换来一份「失败 18 条」的清单。
+  const resettable = rows.filter((r) => r.status === "exception" || r.status === "manual");
+  const allOn = resettable.length > 0 && resettable.every((r) => selectedIds.has(r.id));
+  return {
+    id: "select",
+    size: 34,
+    header: () => (
+      <input type="checkbox" checked={allOn} disabled={resettable.length === 0}
+             title={resettable.length
+               ? `全选这一页里 ${resettable.length} 条可重置的`
+               : "这一页没有可重置的单"}
+             onChange={(e) => onToggleAll(e.target.checked)}
+             className="w-3.5 h-3.5 accent-zinc-900 cursor-pointer disabled:cursor-not-allowed" />
+    ),
+    cell: ({ row }) => {
+      const r = row.original;
+      const can = r.status === "exception" || r.status === "manual";
+      return (
+        <input type="checkbox" checked={selectedIds.has(r.id)} disabled={!can}
+               title={can ? "" : `${r.status} 的单不能重置`}
+               onClick={(e) => e.stopPropagation()}
+               onChange={(e) => onToggle(r.id, e.target.checked)}
+               className="w-3.5 h-3.5 accent-zinc-900 cursor-pointer disabled:opacity-30" />
+      );
+    },
+  };
+}
+
 function useColumns(density: Density): ColumnDef<TaskRow>[] {
   const meta = useMeta();
   const statusLabel = useLabel("task_status");
@@ -321,7 +357,7 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
 }
 
 export function TaskTable({
-  rows, density, selectedId, onPick, cursor,
+  rows, density, selectedId, onPick, cursor, checked, onCheck, onCheckAll,
 }: {
   rows: TaskRow[];
   density: Density;
@@ -329,8 +365,12 @@ export function TaskTable({
   onPick: (r: TaskRow) => void;
   /** 键盘游标所在的行索引。J/K 移动,⏎ 打开 —— 一屏几十行时手不用离开键盘。 */
   cursor: number;
+  checked: Set<number>;
+  onCheck: (id: number, on: boolean) => void;
+  onCheckAll: (on: boolean) => void;
 }) {
-  const columns = useColumns(density);
+  const base = useColumns(density);
+  const columns = [selectColumn(checked, onCheck, rows, onCheckAll), ...base];
   const table = useReactTable({ data: rows, columns, getCoreRowModel: getCoreRowModel() });
   const scrollRef = useRef<HTMLDivElement>(null);
 

@@ -228,6 +228,18 @@ class AddressReq(BaseModel):
     operator: str | None = None
 
 
+class BatchResetReq(BaseModel):
+    """批量重置。**故意没有 acknowledged 字段** ——
+
+    单条那道 NEEDS_ACK 闸拦的是「这一单可能已经真下成了」,回执的含义是
+    有人去那个买家号的订单页看过了。一批 30 单给一个总的「已确认」,
+    那句话就是假的。真让它接受,这个按钮就从「省点击」变成「一键重复下单 30 次」。
+    """
+
+    task_ids: list[int] = Field(min_length=1, max_length=200)
+    operator: str | None = None
+
+
 class AsinReq(BaseModel):
     old_asin: str
     new_asin: str

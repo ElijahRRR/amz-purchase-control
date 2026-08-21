@@ -7,8 +7,8 @@
 
 import { getOperator } from "@/lib/operator";
 import type {
-  Envelope, ErrorStats, InstanceRow, Meta, RunsOut, SearchOut, SearchReq, Summary,
-  TaskDetail,
+  BatchResetOut, Envelope, ErrorStats, InstanceRow, Meta, RunsOut, SearchOut, SearchReq,
+  Summary, TaskDetail,
 } from "@/types";
 
 export type ApiResult<T> =
@@ -117,6 +117,11 @@ export const api = {
     act<{ status: string }>(`/v1/admin/tasks/${id}/reset`, { acknowledged }),
   forceBackfill: (id: number, amazon_order_no: string, note: string) =>
     act<{ status: string }>(`/v1/admin/tasks/${id}/force-backfill`, { amazon_order_no, note }),
+  /** 批量重置。**没有 acknowledged 参数,服务端也不接受** —— 一批 30 单给一个
+   *  总的「已确认」,那句话是假的:没人一单一单看过 30 个订单页。
+   *  能重的都重,不能重的原样报回来让人逐条去点。 */
+  batchReset: (task_ids: number[]) =>
+    act<BatchResetOut>("/v1/admin/tasks/batch-reset", { task_ids }),
   updateAddress: (id: number, fields: Record<string, string>) =>
     act<{ changed: string[] }>(`/v1/admin/tasks/${id}/address`, fields),
   updateAsin: (id: number, old_asin: string, new_asin: string) =>

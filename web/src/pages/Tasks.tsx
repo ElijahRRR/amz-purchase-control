@@ -15,7 +15,9 @@ import { Tag } from "@/components/ui/tag";
 import { api, downloadTasksCsv } from "@/lib/api";
 import { useMeta } from "@/lib/meta";
 import { cn } from "@/lib/utils";
-import type { InstanceRow, SearchOut, SearchReq, Summary, TaskStatus } from "@/types";
+import type {
+  BatchResetOut, InstanceRow, SearchOut, SearchReq, Summary, TaskStatus,
+} from "@/types";
 
 type Range = "today" | "7d" | "30d" | "all";
 
@@ -86,6 +88,9 @@ export default function TasksPage({ summary, onMutate }: {
   const [selected, setSelected] = useState<number | null>(null);
   const [cursor, setCursor] = useState(0);
   const [exporting, setExporting] = useState(false);
+  const [checked, setChecked] = useState<Set<number>>(new Set());
+  const [batchResult, setBatchResult] = useState<BatchResetOut | null>(null);
+  const [resetting, setResetting] = useState(false);
 
   useEffect(() => { void api.instances().then((r) => r.ok && setEnvs(r.data.items)); }, []);
 
@@ -123,6 +128,10 @@ export default function TasksPage({ summary, onMutate }: {
 
   useEffect(() => { setPage(1); }, [status, envCode, dateField, range, asin, batchOn]);
   useEffect(() => { setCursor(0); }, [out]);
+  // 换了筛选/翻了页就清空勾选。留着的话,「重置选中的 12 条」会包含
+  // 现在根本看不见的单 —— 那正是批量动作最容易出事的地方。
+  useEffect(() => { setChecked(new Set()); setBatchResult(null); },
+            [status, envCode, dateField, range, asin, batchOn, page]);
 
   // J/K 移动,⏎ 打开。一屏几十行,手不用离开键盘。
   useEffect(() => {
@@ -280,6 +289,77 @@ export default function TasksPage({ summary, onMutate }: {
         </div>
       )}
 
+      {checked.size > 0 && (
+        <div className="shrink-0 min-h-9 bg-zinc-900 text-white flex items-center gap-2 px-4 py-1.5">
+          <span className="text-xs">已选 <span className="num text-white">{checked.size}</span> 条</span>
+          <span className="text-xs+ text-zinc-400">只有拍单异常 / 待人工的能选</span>
+          <span className="ml-auto" />
+          <Button size="sm" variant="ghost" className="text-zinc-300 hover:bg-zinc-800"
+                  onClick={() => setChecked(new Set())}>取消选择</Button>
+          <Button size="sm" variant="secondary" disabled={resetting}
+                  onClick={async () => {
+                    setResetting(true);
+                    const r = await api.batchReset([...checked]);
+                    setResetting(false);
+                    if (r.ok) {
+                      setBatchResult(r.data);
+                      setChecked(new Set());
+                      void load();
+                      onMutate();
+                    } else {
+                      setErr(r.kind === "transport" ? `没说上话:${r.message}`
+                                                    : `${r.code} · ${r.message}`);
+                    }
+                  }}>
+            {resetting ? "重置中…" : `重置这 ${checked.size} 条回待拍单`}
+          </Button>
+        </div>
+      )}
+
+      {/* 批量结果。三份清单分开说 —— 「跳过」不是失败,是「这几条得你亲自去看」,
+          混进失败里会让人以为系统出了问题,于是重试,于是绕过那道闸。 */}
+      {batchResult && (
+        <div className="shrink-0 bg-zinc-50 border-b border-zinc-200 px-4 py-2.5 flex flex-col gap-1.5">
+          <div className="flex items-center gap-3 text-xs">
+            <span className="text-emerald-700">
+              已重置 <span className="num text-emerald-700">{batchResult.counts.done}</span> 条
+            </span>
+            {batchResult.counts.skipped > 0 && (
+              <span className="text-violet-700">
+                跳过 <span className="num text-violet-700">{batchResult.counts.skipped}</span> 条
+              </span>
+            )}
+            {batchResult.counts.failed > 0 && (
+              <span className="text-red-700">
+                失败 <span className="num text-red-700">{batchResult.counts.failed}</span> 条
+              </span>
+            )}
+            <span className="ml-auto" />
+            <Button size="sm" variant="ghost" onClick={() => setBatchResult(null)}>知道了</Button>
+          </div>
+          {batchResult.skipped.length > 0 && (
+            <div className="text-xs text-violet-700 leading-relaxed">
+              这几条<b className="font-medium">可能已经在亚马逊上真下成了</b>,批量不替你确认 ——
+              点开逐条去买家号的订单页看过再重置:
+              <span className="id ml-1">
+                {batchResult.skipped.map((x) => x.upstream_order_no).join(", ")}
+              </span>
+            </div>
+          )}
+          {batchResult.failed.length > 0 && (
+            <div className="text-xs text-red-700 leading-relaxed">
+              这几条服务端拒了:
+              {batchResult.failed.map((x) => (
+                <span key={x.task_id} className="ml-1">
+                  <span className="id">{x.upstream_order_no ?? x.task_id}</span>
+                  <span className="text-zinc-500">({x.message})</span>
+                </span>
+              ))}
+            </div>
+          )}
+        </div>
+      )}
+
       <div className="flex-1 p-4 min-h-0 flex">
         <section className="flex-1 flex flex-col min-w-0 bg-white border border-zinc-200 rounded-lg overflow-hidden">
           {err && (
@@ -291,7 +371,19 @@ export default function TasksPage({ summary, onMutate }: {
             </div>
           ) : (
             <TaskTable rows={out?.items ?? []} density={density} selectedId={selected}
-                       cursor={cursor} onPick={(r) => setSelected(r.id)} />
+                       cursor={cursor} onPick={(r) => setSelected(r.id)}
+                       checked={checked}
+                       onCheck={(id, on) => setChecked((prev) => {
+                         const next = new Set(prev);
+                         if (on) next.add(id); else next.delete(id);
+                         return next;
+                       })}
+                       onCheckAll={(on) => setChecked(() => {
+                         if (!on) return new Set();
+                         return new Set((out?.items ?? [])
+                           .filter((r) => r.status === "exception" || r.status === "manual")
+                           .map((r) => r.id));
+                       })} />
           )}
 
           <div className="h-9 shrink-0 border-t border-zinc-100 flex items-center px-3 gap-2.5">

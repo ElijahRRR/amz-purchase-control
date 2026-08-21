@@ -153,6 +153,7 @@ python cli.py task_sweep
 | `POST /v1/shipments/pending` `/sync` | 物流同步 |
 | `POST /v1/admin/tasks/import` `/search` `/export` · `GET /{id}` | 落库、查询、导出 CSV(整个筛选结果,不只当前页) |
 | `POST /v1/admin/tasks/{id}/release` `/reset` `/force-backfill` `/address` `/asin` | 五个人工动作 |
+| `POST /v1/admin/tasks/batch-reset` | 批量重置。**不接受 acknowledged** —— 可能已下单的原样报回来,让人逐条去看 |
 | `GET /v1/admin/instances` | 买家号与判活 |
 | `GET /v1/admin/meta` | 封闭集连中文标签下发。**前端不存副本** |
 | `GET /v1/admin/summary` | 状态桶计数(跟着 env/时间筛选走;顶栏两个数字保持全局) |
@@ -175,6 +176,12 @@ python cli.py task_sweep
 
 **失败必上报、必清车。** 每条终止路径都走同一个出口,不存在「只写本地日志」的分支。
 厂商插件有 30+ 条只写日志的失败路径,且多数不清车,一次失败连带废掉下一单。
+
+**批量动作不替人做那个必须由人做的确认。** 批量重置**不接受 `acknowledged`**:
+单条那道闸拦的是「这一单可能已经在 Amazon 上真下成了」,而回执的含义是
+有人去那个买家号的订单页看过了。一批 30 单给一个总的「已确认」,那句话就是假的 ——
+真让它接受,这个按钮就从「省点击」变成「一键重复下单 30 次」。
+能重的都重,不能重的原样报回来,让人逐条去点。
 
 **「看起来有护栏、实际防不住」比没有护栏更危险。** 这条在本项目里反复出现,每次都记进了文档:
 - 厂商接口返回 `priceCheck` 字段,前端模板 0 处引用
