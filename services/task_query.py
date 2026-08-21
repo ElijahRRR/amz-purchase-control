@@ -7,7 +7,7 @@
 """
 
 import re
-from datetime import date
+from datetime import date, timedelta
 from typing import Any
 
 from registry import settings
@@ -388,10 +388,22 @@ def error_stats(conn, *, date_from: date, date_to: date) -> dict[str, Any]:
         for r in conn.execute(_ERROR_TREND_SQL,
                               {"date_from": date_from, "date_to": date_to}).fetchall()
     ]
+
+    # **窗口里每一天的 key 由服务端给出**,前端不自己拼日期。
+    #
+    # 前端拼的话,它用的是浏览器本地日期,而 trend 里的 day 来自
+    # `date_trunc('day', ...)`,走的是 PostgreSQL 会话时区。两者不一致时
+    # (库在 UTC、人在东八区),对不上号的点会被前端**静默丢掉** ——
+    # 折线图上那天变成 0,而 0 跟「那天确实一件没出」长得一模一样。
+    # 服务端两边用同一个 date,这种错就不存在了。
+    span = (date_to - date_from).days
+    days = [(date_from + timedelta(days=i)).isoformat() for i in range(span + 1)]
+
     return {
         "items": [{"code": c, "n": n, "by_env": by_env.get(c, {})}
                   for c, n in sorted(totals.items(), key=lambda kv: -kv[1])],
         "trend": trend,
+        "days": days,
         "total": sum(totals.values()),
     }
 

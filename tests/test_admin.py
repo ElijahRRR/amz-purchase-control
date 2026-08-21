@@ -1218,3 +1218,30 @@ def test_address_cannot_be_blanked_out(client, conn, seed):
     assert r.status_code == 200
     assert conn.execute("SELECT ship_city FROM procure.tasks WHERE id=%s",
                         (tasks[0],)).fetchone()["ship_city"] == "Irvine"
+
+
+def test_error_stats_hands_the_day_keys_to_the_client(client, conn, seed):
+    """窗口里每一天的 key 由服务端给,前端不自己拼日期。
+
+    前端拼的是浏览器本地日期,trend 里的 day 走的是 PostgreSQL 会话时区。
+    两者不一致时(库在 UTC、人在东八区)对不上号的点会被前端**静默丢掉** ——
+    折线图上那天变成 0,而 0 跟「那天确实一件没出」长得一模一样。
+    """
+    _env, _inst, tasks = seed
+    _fail(conn, tasks[0], "CHECKOUT_TIMEOUT")
+    conn.commit()
+
+    data = client.get("/v1/admin/error-stats",
+                      params={"date_from": "2026-08-08", "date_to": "2026-08-21"}).json()["data"]
+    assert len(data["days"]) == 14, "8-08 到 8-21 是 14 天,含首尾"
+    assert data["days"][0] == "2026-08-08" and data["days"][-1] == "2026-08-21"
+
+    # trend 里出现的每一天都必须在 days 里 —— 否则前端就得丢点
+    assert {p["day"] for p in data["trend"]} <= set(data["days"])
+
+
+def test_error_stats_days_covers_a_single_day_window(client, conn, seed):
+    """起止同一天要给一格,不是零格。"""
+    data = client.get("/v1/admin/error-stats",
+                      params={"date_from": "2026-08-21", "date_to": "2026-08-21"}).json()["data"]
+    assert data["days"] == ["2026-08-21"]

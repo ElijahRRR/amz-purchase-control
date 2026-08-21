@@ -182,6 +182,11 @@ export interface ErrorStatItem {
 export interface ErrorStats {
   items: ErrorStatItem[];
   trend: { day: string; code: string; n: number }[];
+  /** 窗口里的每一天,**由服务端给**。前端不自己拼日期 ——
+   *  前端拼的是浏览器本地日期,trend 里的 day 走的是 PostgreSQL 会话时区,
+   *  两者不一致时(库在 UTC、人在东八区)对不上号的点会被静默丢掉,
+   *  折线上那天变成 0,而 0 跟「那天确实一件没出」长得一模一样。 */
+  days: string[];
   total: number;
 }
 

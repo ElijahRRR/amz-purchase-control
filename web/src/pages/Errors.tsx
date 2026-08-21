@@ -103,21 +103,22 @@ export default function ErrorsPage() {
    * 而这两件事的含义正好相反。 */
   const trend = useMemo(() => {
     const rows = new Map<string, Record<string, number | string>>();
-    for (let i = days - 1; i >= 0; i--) {
-      const d = new Date();
-      d.setDate(d.getDate() - i);
-      const key = ymd(d);
+    // 天格由服务端给(data.days),前端不拼日期 —— 拼的话用的是浏览器本地日期,
+    // 与 trend 里那个走 PostgreSQL 会话时区的 day 对不上号,点会被静默丢掉。
+    for (const key of data?.days ?? []) {
       rows.set(key, { day: key.slice(5), possibly_ordered: 0, to_manual: 0,
                       business_blocked: 0, retryable: 0, other: 0 });
     }
+    let dropped = 0;
     (data?.trend ?? []).forEach((p) => {
       const row = rows.get(p.day);
-      if (!row) return;           // 落在窗口外的行忽略,不悄悄拉宽 x 轴
+      // 真掉了就记下来,在图上说一声 —— 静默丢弃正是这条 bug 原来的样子。
+      if (!row) { dropped += p.n; return; }
       const g = groupOf(p.code);
       row[g] = (row[g] as number) + p.n;
     });
-    return [...rows.values()];
-  }, [data, meta, days]);
+    return { rows: [...rows.values()], dropped };
+  }, [data, meta]);
 
   return (
     <>
@@ -197,17 +198,20 @@ export default function ErrorsPage() {
         </Card>
 
         <Card className="overflow-hidden">
-          <CardHead right={<span className="text-xs text-zinc-400">
-            一条线一组 —— 19 个码画 19 条线是看不出东西的
+          <CardHead right={<span className={cn("text-xs",
+                                                trend.dropped ? "text-amber-700" : "text-zinc-400")}>
+            {trend.dropped
+              ? `有 ${trend.dropped} 次失败落在窗口的天格之外,没画上去`
+              : "一条线一组 —— 19 个码画 19 条线是看不出东西的"}
           </span>}>是一直这样,还是昨天开始的</CardHead>
           <div className="p-3 h-[300px]">
-            {trend.length === 0
+            {trend.rows.length === 0
               ? <div className="h-full flex items-center justify-center text-xs text-zinc-400">
                   这段时间没有带错误码的任务
                 </div>
               : (
                 <ResponsiveContainer width="100%" height="100%">
-                  <LineChart data={trend} margin={{ left: 0, right: 16, top: 8, bottom: 8 }}>
+                  <LineChart data={trend.rows} margin={{ left: 0, right: 16, top: 8, bottom: 8 }}>
                     <CartesianGrid stroke="#f4f4f5" />
                     <XAxis dataKey="day" tick={{ fontSize: 11, fill: "#a1a1aa" }} />
                     <YAxis tick={{ fontSize: 11, fill: "#a1a1aa" }} allowDecimals={false} width={32} />

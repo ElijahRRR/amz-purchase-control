@@ -127,6 +127,7 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
    *  接口存在而界面到不了,对用这套东西的人来说等于这个功能不存在。 */
   const [editing, setEditing] = useState<null | "address" | "asin">(null);
   const [draft, setDraft] = useState<Record<string, string>>({});
+  const [productsOpen, setProductsOpen] = useState(false);
 
   const load = () => {
     setErr(null);
@@ -236,8 +237,11 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
             <KV k="邮编"><CopyText value={t.ship_postcode} className="id text-xs" icon={false} /></KV>
           </Group>
 
+          {/* 产品格在 grid-cols-4 里,把 products 全量铺开会把同一行的另外三格
+              (上游订单/收货信息/订单信息)一起拉到同样高度,后半页被顶出视野。
+              先显示三个,其余折起来 —— 一单二十个商品是有的。 */}
           <Group title="产品信息">
-            {(t.products ?? []).map((prod, i) => (
+            {(t.products ?? []).slice(0, productsOpen ? undefined : 3).map((prod, i) => (
               <div key={i} className="flex flex-col gap-1 border-b border-zinc-50 last:border-0 pb-1 last:pb-0">
                 <KV k="ASIN"><CopyText value={prod.asin} className="id text-[13px] text-zinc-900" /></KV>
                 <KV k="数量"><span className="num text-sm-">{prod.quantity}</span></KV>
@@ -246,6 +250,12 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
                 <KV k="实付单价"><span className="id text-zinc-800">{money(prod.actual_unit_price)}</span></KV>
               </div>
             ))}
+            {(t.products?.length ?? 0) > 3 && (
+              <button type="button" onClick={() => setProductsOpen((v) => !v)}
+                      className="self-start text-xs+ text-sky-700 hover:text-sky-900">
+                {productsOpen ? "收起" : `另 ${t.products!.length - 3} 项商品`}
+              </button>
+            )}
             <KV k="整单限价">
               <span className="id text-zinc-900">{money(t.price_cap)}</span>
               <span className="ml-1.5 text-xs+ text-zinc-400">上游算好下发</span>
@@ -491,6 +501,7 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
               它是导入期的去重键,不是内容摘要。改了会在事件流里留痕
             </span>
           </div>
+          <div className="max-h-[168px] overflow-auto flex flex-col gap-2">
           {(t.products ?? []).map((prod, i) => (
             <div key={i} className="flex items-center gap-2">
               <span className="id text-xs text-zinc-500 w-[104px] shrink-0">{prod.asin}</span>
@@ -505,6 +516,7 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
               </Button>
             </div>
           ))}
+          </div>
           <div className="flex">
             <span className="ml-auto" />
             <Button size="sm" onClick={() => { setEditing(null); setDraft({}); }}>关闭</Button>
