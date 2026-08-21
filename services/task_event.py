@@ -9,6 +9,8 @@ from datetime import date, datetime
 from decimal import Decimal
 from typing import Any
 
+from services.error_codes import validate as validate_code
+
 INSERT_SQL = """
 INSERT INTO procure.task_events (task_id, instance_id, kind, code, payload)
 VALUES (%(task_id)s, %(instance_id)s, %(kind)s, %(code)s, %(payload)s)
@@ -39,6 +41,10 @@ def record(
         raise ValueError(f"未知事件类型 {kind!r},允许值:{sorted(KINDS)}")
     if kind in ("error", "guard_block") and not code:
         raise ValueError(f"{kind} 事件必须带 code")
+    if code is not None:
+        # CLAUDE.md 说错误码是封闭集 —— 在这里才真正成立。
+        # 在此之前只校验了 kind,插件传什么码就写什么码。
+        validate_code(code)
     row = conn.execute(
         INSERT_SQL,
         {

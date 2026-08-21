@@ -55,7 +55,7 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
 
   <div style="display:flex;align-items:baseline;gap:16px">
     <h1 style="font-size:20px;font-weight:600">状态语言 · AMZ 采购控制台</h1>
-    <span style="font-size:12px;color:#71717a">沿用 WalmartAPI 运营台的词汇与色板(zinc + emerald/amber/red/sky/violet)。本页只定义本系统新增的两件事:<b>7 个任务状态</b>与 <b>18 个错误码</b>怎么呈现。</span>
+    <span style="font-size:12px;color:#71717a">沿用 WalmartAPI 运营台的词汇与色板(zinc + emerald/amber/red/sky/violet)。本页只定义本系统新增的两件事:<b>7 个任务状态</b>与 <b>19 个错误码</b>怎么呈现。</span>
   </div>
 
   <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
@@ -188,7 +188,7 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
 
   <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:16px">
 
-    <section class="card"><header class="chead"><h2 class="ctitle">错误码 · 18 个,按「能不能自动重试」分两组</h2></header>
+    <section class="card"><header class="chead"><h2 class="ctitle">错误码 · 19 个,按「能不能自动重试」分两组</h2></header>
     <div style="padding:16px;display:flex;flex-direction:column;gap:12px">
       <div>
         <div style="font-size:12px;color:#71717a;margin-bottom:7px">可重试(虚线)——重置回待拍单即可,通常是页面慢或结构没等到</div>
@@ -209,6 +209,7 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
           <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">捆绑商品</span><span class="id" style="font-size:10px;color:#a1a1aa">BUNDLE_PRODUCT</span></span>
           <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">州匹配失败</span><span class="id" style="font-size:10px;color:#a1a1aa">ADDRESS_STATE_UNMATCHED</span></span>
           <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">地址不可投递</span><span class="id" style="font-size:10px;color:#a1a1aa">ADDRESS_SUGGESTION_BLOCKED</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">地址未生效</span><span class="id" style="font-size:10px;color:#a1a1aa">ADDRESS_NOT_APPLIED</span></span>
         </div>
       </div>
       <div>

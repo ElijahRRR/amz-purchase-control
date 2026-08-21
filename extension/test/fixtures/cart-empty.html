@@ -1,0 +1,221 @@
+<!--
+================================================================================
+  夹具：Amazon 购物车页（US 站，空车）
+================================================================================
+  页面        ：Shopping Cart — empty state
+  URL 形态    ：https://www.amazon.com/gp/cart/view.html
+                （URL 与非空车完全相同，只有 DOM 不同。这一点很要命：报告 §4.2.5 /
+                 缺陷 A1（`:948-953`）里 `waitForOrderSuccess` 就是靠 URL 命中
+                 `/gp/cart/view.html` 来判断状态的，它无法区分空车与满车。）
+  事实来源    ：docs/插件功能深度分析.md
+                §4.2.2 `processCartAndCheckout`（`:2657-2834`）第 2 步行数核对
+                §9.1 / 缺陷 B5（`:512-534`）`OrderProcessor.clearCart` 的终止条件
+
+  ------------------------------------------------------------------------------
+  这份夹具是干嘛的
+  ------------------------------------------------------------------------------
+  验证「清空购物车」的**终止条件**。报告 §9.1 明确记载：
+      `OrderProcessor.clearCart`（`:512-534`）是 `while(true)` 无上限循环，
+      1 次/秒点击删除按钮——若 Amazon 改版导致点击不生效但按钮仍在，
+      会无限高频点击，几乎必然触发风控。
+  也就是说，退出这个循环的唯一指望就是「页面上再也找不到要删的东西」。
+  本夹具把这个判断做成一道考题：**在售区确实空了，但页面上到处还是删除按钮。**
+
+  ------------------------------------------------------------------------------
+  报告确实记载的选择器（本页面刻意让它们全部落空或为零）
+  ------------------------------------------------------------------------------
+    [data-name="Active Items"] .sc-list-item   → 命中 0 条（容器在，行没了）
+    data-asin                                  → 在售区内 0 个
+    [data-a-selector="value"] / .sc-non-editable-quantity → 在售区内 0 个
+    #sc-buy-box-ptc-button > span > input      → **整个按钮不存在**（空车没有 buy box）
+
+  ------------------------------------------------------------------------------
+  报告【未】记载、按 Amazon 常见形态推测的部分（勿当作报告背书）
+  ------------------------------------------------------------------------------
+    input[value="Delete"] / [data-action="delete"]   —— clearCart 的选择器报告没写
+    [data-name="Saved for later"]                    —— 任务要求的干扰项
+    空车形态本身（报告全文没有描述空车 DOM 长什么样）
+    一切 a-* 类名的包裹层                            —— 仅作包裹，逐处已行内标注
+
+  ------------------------------------------------------------------------------
+  本夹具刻意覆盖的边界
+  ------------------------------------------------------------------------------
+   1. 「容器存在但零行」——比「容器不存在」更难：`if (container)` 为真，
+      `container.querySelectorAll(".sc-list-item").length === 0` 才是正解。
+      另一种真实形态（整个 Active Items 容器都不渲染）见文件末尾被注释掉的备用 DOM。
+   2. 结算按钮**缺席**：`#sc-buy-box-ptc-button > span > input` 返回 null。
+      §4.2.2 第 5 步（`:2750`）若不判空就 `.click()` → TypeError → 被最外层 catch 吞掉。
+   3. 清车终止条件：在售区已空，但 Saved for later / 隐藏模板里仍有 Delete 按钮。
+      不带 [data-name="Active Items"] 前缀的循环在这一页**永远不会退出**。
+   4. 空车页仍有大量 data-asin（推荐位 / 广告位），件数核对绝不能全局数。
+   5. 金额仍带 $ 与千分位（$1,049.00 / $2,499.99），供价格解析的负样本使用。
+
+  跑夹具时的期望：
+      [data-name="Active Items"] .sc-list-item        → length 0
+      #sc-buy-box-ptc-button > span > input           → null
+      clearCart 在这一页必须**一次都不点**就立即退出。
+================================================================================
+-->
+
+<div id="a-page">
+
+  <!-- ========================================================================
+       干扰项 A：隐藏的行模板（Amazon 常见形态，客户端渲染空壳）
+       ------------------------------------------------------------------------
+       空车页依然会留着模板节点。它带 .sc-list-item、带 data-asin、带 Delete 按钮，
+       但不在 [data-name="Active Items"] 里。
+
+       写松了会怎样：
+         · `querySelectorAll(".sc-list-item").length` → 1，于是清车逻辑认为
+           「还有货没删干净」→ 继续点它的 Delete → 隐藏节点点了不会消失
+           → `while(true)` 永不退出 → 缺陷 B5（`:512-534`）1 次/秒无限点击，
+           标签页锁死且极易触发 Amazon 风控。
+         · §4.2.2 第 2 步若用全局 .sc-list-item 计数，空车会被数成 1 件。
+       ======================================================================== -->
+  <!-- 报告未记载，仅作包裹 -->
+  <div class="a-hidden" id="a-item-template-host" aria-hidden="true" hidden>
+    <div class="sc-list-item a-hidden" data-asin="B0FB3VS68J" aria-hidden="true">
+      <span class="a-size-base a-color-secondary">{{title}}</span>
+      <span class="a-dropdown-prompt" data-a-selector="value">0</span>
+      <!-- 报告未记载，按常见形态推测 -->
+      <span class="a-declarative" data-action="delete">
+        <input class="a-button-input" type="submit" value="Delete">
+      </span>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       ✅ 正主：在售商品区，容器存在但**一行都没有**。
+       [data-name="Active Items"] 是报告 §4.2.2 记载的属性选择器。
+       ======================================================================== -->
+  <div data-name="Active Items" class="a-section">
+    <!-- 这里刻意不放任何 .sc-list-item / data-asin / 数量节点 / Delete 按钮。 -->
+  </div>
+
+  <!-- 报告未记载，仅作包裹：空车提示区 -->
+  <div class="a-row a-spacing-double-large">
+    <div class="a-column a-span3">
+      <img class="a-image" alt="Empty shopping cart"
+           src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+    </div>
+    <div class="a-column a-span9">
+      <h1 class="a-size-extra-large a-spacing-mini">Your Amazon Cart is empty</h1>
+      <div class="a-row a-size-base a-color-secondary">
+        Your Shopping Cart lives to serve. Give it purpose &mdash; fill it with
+        groceries, clothing, household supplies, electronics, and more.
+      </div>
+      <div class="a-row a-spacing-top-medium">
+        <span class="a-size-base a-link-normal">Continue shopping</span>
+        <span class="a-size-base a-color-secondary"> | </span>
+        <span class="a-size-base a-link-normal">Today's Deals</span>
+      </div>
+      <div class="a-row a-spacing-top-medium a-size-base a-color-secondary">
+        Have an account? Sign in to see your cart.
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       干扰项 B：Saved for later（空车页依然会渲染）
+       ------------------------------------------------------------------------
+       [data-name="Saved for later"]（报告未记载，任务要求的干扰项）。
+       两条 .sc-list-item + data-asin + Delete 按钮，全都还在。
+
+       写松了会怎样：
+         · 清车的终止判断若写成「页面上还有没有 .sc-list-item / Delete 按钮」，
+           在这一页永远为真 → `while(true)` 不退出（缺陷 B5），
+           并且每秒真的在删用户「稍后再买」的收藏 —— 直到把收藏删光才停，
+           这已经是**越权删除用户数据**，不是清购物车。
+         · §4.2.2 第 2 步若不带 Active Items 前缀 → 空车被数成 2 件。
+         · 按 ASIN 全局找行 → 在空车页也能「找到」B0CHXNPXVX，
+           于是本该报 `商品 {asin} 验证失败`（`:2732`）的分支反而不会触发，
+           转而落进「读不到数量 → 仅日志 → 清车跳过」的静默分支。
+       ======================================================================== -->
+  <div data-name="Saved for later" class="a-section a-spacing-top-large">
+    <h2 class="a-size-large">Saved for later (2 items)</h2>
+
+    <div class="sc-list-item" data-asin="B0CHXNPXVX">
+      <!-- 报告未记载，仅作包裹 -->
+      <div class="a-row">
+        <span class="a-size-medium a-color-base">Amazon Basics 48-Pack AA Alkaline High-Performance Batteries, 10-Year Shelf Life</span>
+        <div class="a-row a-size-small a-color-price">$249.50</div>
+        <div class="a-row a-size-small a-color-secondary">In Stock</div>
+        <!-- 报告未记载，按常见形态推测 -->
+        <span class="a-declarative" data-action="delete">
+          <input class="a-button-input" type="submit" value="Delete"
+                 aria-label="Delete Amazon Basics AA Batteries from Saved for later">
+        </span>
+        <!-- 报告未记载，仅作包裹 -->
+        <span class="a-declarative" data-action="move-to-cart">
+          <input class="a-button-input" type="submit" value="Move to cart">
+        </span>
+      </div>
+    </div>
+
+    <div class="sc-list-item" data-asin="B08N5WRWNW">
+      <!-- 报告未记载，仅作包裹 -->
+      <div class="a-row">
+        <span class="a-size-medium a-color-base">Echo Dot (4th Gen) Smart Speaker with Alexa, Charcoal</span>
+        <div class="a-row a-size-small a-color-price">$1,049.00</div>
+        <div class="a-row a-size-small a-color-secondary">In Stock</div>
+        <!-- 报告未记载，按常见形态推测 -->
+        <span class="a-declarative" data-action="delete">
+          <input class="a-button-input" type="submit" value="Delete"
+                 aria-label="Delete Echo Dot from Saved for later">
+        </span>
+        <!-- 报告未记载，仅作包裹 -->
+        <span class="a-declarative" data-action="move-to-cart">
+          <input class="a-button-input" type="submit" value="Move to cart">
+        </span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       干扰项 C：推荐位 / 广告位（空车页反而更多）
+       ------------------------------------------------------------------------
+       卡片带 data-asin，且刻意复用在售流程里会用到的 B0FB3VS68J / B0CHXNPXVX。
+       写松了会怎样：
+         · `document.querySelectorAll("[data-asin]").length` → 4，空车被当成
+           有 4 件商品 → §4.2.2 第 2 步与 order.products.length 不符 → 清车跳过，
+           而清车又清不动（车本来就是空的）→ 与干扰项 A/B 叠加成死循环。
+         · 「购物车里有没有这个 ASIN」若用全局查询，在**空车**上也会返回 true。
+       ======================================================================== -->
+  <!-- 报告未记载，仅作包裹 -->
+  <div class="a-section a-spacing-top-large" id="a-recommended-section" aria-label="Recommended">
+    <h2 class="a-size-large">Recommended based on your browsing history</h2>
+    <div class="a-row">
+      <div class="a-column a-span3" data-asin="B0FB3VS68J">
+        <span class="a-size-base">Anker 737 Power Bank (PowerCore 24K), 140W Portable Charger</span>
+        <span class="a-price">$1,299.99</span>
+      </div>
+      <div class="a-column a-span3" data-asin="B0BSHF7WHW">
+        <span class="a-size-base">Kindle Paperwhite (16 GB) - 6.8" Display, Ad-Supported</span>
+        <span class="a-price">$2,499.99</span>
+        <span class="a-size-mini a-color-secondary">Sponsored</span>
+      </div>
+    </div>
+  </div>
+
+  <!--
+  ============================================================================
+    备用形态（刻意留在注释里，不参与解析）
+    ----------------------------------------------------------------------------
+    真实 Amazon 空车还有第二种形态：**整个 [data-name="Active Items"] 容器都不渲染**。
+    报告未记载空车 DOM，两种形态都属推测，但解析器两种都必须活下来：
+        const box = doc.querySelector('[data-name="Active Items"]');
+        const rows = box ? box.querySelectorAll('.sc-list-item') : [];
+    若写成 `doc.querySelector('[data-name="Active Items"]').querySelectorAll(...)`，
+    在下面这种形态上会直接抛 TypeError，被最外层 catch 吞成一句本地日志
+    （报告 §6.3：这类失败后台完全看不见）。
+
+    <div id="a-page">
+      <div class="a-row a-spacing-double-large">
+        <h1 class="a-size-extra-large">Your Amazon Cart is empty</h1>
+      </div>
+      <div data-name="Saved for later" class="a-section"> … </div>
+    </div>
+  ============================================================================
+  -->
+
+</div>

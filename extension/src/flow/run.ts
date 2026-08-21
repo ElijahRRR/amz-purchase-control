@@ -14,7 +14,7 @@ import type { ErrorCode } from "../core/codes.js";
 import { toManual } from "../core/codes.js";
 import type { Log } from "../core/log.js";
 import type { Task } from "../core/types.js";
-import type { PageDriver } from "./driver.js";
+import { DriverError, type PageDriver } from "./driver.js";
 
 export type Outcome =
   | { kind: "purchased"; amazonOrderNo: string }
@@ -57,12 +57,12 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     await driver.clearCart();
 
     for (const p of task.products) {
-      const page = await driver.openProduct(p.asin);
-      if (!page.inStock) throw new Abort("OUT_OF_STOCK", `${p.asin} 无货`);
-      if (task.guards.require_fba && !page.isFba) {
-        throw new Abort("NOT_FBA", `${p.asin} 配送方非 Amazon 自营`);
+      const added = await driver.addProduct(p.asin, p.quantity);
+      // 商品页判得出「不是 Amazon 发货」就当场停,省掉后面几步。
+      // 判不出来(null)不下结论 —— 结算页那道判定才是权威的。
+      if (task.guards.require_fba && added.shipperIsAmazon === false) {
+        throw new Abort("NOT_FBA", `${p.asin} 商品页显示配送方非 Amazon`);
       }
-      await driver.addToCart(p.asin, p.quantity);
       await step(`加购 ${p.asin} × ${p.quantity}`);
     }
 
@@ -71,19 +71,27 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     }
     await step("购物车核对通过");
 
+    await driver.proceedToCheckout();
     await driver.fillAddress(task.shipping);
     await step("收货地址已填写");
 
     const reading = await driver.readCheckout();
-    await step("读到结算页", { actual_total: reading.actualTotal, delivery_raw: reading.deliveryRaw });
+    await step("读到结算页", {
+      actual_total: reading.actualTotal,
+      delivery_texts: reading.deliveryTexts,
+    });
 
     // 护栏:插件只报数,服务端裁决。
     const verdict = await client.guardCheck(task.task_id, {
       actual_total: reading.actualTotal,
       actual_shipping: reading.actualShipping,
       actual_tax: reading.actualTax,
-      line_items: reading.lineItems,
-      delivery_raw: reading.deliveryRaw,
+      // 单价来自结算页实测,数量来自任务 —— 购物车那一步已经核对过车里就是这些。
+      line_items: reading.unitPrices.map((u) => ({
+        ...u,
+        quantity: task.products.find((p) => p.asin === u.asin)?.quantity ?? 1,
+      })),
+      delivery_raws: reading.deliveryTexts,
       is_fba: reading.isFba,
     });
     if (!verdict.ok) {
@@ -101,10 +109,13 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     }
     log.ok(`护栏放行 · 实付 ${reading.actualTotal} ≤ 限价 ${task.guards.price_cap}`);
 
+    // 服务端最终采信哪条交期,回填时要原样带回,不能让插件另挑一条。
+    const deliveryUsed = verdict.data.delivery_raw_used ?? undefined;
+
     if (deps.confirmBeforeOrder !== false && deps.askConfirm) {
       const go = await deps.askConfirm(task, {
         total: reading.actualTotal,
-        deliveryRaw: reading.deliveryRaw,
+        deliveryRaw: deliveryUsed,
       });
       if (!go) {
         log.warn("人按了取消 —— 清车,退回队列");
@@ -125,7 +136,7 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
       actual_shipping: reading.actualShipping,
       actual_tax: reading.actualTax,
       payment_last4: reading.paymentLast4,
-      delivery_raw: reading.deliveryRaw,
+      delivery_raw: deliveryUsed,
       observed_asins: card.observedAsins,
     });
 
@@ -142,11 +153,15 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     return { kind: "unreported", message: done.message };
 
   } catch (e) {
-    const code: ErrorCode = e instanceof Abort
+    // 驱动认得出原因的失败(DriverError)直接用它的码;认不出的才兜底。
+    const code: ErrorCode = e instanceof Abort || e instanceof DriverError
       ? e.code
       : (mayHaveOrdered ? "ORDER_CONFIRM_TIMEOUT" : "PLUGIN_INTERNAL");
     const detail = e instanceof Error ? e.message : String(e);
     return finish(task, code, detail, mayHaveOrdered, deps);
+  } finally {
+    // iframe 一定要收掉,不管这一单是怎么结束的。
+    try { await driver.dispose(); } catch { /* 收尾失败不改变这一单的结局 */ }
   }
 }
 

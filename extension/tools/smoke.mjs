@@ -43,17 +43,11 @@ console.log(`  注册 instance_id=${reg.data.instance_id} env_status=${reg.data.
 const hb = await client.heartbeat();
 console.log("  心跳", hb.ok ? "ok" : "失败");
 
-let asins = [];
-const loop = new Loop({
-  client,
-  log,
-  config: () => ({ mode: "simulate" }),
-  driver: () => new SimulatedDriver(scenario, asins),
-  onPhase: (p, t) => { if (t) asins = t.products.map((x) => x.asin); },
-});
+// 驱动每轮现取一个:一单一个实例,加购过的东西留在实例里,
+// 回读购物车和造订单卡都从那里来,不需要外部再喂 ASIN。
+const driver = new SimulatedDriver(scenario);
+const loop = new Loop({ client, log, config: () => ({ mode: "simulate" }), driver: () => driver });
 
-// 认领发生在 tickOnce 里,而 SimulatedDriver 要知道本单的 ASIN 才能造出
-// 「订单卡上的 ASIN」。driver 是每轮现取的,onPhase 先于执行触发,够用。
 const r = await loop.tickOnce();
 
 console.log("\n  结果:", JSON.stringify(r.kind === "ran" ? { kind: r.kind, task: r.task.task_id, outcome: r.outcome } : r));

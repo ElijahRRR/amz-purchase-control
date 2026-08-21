@@ -1,0 +1,773 @@
+<!--
+================================================================================
+  夹具：Amazon 订单历史页（US 站，有订单）
+================================================================================
+  页面        ：Your Orders
+  URL 形态    ：https://www.amazon.com/gp/css/order-history
+                （报告 §4.2.5 第 2 步：下单成功后延迟 500ms 用 layer.js 把它开成
+                 同源 iframe，**再固定等 3 秒**，然后用 iframeDoc 直接查询 DOM）
+  事实来源    ：docs/插件功能深度分析.md
+                §4.2.5 `openOrderHistoryPage`（`:988-1172`）—— 本夹具的主战场
+                §9.1  「主动点开 Amazon 的加密地址浮层」（`:1073-1077`）—— 邮编来源
+                §10.1 A1（`:948-953`）/ A2（`:1051-1059`）—— 本夹具要抓的头号缺陷
+                §10.2 B2（`:1044-1050`）—— 见姊妹夹具 order-history-empty.html
+
+  ------------------------------------------------------------------------------
+  报告确实记载的选择器（本夹具必须精确提供这些，解析器只许依赖它们）
+  ------------------------------------------------------------------------------
+    .js-order-card                              §4.2.5 第 3 步 订单卡片（主选择器）
+    .order-card__list                           §4.2.5 第 3 步 订单卡片（**退化**选择器）
+    .yohtmlc-order-id span                      §4.2.5 第 5 步 取**第 2 个** span（`:1055-1059`）
+    .yohtmlc-product-title a                    §4.2.5 第 5 步 ASIN 列表（读 href）
+    ASIN 正则 /\b(B0\w{8}|\d{10}|\d{9}X)\b/     §4.2.5 第 5 步
+    .a-popover-trigger … insert-encrypted-trigger-text … i
+                                                §4.2.5 第 5 步 / §9.1（`:1073-1077`）邮编气泡的点击目标
+                                                （报告原文两处都把选择器中段写成省略号，
+                                                  只锚定了这三个片段，中段形态见下方「未记载」）
+    .a-popover-wrapper .a-color-base .a-row     §4.2.5 第 5 步 取**第 2 个**，按 `<br>` 切分
+    邮编正则
+    /^(?:([^,]+),\s*)?([^,]+?)\s+(?:(\d{5})(?:-(\d{4}))?|([A-Za-z]\d[A-Za-z]\s\d[A-Za-z]\d)|(\d{3}-\d{4}))$/
+                                                §4.2.5 第 5 步 拆 mainPostCode / extPostCode
+
+  ------------------------------------------------------------------------------
+  报告【未】记载、本夹具按 Amazon 常见形态推测的部分（勿当作报告背书）
+  ------------------------------------------------------------------------------
+    金额 / 下单日期 / 收件人姓名的选择器
+        §4.2.5 第 5 步只列了「订单号 / ASIN 列表 / 邮编」三项，**没有记载订单历史页的
+        金额选择器**。§10.1 A2 的后果里虽然提到「金额也写到错误的采购任务上」，但那笔
+        金额来自结算页（§4.2.4 第 12 项 `.grand-total-cell`），不是这一页。
+        本页的 TOTAL 只用 a-* 包裹层承载，任务要求的 $ 与千分位形态在其中体现。
+    .a-popover-trigger 与 insert-encrypted-trigger-text 之间的中段节点
+        报告写作 `.a-popover-trigger…insert-encrypted-trigger-text… i`，中段是省略号。
+        这里按 Amazon 常见形态补了一层 a-declarative 包裹，**属推测**。
+    气泡内容何时进入 DOM
+        真实页面上 `.a-popover-wrapper` 是点击后才渲染的；报告第 5 步也正是「点击 → 等
+        1 秒 → 再读」。离线夹具没有 JS，这里把气泡**预渲染**成 display:none 的形态，
+        让解析器不必模拟点击也能被测。这一点属夹具约定，不是页面事实。
+    一切 a-* 类名的包裹层（a-box / a-row / a-column / a-fixed-right-grid / a-declarative …）
+        报告未记载，仅作包裹，逐处已在行内注释标注。
+    干扰项区块（Buy it again / Sponsored / 隐藏模板 / Archived orders 预告）
+        报告未记载，为任务要求的干扰项。
+
+  ------------------------------------------------------------------------------
+  本夹具刻意覆盖的边界
+  ------------------------------------------------------------------------------
+   1. **三张 .js-order-card，而「本单」是第 2 张**。这是整份夹具的核心：报告
+      §4.2.5 第 4 步（`:1053`）盲取 `orderCards[0]` 并认定它就是刚下的单（§10.1 A2）。
+      本夹具让第 1 张卡是**同一天、别的会话下的另一单**（ASIN B0DIFFRNT9，
+      订单号 114-7729031-1002486）。任何不做 ASIN 比对的解析器都会在这里回填错单号。
+      → 断言：解析结果的 platformOrderNo 必须是 111-4820193-7736514，
+              而不是文档里第一张卡的 114-7729031-1002486。
+   2. 订单号取「第 2 个 span」的三种形态：
+        卡 1 / 卡 2：规范形态（label span + value span，共 2 个）
+        卡 3      ：label span 里**嵌套**了一个 a-offscreen span → 扁平的
+                    `querySelectorAll('.yohtmlc-order-id span')[1]` 会取到嵌套的那个，
+                    正解是只数直接子代（`:scope > span`）。
+   3. ASIN 正则的三条分支全部覆盖：
+        B0\w{8}  → B0FB3VS68J（/dp/ 形态）、B0CHXNPXVX（/gp/product/ 形态）、B0DIFFRNT9
+        \d{10}   → 0306406152（卡 3，图书 ISBN 形态的 ASIN）
+        \d{9}X   → 043935806X（卡 3）
+   4. **正则边界的反面教材**：卡 1 第 2 件商品的 href 是 `/gp/product/B0DIFFERENT9/`。
+      它有 12 个字符，`\bB0\w{8}\b` 在 "B0DIFFEREN" 之后遇到 "T" 拿不到词边界，
+      **整条 href 一个 ASIN 都取不出来**（和报告 §8.3 缺陷 3 里 `\w{3}` 未加 `\b`
+      是同一类问题）。夹具刻意留着它，用来验证「取不到 ASIN」这条分支是否被处理。
+   5. 邮编的三条国别分支：
+        卡 2（本单）：`Santa Monica, CA 90405-2117` → ZIP+4，mainPostCode=90405,
+                      extPostCode=2117。这一条同时呼应 §4.2.4 第 1/2 项的
+                      「后台下发 ZIP+4 而页面只显示 5 位就会误判」。
+        卡 1        ：`Brooklyn, NY 11215` → 纯 5 位，且**文档序在前**——
+                      任何全局查 `.a-popover-wrapper` 的解析器都会拿到它。
+        卡 3        ：`Toronto, ON M5V 3L9` → 加拿大分支，且地址行里多一段公司名，
+                      `<br>` 切分后目标落在 index 3 而不是 index 2（呼应 §10.1 A9
+                      「JP 邮编按非 JP 分支切 <br> 取错下标」）。
+   6. 金额带 $ 与千分位：$1,847.62 / $2,048.49 / $1,024.75，干扰区还有 $10,299.00
+      （两个千分位组）。防止 parseFloat("1,847.62") 直接吃成 1。
+   7. 同一天两张卡（都是 August 21, 2026），仅靠日期无法区分本单。
+
+  ------------------------------------------------------------------------------
+  订单侧的期望值（跑夹具时对照用）
+  ------------------------------------------------------------------------------
+      本单 order.products = [ {asin:"B0FB3VS68J"}, {asin:"B0CHXNPXVX"} ]
+        （与 cart.html 夹具同一张订单）
+      → 正确解析应当命中**第 2 张**卡：
+            platformOrderNo = "111-4820193-7736514"
+            asins           = ["B0FB3VS68J", "B0CHXNPXVX"]
+            mainPostCode    = "90405"
+            extPostCode     = "2117"
+      → 报告记载的厂商实现（orderCards[0]）会得到：
+            platformOrderNo = "114-7729031-1002486"   ← 串单
+            asins           = ["B0DIFFRNT9", "B0SPON5OR1"]（且漏掉 B0DIFFERENT9）
+            mainPostCode    = "11215"
+================================================================================
+-->
+
+<div id="a-page">
+
+  <!-- 报告未记载，仅作包裹 -->
+  <div class="a-container a-spacing-top-base">
+    <h1 class="a-size-extra-large a-spacing-small">Your Orders</h1>
+    <!-- 报告未记载，仅作包裹：时间范围筛选条 -->
+    <div class="a-row a-spacing-medium">
+      <span class="a-size-base">3 orders placed in</span>
+      <span class="a-dropdown-container">
+        <span class="a-dropdown-prompt">past 3 months</span>
+      </span>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       干扰项 A：隐藏的订单卡模板（Amazon 常见形态：客户端渲染用的空壳）
+       ------------------------------------------------------------------------
+       它带 class="order-card__list" —— **正是报告 §4.2.5 第 3 步记载的退化选择器**，
+       并且带着占位的 .yohtmlc-order-id（两个 span，形态与真卡一模一样）和
+       .yohtmlc-product-title a。它 display:none，且**排在所有真卡之前**。
+       它刻意**不带** .js-order-card，所以报告的主选择器不会命中它。
+
+       写松了会怎样：
+         · 把主/退化选择器写成一个并集 —— `qsa('.js-order-card, .order-card__list')` ——
+           是最容易犯的错。并集按**文档序**返回，`[0]` 就是这个模板：
+             订单号取到占位串 "###-#######-#######"
+             ASIN  取到 B0TEMPLATE
+           → 报告 §10.1 A2 的串单，最坏形态：回填一串根本不存在的订单号。
+         · 正确写法是「先主后退化」的短路：
+             let cards = doc.querySelectorAll('.js-order-card');
+             if (!cards.length) cards = doc.querySelectorAll('.order-card__list');
+           本页 .js-order-card 有 3 张，退化分支根本不该被触发。
+         · `doc.querySelector('.yohtmlc-order-id')`（不带卡前缀）→ 命中这个模板，
+           回填占位串；`.yohtmlc-product-title a` 同理拿到 B0TEMPLATE。
+         · 注意：这里用 display:none 的 div 而**不是** <template> 元素。
+           <template> 的内容在独立 DocumentFragment 里，querySelectorAll 根本下不去，
+           那就不成其为陷阱了。真实 Amazon 两种形态都有。
+       ======================================================================== -->
+  <!-- 报告未记载，仅作包裹 -->
+  <div id="order-card-skeleton-host" class="a-hidden" aria-hidden="true" style="display:none">
+    <div class="order-card__list a-box-group" data-order-skeleton="true">
+      <!-- 报告未记载，仅作包裹 -->
+      <div class="a-box a-color-offset-background">
+        <div class="a-box-inner">
+          <div class="a-row a-size-mini yohtmlc-order-id">
+            <span class="a-color-secondary">ORDER # </span>
+            <span class="a-color-secondary" dir="ltr">###-#######-#######</span>
+          </div>
+        </div>
+      </div>
+      <div class="a-box">
+        <div class="a-box-inner">
+          <div class="a-row yohtmlc-product-title">
+            <a class="a-link-normal" href="/dp/B0TEMPLATE/ref=ppx_yo2ov_dt_b_fed_asin_title">{{productTitle}}</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       干扰项 B：可见的 .order-card__list 退化容器（"Buy it again" 风格的预告条）
+       ------------------------------------------------------------------------
+       结构上长得像订单卡：同样有 .order-card__list、同样有 TOTAL 金额、同样在
+       .js-order-card 之前。但它**不是订单**，是「归档订单」的入口预告条。
+
+       写松了会怎样：
+         · 同上，并集选择器 `qsa('.js-order-card, .order-card__list')[0]` 若 display:none
+           的模板被过滤掉了（比如解析器做了可见性判断，看起来很聪明），
+           `[0]` 就会落到这一条——它甚至更危险，因为它**可见**，肉眼复核也看不出破绽。
+         · 它里面**没有** .yohtmlc-order-id：`card.querySelector('.yohtmlc-order-id')`
+           返回 null，紧接着的 `.querySelectorAll('span')[1]` → TypeError。
+           报告 §4.2.5 没有为这条路径准备任何兜底，异常会被外层 catch 吞掉，
+           落入 §6.3「后台完全看不见」的失败。
+         · 金额 $10,299.00 是两个千分位组的形态，专门喂给任何顺手写的金额解析器。
+       ======================================================================== -->
+  <!-- 报告未记载，仅作包裹 -->
+  <div class="a-section a-spacing-medium" aria-label="Archived orders teaser">
+    <div class="order-card__list a-box-group">
+      <div class="a-box a-color-offset-background">
+        <div class="a-box-inner">
+          <div class="a-row">
+            <div class="a-column a-span4">
+              <div class="a-row a-size-mini a-color-secondary">ARCHIVED ORDERS</div>
+              <div class="a-row a-size-base">$10,299.00 spent since January 1, 2026</div>
+            </div>
+            <div class="a-column a-span4 a-text-right">
+              <a class="a-link-normal" href="/gp/css/order-history/archived">View archived orders</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- 报告未记载，仅作包裹：订单卡列表的外层容器 -->
+  <div class="a-section" id="ordersContainer">
+
+    <!-- ====================================================================
+         ✅ 卡 1 / .js-order-card —— **不是本单**
+         ====================================================================
+         订单号 114-7729031-1002486，同一天（August 21, 2026）由**别处**下的单。
+         报告 §4.2.5 第 4 步（`:1053`）会盲取这一张，§10.1 A2 的串单就发生在这里。
+
+         这一张卡刻意做全了三件事：
+           1. ASIN 与本单完全不同（B0DIFFRNT9）；
+           2. 第二件商品的 href 是 12 字符的 B0DIFFERENT9，报告的正则**取不出来**；
+           3. 卡**内部**还嵌了一条 "Buy it again" 推荐（B0SPON5OR1），
+              它同样带 .yohtmlc-product-title —— 这一条即便是严格按报告写的、
+              把查询限定在 orderCard 内的解析器也会误收。
+              这不是解析器的锅，是报告记载的选择器本身的边界，写测试时要意识到。
+         ==================================================================== -->
+    <div class="js-order-card a-box-group a-spacing-base" data-fixture-role="decoy-newest">
+
+      <!-- 报告未记载，仅作包裹：卡头 -->
+      <div class="a-box a-color-offset-background order-card__header">
+        <div class="a-box-inner">
+          <div class="a-fixed-right-grid">
+            <div class="a-fixed-right-grid-inner">
+              <div class="a-fixed-right-grid-col a-col-left">
+                <div class="a-row">
+                  <div class="a-column a-span3">
+                    <div class="a-row a-size-mini a-color-secondary">ORDER PLACED</div>
+                    <!-- 报告未记载：订单历史页的下单日期无选择器记载 -->
+                    <div class="a-row a-size-base">August 21, 2026</div>
+                  </div>
+                  <div class="a-column a-span2">
+                    <div class="a-row a-size-mini a-color-secondary">TOTAL</div>
+                    <!-- 报告未记载：本页金额无选择器记载，仅承载 $ 与千分位形态 -->
+                    <div class="a-row a-size-base">$2,048.49</div>
+                  </div>
+                  <div class="a-column a-span7">
+                    <div class="a-row a-size-mini a-color-secondary">SHIP TO</div>
+
+                    <!-- ✅ 报告记载：邮编气泡的点击目标
+                         `.a-popover-trigger … insert-encrypted-trigger-text … i`
+                         （报告 §4.2.5 第 5 步 / §9.1 `:1073-1077`，中段是省略号）
+                         干扰点：a-popover-trigger 内部还有第二个 <i>（下拉箭头），
+                         且它**在** insert-encrypted-trigger-text 之外、文档序在前。
+                         写成 `.a-popover-trigger i` 会点到那个箭头，气泡不展开，
+                         等 1 秒后读到空的 .a-popover-wrapper → 邮编取空。 -->
+                    <div class="a-row">
+                      <!-- 报告未记载，仅作包裹：报告省略号所在的中段 -->
+                      <span class="a-declarative">
+                        <a class="a-popover-trigger a-declarative" href="javascript:void(0)">
+                          <!-- 报告未记载，仅作包裹：箭头图标，刻意排在解密控件之前 -->
+                          <i class="a-icon a-icon-arrow" aria-hidden="true"></i>
+                          <span class="a-declarative insert-encrypted-trigger-text">
+                            Priya Raghunathan
+                            <i class="a-icon a-icon-popover" aria-hidden="true"></i>
+                          </span>
+                        </a>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="a-fixed-right-grid-col a-col-right">
+
+                <!-- ✅ 报告记载：.yohtmlc-order-id，取**第 2 个** span（`:1055-1059`）
+                     规范形态：第 1 个 span 是 "ORDER # " 标签，第 2 个才是号码。 -->
+                <div class="a-row a-size-mini yohtmlc-order-id">
+                  <span class="a-color-secondary">ORDER # </span>
+                  <span class="a-color-secondary" dir="ltr">114-7729031-1002486</span>
+                </div>
+                <div class="a-row a-size-mini">
+                  <a class="a-link-normal" href="/gp/your-account/order-details?ie=UTF8&amp;orderID=114-7729031-1002486">View order details</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 报告未记载，仅作包裹：卡体。真实 Amazon 结构里 .order-card__list 是
+           .js-order-card 的**后代**——这正是报告把它记作「退化选择器」的由来，
+           但也意味着 qsa('.order-card__list') 在本页会返回 5 个节点
+           （模板 1 + 预告条 1 + 三张真卡各 1），与 .js-order-card 的 3 个不等。 -->
+      <div class="a-box order-card__list">
+        <div class="a-box-inner">
+
+          <!-- 商品 1：ASIN B0DIFFRNT9（合法 10 位，能被正则取出，但不是本单） -->
+          <div class="a-fixed-left-grid a-spacing-base">
+            <div class="a-fixed-left-grid-inner">
+              <div class="a-fixed-left-grid-col a-col-left">
+                <img class="a-image" alt="Logitech MX Master 3S"
+                     src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+              </div>
+              <div class="a-fixed-left-grid-col a-col-right">
+                <div class="a-row a-size-base a-color-success a-text-bold">Delivered August 20</div>
+                <!-- ✅ 报告记载：.yohtmlc-product-title a，ASIN 从 href 取
+                     /dp/ 形态 -->
+                <div class="a-row yohtmlc-product-title">
+                  <a class="a-link-normal" href="/dp/B0DIFFRNT9/ref=ppx_yo2ov_dt_b_fed_asin_title">Logitech MX Master 3S Wireless Performance Mouse, 8K DPI, Quiet Clicks, USB-C, Graphite</a>
+                </div>
+                <div class="a-row a-size-small a-color-secondary">Return window closed on September 19, 2026</div>
+                <div class="a-row a-size-base">$1,099.50</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 商品 2：ASIN B0DIFFERENT9 —— ⚠️ 正则边界的反面教材
+               ------------------------------------------------------------------
+               href 里的标识是 12 个字符。报告的正则 /\b(B0\w{8}|\d{10}|\d{9}X)\b/：
+                 · B0\w{8}  匹配到 "B0DIFFEREN" 后，下一个字符 "T" 仍是 \w，
+                            末尾的 \b 拿不到词边界 → 失败（\w{8} 是定长，回溯救不了）
+                 · \d{10} / \d{9}X 在这条 href 上也没有落点
+               → 这件商品的 ASIN **静默丢失**，卡 1 的 asins 只会有 B0DIFFRNT9。
+               和报告 §8.3 缺陷 3（`\w{3}` 未加 `\b`，Sept → ept）是同一类问题。
+               写测试时要断言的是「解析器有没有意识到自己漏了一件商品」——
+               报告记载的实现不会意识到，它连商品件数都不比对。
+               ------------------------------------------------------------------ -->
+          <div class="a-fixed-left-grid a-spacing-base">
+            <div class="a-fixed-left-grid-inner">
+              <div class="a-fixed-left-grid-col a-col-left">
+                <img class="a-image" alt="Sony WH-1000XM5"
+                     src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+              </div>
+              <div class="a-fixed-left-grid-col a-col-right">
+                <div class="a-row a-size-base a-color-success a-text-bold">Delivered August 20</div>
+                <!-- ✅ 报告记载：.yohtmlc-product-title a
+                     /gp/product/ 形态 -->
+                <div class="a-row yohtmlc-product-title">
+                  <a class="a-link-normal" href="/gp/product/B0DIFFERENT9/ref=ppx_yo2ov_dt_b_fed_asin_title">Sony WH-1000XM5 Wireless Noise Canceling Headphones with Auto Noise Canceling Optimizer</a>
+                </div>
+                <div class="a-row a-size-small a-color-secondary">Return window closed on September 19, 2026</div>
+                <div class="a-row a-size-base">$948.99</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- ==============================================================
+               干扰项 C：**卡内**的 "Buy it again" 推荐条
+               ----------------------------------------------------------------
+               这一条位于 .js-order-card **内部**，却也带 .yohtmlc-product-title a。
+               它不是这张订单买过的东西，是 Amazon 塞进卡片里的推荐位。
+
+               写松了会怎样：
+                 · 即便严格按报告写成 `orderCard.querySelectorAll('.yohtmlc-product-title a')`
+                   ——也就是完全正确地把查询限定在卡内——**照样会收到 B0SPON5OR1**。
+                   这不是解析器写松了，是报告记载的选择器本身覆盖不住的边界。
+                   要挡住它，必须再加一层容器约束（比如限定在 .order-card__list 的
+                   商品网格内、或排除带 Sponsored 标记的祖先），而那已经超出报告范围了。
+                 · 因此本条的用途是：让测试**显式记录**这个已知缺口，
+                   而不是假装它不存在。断言卡 1 的 asins 时要把 B0SPON5OR1 算进去。
+               ============================================================== -->
+          <!-- 报告未记载，仅作包裹 -->
+          <div class="a-section a-spacing-top-small" data-fixture-role="in-card-recommendation">
+            <div class="a-row a-size-small a-color-secondary">Sponsored</div>
+            <div class="a-row a-size-small">Buy it again</div>
+            <div class="a-row yohtmlc-product-title">
+              <a class="a-link-normal" href="/dp/B0SPON5OR1/ref=ppx_yo2ov_dt_b_sponsored_asin_title">Logitech MX Keys S Wireless Keyboard, Low-Profile, Backlit, USB-C, Graphite</a>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ✅ 报告记载：邮编气泡内容 .a-popover-wrapper .a-color-base .a-row
+           ------------------------------------------------------------------
+           报告 §4.2.5 第 5 步：点击触发器 → 等 1 秒 → 取**第 2 个** .a-row →
+           按 <br> 切分 → 套三国邮编正则。
+           真实页面上这段是点击后才渲染的；夹具预渲染成 display:none（见文件头「未记载」）。
+
+           ⚠️ 这是**文档里第一个** .a-popover-wrapper。任何写成
+              `doc.querySelector('.a-popover-wrapper .a-color-base .a-row')`
+              （不带卡前缀）的解析器，无论最终选中的是哪张卡，邮编都会取到 11215。
+              这正是 §10.1 A2 串单后「postCodeCheck 红叉」的成因之一。
+           ------------------------------------------------------------------ -->
+      <!-- 报告未记载，仅作包裹：Amazon 的浮层外壳 -->
+      <div class="a-popover a-popover-hidden" id="a-popover-1" aria-hidden="true" style="display:none">
+        <div class="a-popover-wrapper">
+          <div class="a-popover-inner">
+            <div class="a-section a-color-base">
+              <div class="a-row a-text-bold">Priya Raghunathan</div>
+              <div class="a-row">2110 Prospect Park West<br>APT 3R<br>Brooklyn, NY 11215</div>
+              <div class="a-row">United States</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /卡 1 -->
+
+    <!-- ====================================================================
+         ✅ 卡 2 / .js-order-card —— **这才是本单**
+         ====================================================================
+         订单号 111-4820193-7736514
+         商品   B0FB3VS68J（/dp/ 形态）+ B0CHXNPXVX（/gp/product/ 形态）
+                与 cart.html / product.html 夹具是同一张订单
+         邮编   Santa Monica, CA 90405-2117 → main=90405, ext=2117
+
+         这一张刻意做成**规范形态**（不埋任何陷阱）：它是断言的标准答案，
+         happy path 必须干净，否则测试失败时分不清是解析器错还是夹具刁难。
+         全部陷阱都放在卡 1 / 卡 3 / 干扰区。
+
+         注意它在文档里排**第二**——报告的 orderCards[0] 永远够不到它。
+         ==================================================================== -->
+    <div class="js-order-card a-box-group a-spacing-base" data-fixture-role="target">
+
+      <!-- 报告未记载，仅作包裹：卡头 -->
+      <div class="a-box a-color-offset-background order-card__header">
+        <div class="a-box-inner">
+          <div class="a-fixed-right-grid">
+            <div class="a-fixed-right-grid-inner">
+              <div class="a-fixed-right-grid-col a-col-left">
+                <div class="a-row">
+                  <div class="a-column a-span3">
+                    <div class="a-row a-size-mini a-color-secondary">ORDER PLACED</div>
+                    <!-- 与卡 1 同一天：仅凭日期无法区分本单 -->
+                    <div class="a-row a-size-base">August 21, 2026</div>
+                  </div>
+                  <div class="a-column a-span2">
+                    <div class="a-row a-size-mini a-color-secondary">TOTAL</div>
+                    <!-- 报告未记载：本页金额无选择器记载 -->
+                    <div class="a-row a-size-base">$1,847.62</div>
+                  </div>
+                  <div class="a-column a-span7">
+                    <div class="a-row a-size-mini a-color-secondary">SHIP TO</div>
+                    <!-- ✅ 报告记载：`.a-popover-trigger … insert-encrypted-trigger-text … i` -->
+                    <div class="a-row">
+                      <!-- 报告未记载，仅作包裹：报告省略号所在的中段 -->
+                      <span class="a-declarative">
+                        <a class="a-popover-trigger a-declarative" href="javascript:void(0)">
+                          <span class="a-declarative insert-encrypted-trigger-text">
+                            Marcus Whitfield
+                            <i class="a-icon a-icon-popover" aria-hidden="true"></i>
+                          </span>
+                        </a>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="a-fixed-right-grid-col a-col-right">
+
+                <!-- ✅ 报告记载：.yohtmlc-order-id，取**第 2 个** span（`:1055-1059`）
+                     ★ 这是断言的标准答案：111-4820193-7736514
+                     第 1 个 span 是 "ORDER # " 标签文本，只取它会回填一句 "ORDER #"。 -->
+                <div class="a-row a-size-mini yohtmlc-order-id">
+                  <span class="a-color-secondary">ORDER # </span>
+                  <span class="a-color-secondary" dir="ltr">111-4820193-7736514</span>
+                </div>
+                <div class="a-row a-size-mini">
+                  <a class="a-link-normal" href="/gp/your-account/order-details?ie=UTF8&amp;orderID=111-4820193-7736514">View order details</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 报告未记载，仅作包裹：卡体（同时是 .order-card__list 退化选择器的真实归属） -->
+      <div class="a-box order-card__list">
+        <div class="a-box-inner">
+
+          <!-- 商品 1：B0FB3VS68J —— /dp/ 形态（报告 §4.2.5 举的两种 href 之一） -->
+          <div class="a-fixed-left-grid a-spacing-base">
+            <div class="a-fixed-left-grid-inner">
+              <div class="a-fixed-left-grid-col a-col-left">
+                <img class="a-image" alt="Anker 737 Power Bank (PowerCore 24K)"
+                     src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+              </div>
+              <div class="a-fixed-left-grid-col a-col-right">
+                <div class="a-row a-size-base a-color-base a-text-bold">Arriving tomorrow by 10 PM</div>
+                <!-- ✅ 报告记载：.yohtmlc-product-title a -->
+                <div class="a-row yohtmlc-product-title">
+                  <a class="a-link-normal" href="/dp/B0FB3VS68J/ref=ppx_yo2ov_dt_b_fed_asin_title">Anker 737 Power Bank (PowerCore 24K), 24,000mAh 3-Port Portable Charger with 140W Output</a>
+                </div>
+                <div class="a-row a-size-small a-color-secondary">Ships from Amazon.com</div>
+                <div class="a-row a-size-base">$1,299.99</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 商品 2：B0CHXNPXVX —— /gp/product/ 形态（报告 §4.2.5 举的另一种 href）
+               干扰点：href 上还挂了 &th=1&psc=1 这类查询串（§4.2.1 加购时用的正是
+               `/dp/{asin}?th=1&psc=1`）。正则若被写成「取 href 最后一段」而不是
+               匹配 ASIN 形态，会把 psc=1 那一段当结果。 -->
+          <div class="a-fixed-left-grid a-spacing-base">
+            <div class="a-fixed-left-grid-inner">
+              <div class="a-fixed-left-grid-col a-col-left">
+                <img class="a-image" alt="Amazon Basics AA Alkaline Batteries"
+                     src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+              </div>
+              <div class="a-fixed-left-grid-col a-col-right">
+                <div class="a-row a-size-base a-color-base a-text-bold">Arriving tomorrow by 10 PM</div>
+                <!-- ✅ 报告记载：.yohtmlc-product-title a -->
+                <div class="a-row yohtmlc-product-title">
+                  <a class="a-link-normal" href="/gp/product/B0CHXNPXVX/ref=ppx_yo2ov_dt_b_fed_asin_title?ie=UTF8&amp;th=1&amp;psc=1">Amazon Basics 48-Pack AA Alkaline High-Performance Batteries, 10-Year Shelf Life</a>
+                </div>
+                <div class="a-row a-size-small a-color-secondary">Ships from Amazon.com</div>
+                <div class="a-row a-size-base">$182.55</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ✅ 报告记载：.a-popover-wrapper .a-color-base .a-row（取第 2 个）
+           ★ 这是断言的标准答案：
+             row[1].innerHTML 按 <br> 切 → ["1420 Ocean Park Blvd","APT 5C","Santa Monica, CA 90405-2117"]
+             最后一段套报告的三国正则 →
+               g1="Santa Monica"  g2="CA"  g3="90405"  g4="2117"
+               mainPostCode="90405"  extPostCode="2117"
+           这一条同时是 §4.2.4 第 1/2 项那条注记的活样本：结算页只显示 5 位 ZIP 而
+           后台下发 ZIP+4 时会误判——这里页面给的是全 9 位，反向的场景。 -->
+      <!-- 报告未记载，仅作包裹：Amazon 的浮层外壳 -->
+      <div class="a-popover a-popover-hidden" id="a-popover-2" aria-hidden="true" style="display:none">
+        <div class="a-popover-wrapper">
+          <div class="a-popover-inner">
+            <div class="a-section a-color-base">
+              <div class="a-row a-text-bold">Marcus Whitfield</div>
+              <div class="a-row">1420 Ocean Park Blvd<br>APT 5C<br>Santa Monica, CA 90405-2117</div>
+              <div class="a-row">United States</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /卡 2 -->
+
+    <!-- ====================================================================
+         ✅ 卡 3 / .js-order-card —— 不是本单，专门覆盖正则与下标的其余分支
+         ====================================================================
+         订单号 112-9938471-5560329（label span 里**嵌套**了一个 a-offscreen span）
+         商品   0306406152（\d{10} 分支）+ 043935806X（\d{9}X 分支）
+         邮编   Toronto, ON M5V 3L9（加拿大分支），且地址行多一段公司名
+         ==================================================================== -->
+    <div class="js-order-card a-box-group a-spacing-base" data-fixture-role="decoy-oldest">
+
+      <!-- 报告未记载，仅作包裹：卡头 -->
+      <div class="a-box a-color-offset-background order-card__header">
+        <div class="a-box-inner">
+          <div class="a-fixed-right-grid">
+            <div class="a-fixed-right-grid-inner">
+              <div class="a-fixed-right-grid-col a-col-left">
+                <div class="a-row">
+                  <div class="a-column a-span3">
+                    <div class="a-row a-size-mini a-color-secondary">ORDER PLACED</div>
+                    <div class="a-row a-size-base">August 14, 2026</div>
+                  </div>
+                  <div class="a-column a-span2">
+                    <div class="a-row a-size-mini a-color-secondary">TOTAL</div>
+                    <!-- 报告未记载：本页金额无选择器记载 -->
+                    <div class="a-row a-size-base">$1,024.75</div>
+                  </div>
+                  <div class="a-column a-span7">
+                    <div class="a-row a-size-mini a-color-secondary">SHIP TO</div>
+                    <!-- ✅ 报告记载：`.a-popover-trigger … insert-encrypted-trigger-text … i` -->
+                    <div class="a-row">
+                      <!-- 报告未记载，仅作包裹：报告省略号所在的中段 -->
+                      <span class="a-declarative">
+                        <a class="a-popover-trigger a-declarative" href="javascript:void(0)">
+                          <span class="a-declarative insert-encrypted-trigger-text">
+                            Northwind Trading Co.
+                            <i class="a-icon a-icon-popover" aria-hidden="true"></i>
+                          </span>
+                        </a>
+                      </span>
+                    </div>
+                  </div>
+                </div>
+              </div>
+              <div class="a-fixed-right-grid-col a-col-right">
+
+                <!-- ⚠️ 干扰项 D：.yohtmlc-order-id 里的**嵌套 span**
+                     ------------------------------------------------------------
+                     真实 Amazon 常在标签里塞一个仅供读屏器的 a-offscreen span。
+                     结果 `.yohtmlc-order-id span` 的**扁平**结果是三个节点：
+                       [0] "ORDER # …"（外层 label，含嵌套内容）
+                       [1] "Order number"（a-offscreen，读屏器专用）  ← 报告的写法会取到它
+                       [2] "112-9938471-5560329"（真正的号码）
+                     报告 §4.2.5 第 5 步只说「取第 2 个 span」（`:1055-1059`），
+                     在这种形态上会回填字符串 "Order number"。
+
+                     写松了会怎样：
+                       · 用 querySelectorAll('span')[1] → 得到 "Order number"，
+                         而它**不为空、也不报错**，一路顺利回传给后台（§6.3：静默）。
+                       · 正解是只数直接子代：
+                           el.querySelectorAll(':scope > span')[1]
+                         或对结果做订单号形态校验（/^\d{3}-\d{7}-\d{7}$/）。
+                     ------------------------------------------------------------ -->
+                <div class="a-row a-size-mini yohtmlc-order-id">
+                  <span class="a-color-secondary">ORDER #
+                    <span class="a-offscreen">Order number</span>
+                  </span>
+                  <span class="a-color-secondary" dir="ltr">112-9938471-5560329</span>
+                </div>
+                <div class="a-row a-size-mini">
+                  <a class="a-link-normal" href="/gp/your-account/order-details?ie=UTF8&amp;orderID=112-9938471-5560329">View order details</a>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- 报告未记载，仅作包裹：卡体 -->
+      <div class="a-box order-card__list">
+        <div class="a-box-inner">
+
+          <!-- 商品 1：0306406152 —— 正则的 \d{10} 分支（图书 ISBN 形态的 ASIN） -->
+          <div class="a-fixed-left-grid a-spacing-base">
+            <div class="a-fixed-left-grid-inner">
+              <div class="a-fixed-left-grid-col a-col-left">
+                <img class="a-image" alt="Structure and Interpretation of Computer Programs"
+                     src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+              </div>
+              <div class="a-fixed-left-grid-col a-col-right">
+                <div class="a-row a-size-base a-color-success a-text-bold">Delivered August 18</div>
+                <!-- ✅ 报告记载：.yohtmlc-product-title a
+                     ⚠️ 注意 \d{10} 这条分支的危险性：它会匹配 href 里**任何**
+                     10 位连续数字。本条 href 干净，但干扰区里有反例（见干扰项 E）。 -->
+                <div class="a-row yohtmlc-product-title">
+                  <a class="a-link-normal" href="/dp/0306406152/ref=ppx_yo2ov_dt_b_fed_asin_title">Structure and Interpretation of Computer Programs, 2nd Edition (MIT Electrical Engineering and Computer Science)</a>
+                </div>
+                <div class="a-row a-size-small a-color-secondary">Return window closed on September 17, 2026</div>
+                <div class="a-row a-size-base">$612.40</div>
+              </div>
+            </div>
+          </div>
+
+          <!-- 商品 2：043935806X —— 正则的 \d{9}X 分支
+               注意 alternation 顺序：\d{10} 排在 \d{9}X 之前，但 "043935806X" 里
+               只有 9 位连续数字，\d{10} 落空后才轮到 \d{9}X。顺序无害，但值得测。 -->
+          <div class="a-fixed-left-grid a-spacing-base">
+            <div class="a-fixed-left-grid-inner">
+              <div class="a-fixed-left-grid-col a-col-left">
+                <img class="a-image" alt="Harry Potter and the Order of the Phoenix"
+                     src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+              </div>
+              <div class="a-fixed-left-grid-col a-col-right">
+                <div class="a-row a-size-base a-color-success a-text-bold">Delivered August 18</div>
+                <!-- ✅ 报告记载：.yohtmlc-product-title a -->
+                <div class="a-row yohtmlc-product-title">
+                  <a class="a-link-normal" href="/gp/product/043935806X/ref=ppx_yo2ov_dt_b_fed_asin_title">Harry Potter and the Order of the Phoenix (Book 5)</a>
+                </div>
+                <div class="a-row a-size-small a-color-secondary">Return window closed on September 17, 2026</div>
+                <div class="a-row a-size-base">$412.35</div>
+              </div>
+            </div>
+          </div>
+
+        </div>
+      </div>
+
+      <!-- ✅ 报告记载：.a-popover-wrapper .a-color-base .a-row（取第 2 个）
+           ⚠️ 干扰项 F：地址行里多一段公司名
+           ------------------------------------------------------------------
+           row[1].innerHTML 按 <br> 切 →
+             ["Northwind Trading Co.", "88 Queens Quay W", "Suite 2500", "Toronto, ON M5V 3L9"]
+           目标落在 index **3**，而不是常见的 index 2。
+
+           写松了会怎样：
+             · 把「城市州邮编那一行」写成硬编码下标 segments[2] → 拿到 "Suite 2500"，
+               正则不匹配 → 邮编取空 → 回传空的 mainPostCode，后台 postCodeCheck 红叉，
+               但插件侧毫无报错（§6.3）。
+             · 这正是报告 §10.1 A9 记载的同一类错误的镜像：`processOrderTracking`
+               漏传 country 导致「日本站地址按非 JP 分支切 <br>，取 index 2 而非 3」。
+             · 正解是对每一段都跑一遍报告的正则，取第一个匹配上的（正则是 ^…$ 锚定的，
+               天然只会有一段命中）。
+           加拿大分支验证：
+             g1="Toronto"  g2="ON"  g5="M5V 3L9"  → mainPostCode="M5V 3L9", extPostCode=""
+           ------------------------------------------------------------------ -->
+      <!-- 报告未记载，仅作包裹：Amazon 的浮层外壳 -->
+      <div class="a-popover a-popover-hidden" id="a-popover-3" aria-hidden="true" style="display:none">
+        <div class="a-popover-wrapper">
+          <div class="a-popover-inner">
+            <div class="a-section a-color-base">
+              <div class="a-row a-text-bold">Northwind Trading Co.</div>
+              <div class="a-row">Northwind Trading Co.<br>88 Queens Quay W<br>Suite 2500<br>Toronto, ON M5V 3L9</div>
+              <div class="a-row">Canada</div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+    </div><!-- /卡 3 -->
+
+  </div><!-- /#ordersContainer -->
+
+  <!-- ========================================================================
+       干扰项 E：页面底部的 "Buy it again" 推荐区（在**所有** .js-order-card 之外）
+       ------------------------------------------------------------------------
+       任务点名要的干扰项：这里也有 .yohtmlc-product-title a，指向 /dp/B0NOISE0001/。
+
+       写松了会怎样：
+         · `doc.querySelectorAll('.yohtmlc-product-title a')`（不带卡前缀）→ 本页共
+           9 条链接（卡 1 三条含推荐、卡 2 两条、卡 3 两条、本区两条），
+           ASIN 列表被推荐位污染 → 回传给后台的 asins 里混进从没买过的商品
+           → 后台 asinCheck 红叉，而报告 §10.1 A2 说这是**唯一**的事后发现手段。
+         · ⚠️ B0NOISE0001 本身是一道更细的题：它有 11 个字符，
+           `\bB0\w{8}\b` 在 "B0NOISE00" 之后遇到 "0" 拿不到词边界 → 不匹配。
+           但这条 href 上挂着 `pd_rd_i=1755795600` —— 一个 **10 位时间戳**。
+           正则从左往右扫，`B0\w{8}` 落空后 `\d{10}` 会命中它：
+               "/dp/B0NOISE0001/…&pd_rd_i=1755795600".match(报告正则)[1] === "1755795600"
+           → 解析器把一个 UNIX 时间戳当成 ASIN 回传。这不是夹具编的，
+             是报告 §4.2.5 那条正则**直接套在整条 href 上**的必然结果。
+           正解：先用 /\/(?:dp|gp\/product)\/([^\/?#]+)/ 取出路径段，再对该段套 ASIN 正则。
+         · 第二条链接 B0RECMND01 是合法的 10 位形态，会被干干净净地误收 ——
+           它专治「我加了长度校验就安全了」的想法。
+       ======================================================================== -->
+  <!-- 报告未记载，仅作包裹 -->
+  <div class="a-section a-spacing-top-large" id="buy-it-again-carousel" aria-label="Buy it again">
+    <h2 class="a-size-large a-spacing-small">Buy it again</h2>
+    <div class="a-row">
+      <div class="a-column a-span4">
+        <img class="a-image" alt="Clorox Disinfecting Wipes"
+             src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+        <div class="a-row yohtmlc-product-title">
+          <a class="a-link-normal" href="/dp/B0NOISE0001/ref=ppx_yo2ov_dt_b_buyitagain&amp;pd_rd_i=1755795600">Clorox Disinfecting Wipes, Bleach Free Cleaning Wipes, 75 Count Each, Pack of 3</a>
+        </div>
+        <div class="a-row a-size-base">$1,199.00</div>
+      </div>
+      <div class="a-column a-span4">
+        <img class="a-image" alt="Blue Diamond Almonds"
+             src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+        <div class="a-row yohtmlc-product-title">
+          <a class="a-link-normal" href="/gp/product/B0RECMND01/ref=ppx_yo2ov_dt_b_buyitagain">Blue Diamond Almonds, Lightly Salted, 40 Ounce Resealable Bag</a>
+        </div>
+        <div class="a-row a-size-base">$249.99</div>
+        <div class="a-row a-size-mini a-color-secondary">Sponsored</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       干扰项 G：分页条里的「订单号搜索」输入框
+       ------------------------------------------------------------------------
+       它的 value 是一个**形态完全合法**的订单号，但那是用户上次搜索留下的历史值，
+       不是任何一张卡的订单号。
+
+       写松了会怎样：
+         · 任何按「订单号形态正则」全页扫文本的兜底逻辑（比如
+           `doc.body.innerText.match(/\d{3}-\d{7}-\d{7}/)`）会先命中它——
+           它在 DOM 里排在最后，但如果解析器改成扫 value/属性就会提前命中。
+         · 报告没有授权任何「全页扫」的做法；这一条是给未来可能加的兜底提前设的关。
+       ======================================================================== -->
+  <!-- 报告未记载，仅作包裹 -->
+  <div class="a-section a-spacing-top-medium" id="order-search-widget">
+    <label class="a-form-label" for="orderFilter">Search all orders</label>
+    <input class="a-input-text" id="orderFilter" type="text" name="search"
+           value="113-0000000-0000000" placeholder="Search all orders">
+    <span class="a-button a-button-primary">
+      <span class="a-button-inner">
+        <input class="a-button-input" type="submit" value="Search Orders">
+      </span>
+    </span>
+  </div>
+
+  <!--
+  ============================================================================
+    节点计数速查（写断言时对照）
+    ----------------------------------------------------------------------------
+      .js-order-card                          → 3   （报告主选择器，唯一正确的入口）
+      .order-card__list                       → 5   （模板 1 + 归档预告 1 + 三张卡各 1）
+      .js-order-card, .order-card__list（并集）→ 8   ← 并集写法就是从这里开始出错的
+      .yohtmlc-order-id                       → 4   （模板 1 + 三张卡各 1）
+      .yohtmlc-order-id span（全局扁平）      → 9   （模板 2 + 卡1 2 + 卡2 2 + 卡3 3）
+      .yohtmlc-product-title                  → 10  （模板 1 + 卡1 3 + 卡2 2 + 卡3 2 + 推荐区 2）
+      .a-popover-wrapper                      → 3   （三张卡各 1，模板与干扰区没有）
+    ----------------------------------------------------------------------------
+    姊妹夹具：order-history-empty.html —— 一张 .js-order-card 都没有，
+    用于验证报告 §4.2.5 第 3 步的 15 秒超时分支与 §10.2 B2（超时分支未 resolve → 挂起）。
+  ============================================================================
+  -->
+
+</div>

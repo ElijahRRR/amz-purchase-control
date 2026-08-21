@@ -12,7 +12,7 @@
 
 from typing import Any
 
-from services import task_event
+from services import error_codes, task_event
 
 CLAIM_SQL = """
 WITH candidate AS (
@@ -92,6 +92,7 @@ def fail(
     to_manual=True 用于「可能已经在 Amazon 上产生了订单」的场景(如下单后未见确认页),
     这类任务不能自动重试,必须人工确认。
     """
+    error_codes.validate(error_code)   # 拼错的码宁可拒收,也不写进库
     status = "manual" if to_manual else "exception"
     row = conn.execute(
         """

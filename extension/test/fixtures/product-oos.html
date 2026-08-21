@@ -1,0 +1,337 @@
+<!doctype html>
+<!--
+================================================================================
+  FIXTURE: product-oos.html  —  Amazon US 商品详情页（缺货 / OUT OF STOCK）
+================================================================================
+
+  页面        : 商品详情页 (Product Detail Page, "dp page")
+  URL 形态    : https://www.amazon.com/dp/B0C7RH1234?th=1&psc=1
+                （与 product.html 同一 ASIN、同一 URL 形态；差别只在库存状态）
+  事实来源    : docs/插件功能深度分析.md
+                  §4.2.1 processSingleProduct (:2518-2656)
+                  §6.2   会上报服务端的 failContent 第 1/2/4 条（:2542 / :2554 / :2596）
+                  §10.5  英文文案的精确匹配（`Currently unavailable`）
+  配套夹具    : ./product.html（有货版，同结构）
+
+  ---------------------------------------------------------------------------
+  本夹具存在的唯一理由
+  ---------------------------------------------------------------------------
+  验证库存判定是按 **includes** 而不是 **全等**。
+  报告 §4.2.1 的原文判定是「`#outOfStock span.a-color-price.a-text-bold` 含
+  `Currently unavailable`」。本页故意让实际文案**两处都不等于**那个基准串：
+
+    E1. 句点 —— 文案是 "Currently unavailable."（末尾多一个 `.`）
+    E2. 空白 —— 文本在 span 内被换行与缩进包着
+
+  于是：
+    textContent === "Currently unavailable"            → false  ❌ 全等写法在这里失败
+    textContent.trim() === "Currently unavailable"      → false  ❌ 只 trim 也不够（句点）
+    textContent.includes("Currently unavailable")       → true   ✅ 报告记的判定
+  期望结果：updateOrderStatus(99, "商品无库存")（报告 :2542）。
+
+  ---------------------------------------------------------------------------
+  其余刻意覆盖的边界：**失败原因的短路顺序**
+  ---------------------------------------------------------------------------
+  报告 §4.2.1 的步骤是有序的：库存 → 数量 → 优惠券 → 加购 → 跳转 → 保修。
+  真实的 Amazon 缺货页会把 buybox 整个撤掉，所以本页刻意**缺席**下列节点：
+
+    E3. 没有 `#quantity`（live DOM 里没有；只在 <template> 里留了一份，见 DISTRACTOR-4）
+        → 若解析器把数量检查放在库存**之前**，且 qty≠1，会报错误的原因
+          「无法修改商品购买数量」(:2554) 而不是「商品无库存」(:2542)。
+        → 这两条都会 status=99 上报服务端（§6.2），运营看到的失败原因就是错的，
+          会去查「为什么改不了数量」而不是「这个 ASIN 该换源了」。
+
+    E4. 没有 `#add-to-cart-button`
+        → 若解析器把加购按钮检查放在库存之前，会报「未找到加入购物车按钮」(:2596)。
+        → 更要命的是 DISTRACTOR-2：页面上仍有一个 `#add-to-cart-button-ubb`，
+          用前缀选择器的解析器会**找得到**按钮并把它点下去。
+
+    E5. 没有 buybox 的 merchant 区域（`p.a-spacing-none span.a-size-small` 的
+        Ships from / Sold by 两行在本页**不存在**）。
+        → 这是「尽力而为的商品页 FBA 判断」的**未知**用例：解析器必须返回「未知」，
+          既不能返回 true（会放行一张来源不明的单），也不能返回 false
+          （会误报「商品{asin}配送方式非FBA」，掩盖掉真正的缺货原因）。
+        → 注意页面下方 "Other sellers on Amazon" 里**仍然有**同结构的行，
+          见 DISTRACTOR-5：不锁容器的解析器会从那里读出一个 FBA 结论。
+        ⚠ 报告未记载商品页 FBA 选择器（报告只在结算页 §4.2.4 第 9 项记了这条判据）。
+
+  ---------------------------------------------------------------------------
+  给测试作者的注意事项
+  ---------------------------------------------------------------------------
+  N1. jsdom 不实现 innerText。报告原文是 `innerText.trim()`；jsdom 下读 textContent。
+  N2. 期望的断言是「解析器在第一步就短路返回 商品无库存，且**没有**点击任何按钮」。
+      建议给 #add-to-cart-button-ubb 挂 click spy —— 它被点到就说明选择器写松了。
+
+  说明：凡标注「报告未记载，仅作包裹」的元素，均为使本页可解析而添加的 Amazon 常见
+  a-* 包裹层，不构成对选择器的断言依据。
+================================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <title>Anker 737 Power Bank (PowerCore 24K, 140W) - Amazon.com</title>
+  <!-- 报告未记载，仅作包裹 -->
+  <style>
+    [hidden] { display: none; }
+    .aok-hidden { display: none !important; }
+  </style>
+</head>
+<body>
+
+<!-- ========================================================================
+     DISTRACTOR-1  顶部 Sponsored 广告位（在 buybox **之前**）
+     ------------------------------------------------------------------------
+     与 product.html 同款：一个 id 以 checkboxpctch 开头、属于**别的商品**的 checkbox。
+     写松了会怎样：不做容器限定的 `querySelector("input[id^=checkboxpctch]")` 会命中它。
+     本页额外的意义是 —— 这个赞助商品**有货**，而主商品缺货。任何「先找券、找到就
+     顺着往下走」的解析器，会在一个应当立刻判缺货的页面上继续操作下去。
+     ==================================================================== -->
+<div class="a-section a-spacing-medium" id="sp-top-strip">
+  <!-- 报告未记载，仅作包裹 -->
+  <span class="a-size-mini a-color-secondary">Sponsored</span>
+  <div class="a-section" data-asin="B0SPON9876">
+    <span class="a-size-base-plus">EcoFlow RIVER 3 Portable Power Station</span>
+    <span class="a-price"><span class="a-offscreen">$2,199.00</span></span>
+    <div class="a-section a-spacing-mini">
+      <label>
+        <input type="checkbox" id="checkboxpctch-sponsored-B0SPON9876" name="pctch">
+        <span class="a-size-base">Apply $300.00 coupon</span>
+      </label>
+    </div>
+  </div>
+</div>
+
+<!-- ========================================================================
+     主商品区 —— 报告未记载商品页的 buybox 容器选择器，仅作包裹。
+     data-asin 属性名报告是在购物车页（§4.2.2）记载的，商品页未记载；
+     这里带上只是给测试一个可靠的 scope 锚点。
+     ==================================================================== -->
+<div class="a-section a-spacing-none" id="centerCol" data-asin="B0C7RH1234">
+
+  <h1 class="a-size-large a-text-bold">Anker 737 Power Bank (PowerCore 24K, 140W)</h1>
+
+  <!-- 报告未记载价格选择器，仅作包裹。
+       报告 §4.2.4 明确：订单的 products[].price 在整个拍单流程中从未被读取，
+       商品页价格是装饰性的，解析器不应读它。缺货页 Amazon 仍会展示历史价。 -->
+  <div class="a-section a-spacing-micro">
+    <span class="a-price" data-a-color="secondary">
+      <span class="a-offscreen">$1,299.00</span>
+    </span>
+    <span class="a-size-small a-color-secondary">List Price: $1,449.00</span>
+  </div>
+
+  <!-- ====================================================================
+       [报告 §4.2.1 · 库存] #outOfStock span.a-color-price.a-text-bold
+       --------------------------------------------------------------------
+       本夹具的主角。文案 "Currently unavailable." —— 见头部 E1（句点）与 E2（空白）。
+       期望：includes("Currently unavailable") === true
+             → updateOrderStatus(99, "商品无库存") (:2542)，并**立即短路**，
+               不再执行数量 / 优惠券 / 加购任何一步。
+       抓谁：用 === 或 trim()===  做全等比较的解析器，在这里判定为「有货」，
+             然后一路走到加购，落进 E4 的 DISTRACTOR-2 陷阱。
+       ================================================================== -->
+  <div id="outOfStock" class="a-section a-spacing-none">
+    <span class="a-color-price a-text-bold">
+      Currently unavailable.
+    </span>
+    <!-- 报告未记载，仅作包裹：Amazon 缺货页的补充说明行 -->
+    <span class="a-size-small a-color-secondary">
+      We don't know when or if this item will be back in stock.
+    </span>
+  </div>
+
+  <!-- E3：这里**没有** #quantity。真实缺货页不渲染数量下拉。 -->
+  <!-- E4：这里**没有** #add-to-cart-button。真实缺货页不渲染加购按钮。 -->
+  <!-- E5：这里**没有** p.a-spacing-none 的 Ships from / Sold by 两行 → FBA 应判「未知」。 -->
+
+  <!-- 报告未记载，仅作包裹：缺货页真正给出的那个按钮 -->
+  <div class="a-section a-spacing-small">
+    <input type="submit" id="buybox-see-all-buying-choices-announce"
+           class="a-button-input" value="See All Buying Options">
+  </div>
+
+  <!-- ====================================================================
+       DISTRACTOR-2  "Buy it again" 加购按钮 #add-to-cart-button-ubb
+       --------------------------------------------------------------------
+       本页**唯一**存在的加购型按钮 —— 而它不是主 buybox 的加购按钮。
+       写松了会怎样：用 `[id^=add-to-cart-button]` / `[id*=add-to-cart]` 前缀匹配的
+       解析器会在一个**缺货页**上找到一个加购按钮并点下去。后果是双重的：
+         · 报告 §4.2.1 的「跳转确认」轮询 30 秒后失败，而该分支**只打日志、
+           不通知服务端**(:2630) —— 后台永远看不到这单出过问题；
+         · 真正的原因「商品无库存」也不会被上报，运营手里既没有失败也没有成功。
+       正确做法：精确 id `#add-to-cart-button`，且库存检查必须排在它前面。
+       ==================================================================== -->
+  <div class="a-section a-spacing-mini">
+    <input type="submit" id="add-to-cart-button-ubb" name="submit.add-to-cart-ubb"
+           class="a-button-input" value="Buy it again">
+  </div>
+
+</div><!-- /#centerCol -->
+
+<!-- ========================================================================
+     [报告 §4.2.1 · 保修弹窗] #attach-warranty-pane → #attachSiNoCoverage input
+     ------------------------------------------------------------------------
+     缺货页不会走到这一步，但节点保留（hidden），用来断言解析器**没有**去碰它。
+     DISTRACTOR-6 同 product.html：「加保」radio 排在「不加保」前面 ——
+     `#attach-warranty-pane input` 取首个会选中 $249.99 的保障计划。
+     ==================================================================== -->
+<div id="attach-warranty-pane" class="a-section a-spacing-base" hidden aria-hidden="true">
+  <h2 class="a-size-medium">Add a protection plan?</h2>
+  <div id="attachSiWithCoverage" class="a-section">
+    <label>
+      <input type="radio" name="attachWarrantyChoice" value="4yr">
+      <span class="a-size-base">4-Year Protection Plan &mdash; $249.99</span>
+    </label>
+  </div>
+  <div id="attachSiNoCoverage" class="a-section">
+    <label>
+      <input type="radio" name="attachWarrantyChoice" value="none">
+      <span class="a-size-base">No thanks</span>
+    </label>
+  </div>
+</div>
+
+<!-- ========================================================================
+     DISTRACTOR-3  aria-hidden + display:none 的 #quantity 模板副本
+     ------------------------------------------------------------------------
+     本页 live DOM 里**没有**真的 #quantity（E3），只剩这一份隐藏副本。
+     写松了会怎样：`doc.querySelector('#quantity')` 会**找到**它（没有真的与它竞争），
+     于是解析器以为页面有数量下拉；它只有 option 1，qty≥2 时落到报告 :2574 的
+     「商品库存不足或已售罄」—— 一个**似是而非**的失败原因：听起来跟缺货很像，
+     实际却掩盖了真正的「商品无库存」，也掩盖了「解析器读了一个 display:none 的
+     模板节点」这个真 bug。这是本夹具里最难被发现的一个陷阱。
+     正确做法：库存检查必须排在最前并短路；若要更稳，读 #quantity 时排除
+     display:none / aria-hidden 的祖先。
+     ==================================================================== -->
+<div class="a-section aok-hidden" aria-hidden="true" style="display:none" id="twisterQuantityShadow">
+  <select name="quantity" id="quantity" class="a-native-dropdown">
+    <option value="1">1</option>
+  </select>
+</div>
+
+<!-- ========================================================================
+     DISTRACTOR-4  <template> 里的模板节点（inert，不在主 DOM 树）
+     ------------------------------------------------------------------------
+     `document.querySelector` 找不到 template 内部的内容。
+     写松了会怎样：用正则 / innerHTML 字符串匹配找节点的解析器，会把这里的
+     `#add-to-cart-button` 当成真的存在，于是在缺货页上认为「加购按钮找得到」。
+     ==================================================================== -->
+<template id="dp-deferred-blocks">
+  <select name="quantity" id="quantity" class="a-native-dropdown">
+    <option value="1">1</option>
+    <option value="2">2</option>
+    <option value="3"> 3 </option>
+  </select>
+  <input type="submit" id="add-to-cart-button" class="a-button-input" value="Add to Cart">
+  <div id="attach-warranty-pane" class="a-section">
+    <div id="attachSiNoCoverage"><label><input type="radio" name="attachWarrantyChoice" value="none"><span>No thanks</span></label></div>
+  </div>
+</template>
+
+<!-- ========================================================================
+     DISTRACTOR-5  "Other sellers on Amazon" —— FBA「未知」用例的干扰源
+     ------------------------------------------------------------------------
+     主 buybox 的 merchant 区域在本页不存在（E5），但这里**仍然有**报告点名的
+     `p.a-spacing-none span.a-size-small` 结构。
+
+     (a) `Ships from  Amazon.com` —— 第三方报价，配送方确实是 Amazon。
+         写松了会怎样：不锁容器的 `doc.querySelector("p.a-spacing-none span.a-size-small")`
+         会在一个**主 buybox 根本不存在**的页面上读出「FBA = true」。
+         期望的正确结果是「未知」—— 解析器必须先确认主 buybox 的 merchant 区域存在，
+         区域不存在时返回未知，而不是退化到全页搜索。
+
+     (b) `Sold by  Amazonia Home Goods` —— 卖家名含 "amazon" 子串但是 FBM。
+         直击报告 §4.2.4 的原话「第 9 项判据极弱：只要配送方文案里出现 amazon
+         就算 FBA」。裸 includes("amazon") 在这一行上给出错误结论。
+     ==================================================================== -->
+<div class="a-section a-spacing-large" id="aod-offer-list">
+  <h2 class="a-size-medium">Other sellers on Amazon</h2>
+
+  <div class="a-section" data-asin="B0C7RH1234">
+    <span class="a-price"><span class="a-offscreen">$1,875.00</span></span>
+    <p class="a-spacing-none">
+      <span class="a-size-small a-color-secondary">Ships from</span>
+      <span class="a-size-small">Amazon.com</span>
+    </p>
+    <p class="a-spacing-none">
+      <span class="a-size-small a-color-secondary">Sold by</span>
+      <span class="a-size-small">TechLiquidators US</span>
+    </p>
+  </div>
+
+  <div class="a-section" data-asin="B0C7RH1234">
+    <span class="a-price"><span class="a-offscreen">$2,049.99</span></span>
+    <p class="a-spacing-none">
+      <span class="a-size-small a-color-secondary">Ships from</span>
+      <span class="a-size-small">Amazonia Home Goods</span>
+    </p>
+    <p class="a-spacing-none">
+      <span class="a-size-small a-color-secondary">Sold by</span>
+      <span class="a-size-small">Amazonia Home Goods</span>
+    </p>
+  </div>
+</div>
+
+<!-- ========================================================================
+     DISTRACTOR-7  "Products related to this item" 推荐位
+     ------------------------------------------------------------------------
+     与 product.html 镜像，但极性反过来 —— 这里的推荐商品是**有货**的：
+
+     (a) 另一个 `input[id^=checkboxpctch]`（推荐位商品的券）。
+         写松了会怎样：`querySelectorAll("input[id^=checkboxpctch]")` 全点，会给
+         别的商品勾券；报告说券这一步失败仅日志，勾错了也无人知晓。
+
+     (b) `span.a-color-price.a-text-bold` 文案是 "In Stock."，且**不在 #outOfStock 里**。
+         写松了会怎样：把库存判定写成 `doc.querySelector("span.a-color-price.a-text-bold")`
+         （丢掉 #outOfStock 祖先限定）时，文档顺序上主商品那个仍排在前面，所以
+         **这一条抓不出祖先限定的缺失**；它抓的是另一类写法 ——
+         「收集所有 a-color-price.a-text-bold，只要**有一个**不含 Currently unavailable
+          就认为有货」的解析器，会在这里把一个缺货商品判成有货。
+         （与 product.html 的 DISTRACTOR-7(b) 互补：两边都是聚合式判定的陷阱，
+           但极性相反 —— 那边抓 some(含缺货)⇒判缺货，这边抓 some(不含缺货)⇒判有货。）
+
+     (c) 一个 `select[name=quantity]`（没有 id=quantity），选项 1..5 齐全。
+         写松了会怎样：用 `select[name=quantity]` 代替 `#quantity` 的解析器会拿到它，
+         于是在一个连数量下拉都没有的缺货页上，**任意** qty 都能"选中" ——
+         报告 :2554 的「无法修改商品购买数量」这条保护彻底失效。
+     ==================================================================== -->
+<div class="a-section a-spacing-large" id="similarities_feature_div">
+  <h2 class="a-size-medium">Products related to this item</h2>
+
+  <div class="a-section" data-asin="B0REL12345">
+    <span class="a-size-base-plus">Anker 140W USB-C Charger (GaNPrime)</span>
+    <span class="a-price"><span class="a-offscreen">$2,499.00</span></span>
+
+    <!-- (b) 有货文案：类名对得上，但祖先不是 #outOfStock -->
+    <div class="a-section a-spacing-none">
+      <span class="a-color-price a-text-bold">In Stock.</span>
+    </div>
+
+    <!-- (a) 推荐位的 coupon checkbox -->
+    <label class="a-declarative">
+      <input type="checkbox" id="checkboxpctch-rel-B0REL12345" name="pctch" value="B0REL12345">
+      <span class="a-size-base">Apply $40.00 coupon</span>
+    </label>
+
+    <!-- (c) name 对得上但没有 id 的数量下拉，选项齐全 -->
+    <select name="quantity" class="a-native-dropdown">
+      <option value="1">1</option>
+      <option value="2">2</option>
+      <option value="3"> 3 </option>
+      <option value="4">4</option>
+      <option value="5">5</option>
+    </select>
+  </div>
+
+  <div class="a-section" data-asin="B0REL67890">
+    <span class="a-size-base-plus">Anker Nylon USB-C to USB-C Cable, 240W, 6ft</span>
+    <span class="a-price"><span class="a-offscreen">$1,099.00</span></span>
+    <span id="clickMepctch-rel-B0REL67890" class="a-declarative">
+      <input type="checkbox" name="pctch-clickme" value="B0REL67890">
+      <span class="a-size-base">Apply $5.00 coupon</span>
+    </span>
+  </div>
+</div>
+
+</body>
+</html>

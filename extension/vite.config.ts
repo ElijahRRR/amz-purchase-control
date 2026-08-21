@@ -4,6 +4,8 @@ import { defineConfig } from "vite";
 const TARGETS: Record<string, { entry: string; name: string; out: string }> = {
   background: { entry: "src/background/service-worker.ts", name: "amzSw", out: "background" },
   content: { entry: "src/content/panel.ts", name: "amzPanel", out: "content" },
+  /** 只给测试用:把纯解析函数暴露成 window.amzdom,好在 Playwright 页面里直接调。 */
+  domkit: { entry: "src/flow/dom/kit.ts", name: "amzdom", out: "domkit" },
 };
 
 export default defineConfig(({ mode }) => {

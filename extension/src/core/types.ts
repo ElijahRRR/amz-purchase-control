@@ -52,6 +52,8 @@ export interface GuardCheckOut {
   error_code: string | null;
   detail: string | null;
   delivery_date: string | null;
+  /** 服务端最终采信的那条交期原文。回填时原样带回,别自己另挑一条。 */
+  delivery_raw_used: string | null;
 }
 
 export interface LineItem {

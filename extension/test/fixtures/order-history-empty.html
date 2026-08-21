@@ -1,0 +1,370 @@
+<!--
+================================================================================
+  夹具：Amazon 订单历史页（US 站，筛选区间内无订单）
+================================================================================
+  页面        ：Your Orders — empty state
+  URL 形态    ：https://www.amazon.com/gp/css/order-history
+                （URL 与有订单时**完全相同**，只有 DOM 不同。报告 §4.2.5 第 2 步
+                 打开的就是这个地址，它无法从 URL 判断页面上有没有卡片。）
+  事实来源    ：docs/插件功能深度分析.md
+                §4.2.5 `openOrderHistoryPage` 第 3 步（`:988-1172`）—— 15 秒轮询与超时
+                §10.2 B2（`:1044-1050`）—— 超时分支裸 `return`、未 `resolve` → 静默挂起
+                §6.1 / §6.2 —— 超时上报的是 `updateOrderStatus(99, …)`
+
+  ------------------------------------------------------------------------------
+  这份夹具是干嘛的
+  ------------------------------------------------------------------------------
+  验证「找不到订单卡片」这条分支。报告 §4.2.5 第 3 步原文：
+
+      轮询 `.js-order-card`（退化 `.order-card__list`）最多 15 秒；
+      超时 → `updateOrderStatus(99,"回传订单失败，请手动复制AMZ订单号回填至系统")`
+
+  紧接着 §10.2 B2 记载了它的致命处：该超时分支调完 `updateOrderStatus` 之后是**裸
+  `return`，没有 `resolve()`** —— `openOrderHistoryPage` 的 Promise 永不兑现，
+  整个拍单批次在这里静默挂起，UI 永远停在「正在拍单中...」。
+
+  所以这份夹具要考的不只是「能不能识别为空」，而是三件事：
+      ① 15 秒后确实判定为空（而不是被干扰项骗到「找到了」）；
+      ② 判定为空之后，Promise 必须 settle（不能复刻 B2 的挂起）；
+      ③ 失败要上报（status=99），不能落进 §6.3「后台完全看不见」。
+
+  ------------------------------------------------------------------------------
+  报告确实记载的选择器（本页面刻意让主选择器落空、退化选择器**不落空**）
+  ------------------------------------------------------------------------------
+    .js-order-card                → **命中 0 个**（本页真的一张订单卡都没有）
+    .order-card__list             → **命中 1 个**（藏在隐藏模板里，见干扰项 A）
+                                     ← 这是本夹具的整个题眼
+    .yohtmlc-order-id span        → 命中 2 个（同上，全是占位符）
+    .yohtmlc-product-title a      → 命中 3 个（隐藏模板 1 + 推荐区 2，全不是订单）
+    .a-popover-trigger … insert-encrypted-trigger-text … i
+                                  → **命中 0 个**（没有订单就没有 SHIP TO 气泡）
+    .a-popover-wrapper .a-color-base .a-row
+                                  → 命中 1 组（右栏「默认收货地址」小卡，见干扰项 C）
+
+  ------------------------------------------------------------------------------
+  报告【未】记载、本夹具按 Amazon 常见形态推测的部分（勿当作报告背书）
+  ------------------------------------------------------------------------------
+    空态 DOM 本身
+        报告全文没有描述订单历史页为空时长什么样，整个空态形态属推测。
+    空态文案 "Looks like you haven't placed an order in the last 3 months."
+        按 Amazon US 常见措辞推测。报告只记载了别处的英文文案精确匹配
+        （§10.5：`shipping & handling:`、`Currently unavailable`、`Tracking ID:` 等），
+        **没有**为本页记载任何文案匹配 —— 也就是说报告记载的实现**不看文案**，
+        它只数 `.js-order-card` 的个数。本夹具的文案纯属场景还原。
+    右栏「默认收货地址」小卡、推荐区、隐藏模板
+        报告未记载，为任务要求的干扰项。
+    一切 a-* 类名的包裹层（a-box / a-row / a-column / a-declarative …）
+        报告未记载，仅作包裹，逐处已在行内注释标注。
+
+  ------------------------------------------------------------------------------
+  本夹具刻意覆盖的边界
+  ------------------------------------------------------------------------------
+   1. **主选择器空、退化选择器不空**。报告 §4.2.5 第 3 步把 `.order-card__list`
+      记作 `.js-order-card` 的退化选择器，也就是「主的找不到就退而求其次」。
+      本页恰好构造出这个陷阱：主选择器 0 个、退化选择器 1 个（且是个占位模板）。
+      → 只要退化逻辑写成「主的为空就无条件用退化的」，就**永远不会超时**，
+        反而会拿着 "###-#######-#######" 一路回填成功（详见干扰项 A）。
+      → 正确做法是：退化命中之后仍要做形态校验（订单号形态、ASIN 形态、可见性），
+        校验不过就当没找到，走超时分支。
+   2. **容器在、卡片不在**。`#ordersContainer` 这个外层容器照常渲染，只是里面
+      一张卡都没有。比「容器整个不渲染」更难：`if (container)` 为真，
+      `container.querySelectorAll('.js-order-card').length === 0` 才是正解。
+      （另一种真实形态见文件末尾注释掉的备用 DOM。）
+   3. **零结果不等于零 DOM**。本页依然有 3 个 `.yohtmlc-product-title a`、
+      2 个 `.yohtmlc-order-id span`、1 组 `.a-popover-wrapper .a-color-base .a-row`。
+      任何不带 `.js-order-card` 前缀的全局查询在这一页都会「查到东西」。
+   4. 金额带 $ 与千分位（$1,199.00 / $10,299.00），确保空态下的金额解析器也被喂到。
+   5. 超时语义的**歧义**：本页无法区分「这个账号本来就没订单」与「新订单还没出现在
+      历史页（Amazon 有秒级延迟，报告 §10.1 A2 明确记载）」。报告记载的实现两种都报
+      同一句 `回传订单失败，请手动复制AMZ订单号回填至系统`。这条歧义要在测试里显式记下来。
+
+  ------------------------------------------------------------------------------
+  期望值（跑夹具时对照用）
+  ------------------------------------------------------------------------------
+      orderCards（.js-order-card）        → length 0
+      → 轮询 15 秒后判定超时
+      → updateOrderStatus(orderId, 99, "回传订单失败，请手动复制AMZ订单号回填至系统")
+      → **并且 resolve/reject 必须被调用**（这一条是对报告 §10.2 B2 的回归防护）
+      → platformOrderNo / asins / mainPostCode 一律不回传（不得是空串或占位符）
+================================================================================
+-->
+
+<div id="a-page">
+
+  <!-- 报告未记载，仅作包裹 -->
+  <div class="a-container a-spacing-top-base">
+    <h1 class="a-size-extra-large a-spacing-small">Your Orders</h1>
+    <!-- 报告未记载，仅作包裹：时间范围筛选条。
+         注意这里的 "0 orders placed in past 3 months" —— 报告记载的实现**不读它**，
+         它只数 .js-order-card。任何想靠这句文案抄近路的解析器都在赌 Amazon 不改文案
+         （报告 §10.5：「语言一变，一半逻辑失效」）。 -->
+    <div class="a-row a-spacing-medium">
+      <span class="a-size-base">0 orders placed in</span>
+      <span class="a-dropdown-container">
+        <span class="a-dropdown-prompt">past 3 months</span>
+      </span>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       ★ 干扰项 A（本夹具的题眼）：隐藏的订单卡模板，带**退化选择器** .order-card__list
+       ------------------------------------------------------------------------
+       它 display:none，不带 .js-order-card，但带着报告 §4.2.5 第 3 步记载的退化
+       选择器 `.order-card__list`，以及形态完全正确的 .yohtmlc-order-id（两个 span）
+       和 .yohtmlc-product-title a。
+
+       写松了会怎样：
+         · 报告把退化逻辑写作「轮询 `.js-order-card`（退化 `.order-card__list`）」。
+           若实现成：
+               let cards = doc.querySelectorAll('.js-order-card');
+               if (!cards.length) cards = doc.querySelectorAll('.order-card__list');
+           那么在这一页 —— 一张真订单都没有的页 —— 退化分支**必然命中这个模板**，
+           轮询立刻成功返回，15 秒超时**永远不会触发**，
+           §4.2.5 的第 4/5 步照常执行：
+               订单号 → "###-#######-#######"
+               ASIN   → "B0TEMPLATE"
+               邮编   → 从别处的 .a-popover-wrapper 取到（见干扰项 C）
+           然后 `updatePurchaseOrderFinish` 把这三样**回传成功**，
+           后台记下一张根本不存在的 Amazon 订单，采购任务被标记为已完成。
+           这比 §10.2 B2 的「静默挂起」更坏：挂起至少不写脏数据。
+         · 正解有三层，任一层都能挡住：
+             ① 退化命中后校验订单号形态：/^\d{3}-\d{7}-\d{7}$/ 不通过就丢弃；
+             ② 校验 ASIN 形态：B0TEMPLATE 虽然长度合规，但整批 ASIN 与本单
+                order.products 无交集时必须判失败（这也正是报告缺的那道 ASIN 比对）；
+             ③ 排除不可见节点（offsetParent === null / [aria-hidden="true"]）。
+         · 注意这里用 display:none 的 div 而不是 <template> 元素：
+           <template> 的内容在独立 DocumentFragment 里，querySelectorAll 下不去，
+           那就不成其为陷阱了。真实 Amazon 两种形态都存在。
+       ======================================================================== -->
+  <!-- 报告未记载，仅作包裹 -->
+  <div id="order-card-skeleton-host" class="a-hidden" aria-hidden="true" style="display:none">
+    <div class="order-card__list a-box-group" data-order-skeleton="true">
+      <!-- 报告未记载，仅作包裹 -->
+      <div class="a-box a-color-offset-background">
+        <div class="a-box-inner">
+          <div class="a-row a-size-mini yohtmlc-order-id">
+            <span class="a-color-secondary">ORDER # </span>
+            <span class="a-color-secondary" dir="ltr">###-#######-#######</span>
+          </div>
+        </div>
+      </div>
+      <div class="a-box">
+        <div class="a-box-inner">
+          <div class="a-row yohtmlc-product-title">
+            <a class="a-link-normal" href="/dp/B0TEMPLATE/ref=ppx_yo2ov_dt_b_fed_asin_title">{{productTitle}}</a>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       ✅ 正主：空态容器
+       ------------------------------------------------------------------------
+       #ordersContainer 照常渲染（与 order-history.html 同名同结构），
+       里面**没有任何** .js-order-card。这是报告 §4.2.5 第 3 步唯一该看的地方。
+       ======================================================================== -->
+  <div class="a-section" id="ordersContainer">
+    <!-- 报告未记载，仅作包裹：空态提示框 -->
+    <div class="a-box a-color-alternate-background a-spacing-large">
+      <div class="a-box-inner a-padding-extra-large a-text-center">
+        <h2 class="a-size-large a-spacing-small">Looks like you haven't placed an order in the last 3 months.</h2>
+        <div class="a-row a-size-base a-color-secondary a-spacing-small">
+          Try a different time period, or check your archived orders.
+        </div>
+        <div class="a-row">
+          <span class="a-button a-button-primary">
+            <span class="a-button-inner">
+              <a class="a-button-text" href="/gp/css/order-history?timeFilter=year-2026">View orders in 2026</a>
+            </span>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       干扰项 B：页面底部的 "Buy it again" 推荐区
+       ------------------------------------------------------------------------
+       与 order-history.html 里的干扰项 E 是同一区块 —— 刻意保持一致，
+       因为它在**有订单和没订单两种页面上都存在**，是常驻的噪声源。
+       这里也有 .yohtmlc-product-title a，指向 /dp/B0NOISE0001/。
+
+       写松了会怎样：
+         · `doc.querySelectorAll('.yohtmlc-product-title a')`（不带卡前缀）→ 3 条
+           （隐藏模板 1 + 本区 2）。在一张**一件商品都没买过**的页面上，
+           解析器会得到一个非空的 ASIN 列表 —— 空态检测彻底失效。
+         · 若解析器把「ASIN 列表非空」当成「找到了本单」的判据（一个很自然的
+           想法，因为报告的实现连比对都不做），本页就会被判为成功。
+         · ⚠️ B0NOISE0001 有 11 个字符，报告的正则 /\b(B0\w{8}|\d{10}|\d{9}X)\b/
+           在 "B0NOISE00" 之后遇到 "0" 拿不到词边界 → 这一段不匹配。
+           但 href 上挂着 `pd_rd_i=1755795600` —— 一个 10 位时间戳，
+           `\d{10}` 分支会命中它，解析器把 UNIX 时间戳当 ASIN 回传。
+           正解：先用 /\/(?:dp|gp\/product)\/([^\/?#]+)/ 取路径段，再套 ASIN 正则。
+         · 第二条 B0RECMND01 是合法的 10 位形态，会被干干净净地误收。
+       ======================================================================== -->
+  <!-- 报告未记载，仅作包裹 -->
+  <div class="a-section a-spacing-top-large" id="buy-it-again-carousel" aria-label="Buy it again">
+    <h2 class="a-size-large a-spacing-small">Buy it again</h2>
+    <div class="a-row">
+      <div class="a-column a-span4">
+        <img class="a-image" alt="Clorox Disinfecting Wipes"
+             src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+        <div class="a-row yohtmlc-product-title">
+          <a class="a-link-normal" href="/dp/B0NOISE0001/ref=ppx_yo2ov_dt_b_buyitagain&amp;pd_rd_i=1755795600">Clorox Disinfecting Wipes, Bleach Free Cleaning Wipes, 75 Count Each, Pack of 3</a>
+        </div>
+        <div class="a-row a-size-base">$1,199.00</div>
+      </div>
+      <div class="a-column a-span4">
+        <img class="a-image" alt="Blue Diamond Almonds"
+             src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+        <div class="a-row yohtmlc-product-title">
+          <a class="a-link-normal" href="/gp/product/B0RECMND01/ref=ppx_yo2ov_dt_b_buyitagain">Blue Diamond Almonds, Lightly Salted, 40 Ounce Resealable Bag</a>
+        </div>
+        <div class="a-row a-size-base">$249.99</div>
+        <div class="a-row a-size-mini a-color-secondary">Sponsored</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       干扰项 C：右栏「默认收货地址」小卡 —— 带 .a-popover-wrapper
+       ------------------------------------------------------------------------
+       它不属于任何订单，是账号页常驻的地址摘要。但它的内部结构与报告
+       §4.2.5 第 5 步记载的邮编气泡**一模一样**：
+           .a-popover-wrapper .a-color-base .a-row，第 2 个，按 <br> 切分。
+
+       写松了会怎样：
+         · `doc.querySelector('.a-popover-wrapper .a-color-base .a-row')` 之类的
+           全局查询在这一页照样有结果，切出来的邮编是 98109 ——
+           一个**与任何订单都无关**的地址。配合干扰项 A 的假订单号，
+           后台会收到一份看起来字段齐全、实则全是噪声的回填。
+         · 它刻意**没有** .a-popover-trigger / insert-encrypted-trigger-text：
+           报告第 5 步要先点触发器再读气泡，本页触发器 0 个。
+           所以「先找触发器、找不到就放弃邮编」的写法能安全躲开它；
+           「直接读气泡」的写法躲不开。这就是这条干扰项要区分的东西。
+         · 报告 §9.1 记载点开这个气泡本身就是绕过 Amazon 的按需解密控件；
+           在一张空态页上还去读它，等于凭空产生一条 PII。
+       ======================================================================== -->
+  <!-- 报告未记载，仅作包裹 -->
+  <div class="a-section a-spacing-top-large" id="default-address-card" aria-label="Your default address">
+    <h2 class="a-size-medium a-spacing-mini">Your default shipping address</h2>
+    <!-- 报告未记载，仅作包裹：Amazon 的浮层外壳 -->
+    <div class="a-popover a-popover-inline" id="a-popover-default-address">
+      <div class="a-popover-wrapper">
+        <div class="a-popover-inner">
+          <div class="a-section a-color-base">
+            <div class="a-row a-text-bold">Marcus Whitfield</div>
+            <div class="a-row">410 Terry Ave N<br>Seattle, WA 98109</div>
+            <div class="a-row">United States</div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="a-row a-size-small">
+      <a class="a-link-normal" href="/a/addresses">Manage addresses</a>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       干扰项 D：归档订单预告条（与 order-history.html 的干扰项 B 同源）
+       ------------------------------------------------------------------------
+       ⚠️ 与有订单的那份夹具不同，这里**刻意去掉了** .order-card__list 类名 ——
+       否则退化选择器会命中两个节点，题眼就被稀释了。这一条只保留「结构像订单卡、
+       金额是两个千分位组」的干扰形态。
+
+       写松了会怎样：
+         · `$10,299.00` 喂给任何顺手写的金额解析器：parseFloat("10,299.00") === 10。
+         · 结构上它有 a-box-group + 卡头样式，任何靠「长得像卡」做启发式识别的
+           实现都会在这里翻车。报告只授权类名匹配，不授权结构启发式。
+       ======================================================================== -->
+  <!-- 报告未记载，仅作包裹 -->
+  <div class="a-section a-spacing-top-medium" aria-label="Archived orders teaser">
+    <div class="a-box-group">
+      <div class="a-box a-color-offset-background">
+        <div class="a-box-inner">
+          <div class="a-row">
+            <div class="a-column a-span4">
+              <div class="a-row a-size-mini a-color-secondary">ARCHIVED ORDERS</div>
+              <div class="a-row a-size-base">$10,299.00 spent since January 1, 2026</div>
+            </div>
+            <div class="a-column a-span4 a-text-right">
+              <a class="a-link-normal" href="/gp/css/order-history/archived">View archived orders</a>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       干扰项 E：订单号搜索框（与 order-history.html 的干扰项 G 同源）
+       ------------------------------------------------------------------------
+       value 是一个形态完全合法的订单号历史值，页面上却一张订单都没有。
+
+       写松了会怎样：
+         · 任何按订单号形态全页扫描的兜底逻辑（扫 innerText 或扫属性）都会命中
+           113-0000000-0000000，于是「找不到订单」这条分支永远走不到。
+         · 报告没有授权任何全页扫描的做法；这一条是给未来的兜底提前设的关。
+       ======================================================================== -->
+  <!-- 报告未记载，仅作包裹 -->
+  <div class="a-section a-spacing-top-medium" id="order-search-widget">
+    <label class="a-form-label" for="orderFilter">Search all orders</label>
+    <input class="a-input-text" id="orderFilter" type="text" name="search"
+           value="113-0000000-0000000" placeholder="Search all orders">
+    <span class="a-button a-button-primary">
+      <span class="a-button-inner">
+        <input class="a-button-input" type="submit" value="Search Orders">
+      </span>
+    </span>
+  </div>
+
+  <!--
+  ============================================================================
+    节点计数速查（写断言时对照）
+    ----------------------------------------------------------------------------
+      .js-order-card                          → 0   ← 唯一正确的判据
+      .order-card__list                       → 1   ← 隐藏模板；退化选择器的陷阱
+      .yohtmlc-order-id                       → 1   （隐藏模板，占位符）
+      .yohtmlc-order-id span                  → 2   （同上）
+      .yohtmlc-product-title a                → 3   （模板 1 + 推荐区 2）
+      .a-popover-trigger                      → 0   ← 没有订单就没有 SHIP TO 气泡
+      .insert-encrypted-trigger-text          → 0
+      .a-popover-wrapper                      → 1   （右栏默认地址，与订单无关）
+    ----------------------------------------------------------------------------
+    也就是说：报告记载的**主**选择器在这一页干净地返回 0，
+    而报告记载的**退化**选择器返回 1 —— 且那 1 个是彻头彻尾的假数据。
+    这份夹具的价值全在这一行落差上。
+  ============================================================================
+  -->
+
+  <!--
+  ============================================================================
+    备用形态（刻意留在注释里，不参与解析）
+    ----------------------------------------------------------------------------
+    真实 Amazon 空态还有第二种形态：**整个 #ordersContainer 都不渲染**，
+    只留一句提示。报告未记载空态 DOM，两种形态都属推测，但解析器两种都必须活下来：
+
+        const box  = doc.querySelector('#ordersContainer');
+        const cards = box ? box.querySelectorAll('.js-order-card')
+                          : doc.querySelectorAll('.js-order-card');   // 退回全文档
+
+    若写成 `doc.querySelector('#ordersContainer').querySelectorAll(...)`，
+    在下面这种形态上会直接抛 TypeError。而报告 §4.2.5 的超时分支本就不 resolve
+    （§10.2 B2），异常再被外层 catch 吞掉，结果是**既不报错也不推进**——
+    §6.3 里「后台完全看不见」的典型。
+
+    <div id="a-page">
+      <div class="a-container a-spacing-top-base">
+        <h1 class="a-size-extra-large">Your Orders</h1>
+      </div>
+      <div class="a-box a-color-alternate-background">
+        <div class="a-box-inner a-text-center">
+          <h2 class="a-size-large">Looks like you haven't placed an order in the last 3 months.</h2>
+        </div>
+      </div>
+    </div>
+  ============================================================================
+  -->
+
+</div>

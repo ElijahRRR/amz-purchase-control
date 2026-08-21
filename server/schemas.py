@@ -99,6 +99,9 @@ class GuardCheckReq(BaseModel):
     actual_tax: Decimal | None = None
     line_items: list[LineItemIn] = Field(default_factory=list)
     delivery_raw: str | None = None
+    #: 结算页每个商品面板各有一条交期文案。全都报上来,由服务端解析并取最晚的一条
+    #: —— 挑哪条算数是护栏的一部分,不该让插件自己决定。
+    delivery_raws: list[str] = Field(default_factory=list)
     is_fba: bool | None = None
 
 
@@ -107,6 +110,8 @@ class GuardCheckOut(BaseModel):
     error_code: str | None = None
     detail: str | None = None
     delivery_date: str | None = None
+    #: 服务端最终采信的那条原文。插件回填时原样带回,别自己另挑一条。
+    delivery_raw_used: str | None = None
 
 
 class CompleteReq(BaseModel):

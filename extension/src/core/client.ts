@@ -46,8 +46,8 @@ export class Client {
     actual_shipping?: string;
     actual_tax?: string;
     line_items?: LineItem[];
-    delivery_raw?: string;
-    is_fba?: boolean;
+    delivery_raws?: string[];
+    is_fba?: boolean | null;
   }): Promise<ApiResult<GuardCheckOut>> {
     return post("/v1/tasks/" + taskId + "/guard-check", {
       instance_uid: this.instanceUid,

@@ -4,6 +4,7 @@
 厂商的护栏写死在插件里,改一次要全员升级。
 """
 
+from collections.abc import Sequence
 from dataclasses import dataclass
 from datetime import date
 from decimal import Decimal, InvalidOperation
@@ -19,6 +20,9 @@ class Verdict:
     error_code: str | None = None
     detail: str | None = None
     delivery_date: date | None = None
+    #: 最终采信的那一条交期原文。结算页上每个商品面板各有一条,取最晚的那条;
+    #: 回填时要写进 tasks.delivery_raw 的就是它,不能让插件自己另挑一条。
+    delivery_raw_used: str | None = None
 
 
 def adjudicate(
@@ -26,7 +30,8 @@ def adjudicate(
     price_cap: Decimal,
     max_delivery_days: int,
     actual_total: str | Decimal | None,
-    delivery_raw: str | None,
+    delivery_raw: str | None = None,
+    delivery_raws: Sequence[str] | None = None,
     today: date,
     require_fba: bool = True,
     is_fba: bool | None = None,
@@ -47,24 +52,36 @@ def adjudicate(
             f"实付 {total} 超过限价 {price_cap}",
         )
 
-    parsed = parse_delivery(delivery_raw, today=today)
-    if parsed is None:
-        # 解析不出来一律转人工,不放行。
-        # 厂商那边解析失败时弹窗让操作员选「继续下单」,等于把护栏交给疲劳的人。
-        return Verdict(False, "DELIVERY_UNPARSEABLE", f"无法解析送达时间:{delivery_raw!r}")
+    # 结算页每个商品面板各有一条交期文案。整单什么时候到,取决于**最晚**的那件,
+    # 所以取最晚的一条来判。解析放在这里而不是插件里:改解析规则不用发新插件版本。
+    candidates = [r for r in (list(delivery_raws) if delivery_raws else [delivery_raw]) if r]
+    if not candidates:
+        return Verdict(False, "DELIVERY_UNPARSEABLE", "结算页没读到任何送达时间")
+
+    parsed_pairs: list[tuple[date, str]] = []
+    for raw in candidates:
+        got = parse_delivery(raw, today=today)
+        if got is None:
+            # 有一条读不懂就整单转人工。只挑看得懂的那些取最晚,会在
+            # 「看不懂的那条其实更晚」时放行一单不该放的。
+            return Verdict(False, "DELIVERY_UNPARSEABLE", f"无法解析送达时间:{raw!r}")
+        parsed_pairs.append((got, raw))
+
+    parsed, used = max(parsed_pairs, key=lambda pr: pr[0])
+
     if parsed < today:
         # 解析出过去的日期说明解析本身出错了(Amazon 的预计送达不可能在过去)。
         # 这一条直接堵住厂商那个「减一年」缺陷造成的负数天数放行。
         return Verdict(False, "DELIVERY_UNPARSEABLE",
-                       f"解析出过去的日期 {parsed},原文 {delivery_raw!r}")
+                       f"解析出过去的日期 {parsed},原文 {used!r}")
 
     days = (parsed - today).days
     if days > max_delivery_days:
         return Verdict(False, "DELIVERY_TOO_LATE",
                        f"预计 {parsed}({days} 天),超过上限 {max_delivery_days} 天",
-                       delivery_date=parsed)
+                       delivery_date=parsed, delivery_raw_used=used)
 
-    return Verdict(True, delivery_date=parsed)
+    return Verdict(True, delivery_date=parsed, delivery_raw_used=used)
 
 
 def _to_decimal(value) -> Decimal | None:

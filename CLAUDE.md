@@ -99,5 +99,6 @@ python -m pytest -q
 cd extension && npm install
 npm run typecheck && npm run build      # 打出 dist/,可直接加载进 Chrome
 npm run smoke                           # 用插件自己的 Loop/runTask 跑一遍闭环
+npm run test:dom                        # DOM 解析层对着夹具跑(不需要服务端)
 node tools/smoke.mjs --scenario wrong_asin
 ```

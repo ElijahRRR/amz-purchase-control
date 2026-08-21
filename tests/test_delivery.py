@@ -126,3 +126,76 @@ def test_unparseable_returns_none(raw):
 
 def test_invalid_calendar_date_returns_none():
     assert p("February 30") is None
+
+
+# ── 多条交期原文:结算页每个商品面板各有一条,整单取最晚的那件 ──────────────
+
+def test_guard_takes_latest_of_many_delivery_texts():
+    from datetime import date
+    from decimal import Decimal
+
+    from services.price_guard import adjudicate
+
+    today = date(2026, 8, 21)
+    v = adjudicate(
+        price_cap=Decimal("50.00"), max_delivery_days=7,
+        actual_total="10.79",
+        delivery_raws=["Monday, August 24", "Thursday, August 27", "Tuesday, August 25"],
+        today=today,
+    )
+    assert v.allow is True
+    assert v.delivery_date == date(2026, 8, 27)
+    # 采信的是最晚那条,回填时要写这条原文
+    assert v.delivery_raw_used == "Thursday, August 27"
+
+
+def test_guard_rejects_when_latest_of_many_is_too_late():
+    from datetime import date
+    from decimal import Decimal
+
+    from services.price_guard import adjudicate
+
+    v = adjudicate(
+        price_cap=Decimal("50.00"), max_delivery_days=7,
+        actual_total="10.79",
+        delivery_raws=["Monday, August 24", "Friday, September 4"],
+        today=date(2026, 8, 21),
+    )
+    assert v.allow is False
+    assert v.error_code == "DELIVERY_TOO_LATE"
+    assert v.delivery_raw_used == "Friday, September 4"
+
+
+def test_guard_rejects_whole_order_when_any_text_unparseable():
+    """有一条读不懂就整单转人工。
+
+    只挑看得懂的那些取最晚,会在「看不懂的那条其实更晚」时放行一单不该放的
+    —— 这正是厂商那套「解析失败弹窗让人选继续」放走的那类单。
+    """
+    from datetime import date
+    from decimal import Decimal
+
+    from services.price_guard import adjudicate
+
+    v = adjudicate(
+        price_cap=Decimal("50.00"), max_delivery_days=7,
+        actual_total="10.79",
+        delivery_raws=["Monday, August 24", "Arrives after the holidays"],
+        today=date(2026, 8, 21),
+    )
+    assert v.allow is False
+    assert v.error_code == "DELIVERY_UNPARSEABLE"
+
+
+def test_guard_reports_when_checkout_had_no_delivery_text_at_all():
+    from datetime import date
+    from decimal import Decimal
+
+    from services.price_guard import adjudicate
+
+    v = adjudicate(
+        price_cap=Decimal("50.00"), max_delivery_days=7,
+        actual_total="10.79", delivery_raws=[], today=date(2026, 8, 21),
+    )
+    assert v.allow is False
+    assert v.error_code == "DELIVERY_UNPARSEABLE"

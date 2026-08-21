@@ -68,6 +68,7 @@ def guard_check(task_id: int, req: schemas.GuardCheckReq,
         max_delivery_days=task["max_delivery_days"],
         actual_total=req.actual_total,
         delivery_raw=req.delivery_raw,
+        delivery_raws=req.delivery_raws,
         today=_site_today(),
         is_fba=req.is_fba,
     )
@@ -77,7 +78,7 @@ def guard_check(task_id: int, req: schemas.GuardCheckReq,
                           code=verdict.error_code,
                           payload={"detail": verdict.detail,
                                    "actual_total": str(req.actual_total),
-                                   "delivery_raw": req.delivery_raw})
+                                   "delivery_raw": verdict.delivery_raw_used or req.delivery_raw})
     else:
         task_event.record(conn, task_id, "step", instance_id=inst["id"],
                           payload={"step": "guard_check", "result": "allow",
@@ -88,6 +89,7 @@ def guard_check(task_id: int, req: schemas.GuardCheckReq,
         error_code=verdict.error_code,
         detail=verdict.detail,
         delivery_date=str(verdict.delivery_date) if verdict.delivery_date else None,
+        delivery_raw_used=verdict.delivery_raw_used,
     ))
 
 

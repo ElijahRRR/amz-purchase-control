@@ -1,0 +1,437 @@
+<!--
+================================================================================
+  夹具：Amazon 购物车页（US 站，非空车）
+================================================================================
+  页面        ：Shopping Cart
+  URL 形态    ：https://www.amazon.com/gp/cart/view.html
+                （插件不是在标签页里打开它，而是用 layer.js type:2 弹层把它嵌成
+                 同源 iframe，再用 iframe.contentWindow.document 直接操作 DOM —
+                 见报告 §1.3；也可能由 §4.2.1 加购后从 /cart/smart-wagon 跳过来）
+  事实来源    ：docs/插件功能深度分析.md
+                §4.2.2 `processCartAndCheckout`（`:2657-2834`）—— 本夹具的主战场
+                §4.2.1 `processSingleProduct`（`:2518-2656`）—— 跳转确认的落点
+                §9.1 / 缺陷 B5（`:512-534`）—— `OrderProcessor.clearCart` 无限点删除
+
+  ------------------------------------------------------------------------------
+  报告确实记载的选择器（本夹具必须精确提供这些，解析器只许依赖它们）
+  ------------------------------------------------------------------------------
+    [data-name="Active Items"] .sc-list-item   §4.2.2 第 2 步（`:2679`）行数核对
+    data-asin                                  §4.2.2 第 3 步 逐品定位
+    [data-a-selector="value"]                  §4.2.2 第 3 步 数量形态之一
+    .sc-non-editable-quantity                  §4.2.2 第 3 步 数量形态之二
+    #sc-buy-box-ptc-button > span > input      §4.2.2 第 5 步（`:2750`）点结算
+
+  ------------------------------------------------------------------------------
+  报告【未】记载、本夹具按 Amazon 常见形态推测的部分（勿当作报告背书）
+  ------------------------------------------------------------------------------
+    input[value="Delete"] / [data-action="delete"]
+        报告只在 §9.1（`:512-534`）说 clearCart「1 次/秒点击删除按钮」，
+        自始至终没有写下它用的是哪个选择器。这里的形态是推测。
+    [data-name="Saved for later"]
+        任务要求的干扰项，报告未记载。
+    一切 a-* 类名的包裹层（a-row / a-column / a-button / a-declarative …）
+        报告未记载，仅作包裹，逐处已在行内注释标注。
+
+  ------------------------------------------------------------------------------
+  本夹具刻意覆盖的边界
+  ------------------------------------------------------------------------------
+   1. 两种数量形态同页共存：B0FB3VS68J 用可编辑下拉（[data-a-selector="value"]），
+      B0CHXNPXVX 用不可编辑文本（.sc-non-editable-quantity）。报告说两种都要认。
+   2. 数量 = 1 与数量 > 1（3）各一行，防止解析器把「有数量控件」和「数量≠1」耦合。
+   3. 金额带 $ 与千分位：$1,299.99 / $2,048.49，防止 parseFloat 直接吃逗号变 1。
+   4. 同一个 ASIN 在页面上出现多次（Active Items / 隐藏模板 / Saved for later /
+      Recommended），且**隐藏模板排在文档最前**——不带容器前缀的 querySelector
+      会先命中它。
+   5. 结算按钮的子代 vs 后代：#sc-buy-box-ptc-button 内部另有一个更深层的 input，
+      只有报告写的直接子代组合器 `> span >` 才能选中正确的那个。
+   6. 干扰区里同样有 Delete 控件——不带 Active Items 前缀的清车循环在这一页
+      永远找得到删除按钮，正是缺陷 B5「while(true) 无限点击」的触发形态。
+
+  订单侧的期望值（跑夹具时对照用）：
+      order.products = [ {asin:"B0FB3VS68J", quantity:1},
+                         {asin:"B0CHXNPXVX", quantity:3} ]
+      → §4.2.2 第 2 步行数核对应当得到 2，第 3 步两行数量应当分别读出 1 和 3。
+================================================================================
+-->
+
+<div id="a-page">
+
+  <!-- 报告未记载，仅作包裹 -->
+  <div class="a-container a-spacing-top-base">
+    <h1 class="a-size-extra-large a-spacing-medium">Shopping Cart</h1>
+  </div>
+
+  <!-- ========================================================================
+       干扰项 A：隐藏的行模板（Amazon 常见形态：客户端渲染用的空壳，a-hidden）
+       ------------------------------------------------------------------------
+       它带 class="sc-list-item"、带 data-asin，且这两个 ASIN 与购物车里两件在售
+       商品完全相同，同时**排在文档最前面**。但它不在 [data-name="Active Items"]
+       里面，所以报告 §4.2.2 记载的选择器不会命中它。
+
+       写松了会怎样：
+         · `iframeDoc.querySelectorAll(".sc-list-item")` → 得到 4 行（2 真 + 2 模板），
+           §4.2.2 第 2 步（`:2679`）行数 4 ≠ order.products.length 2
+           → 误判「购物车中商品数量与订单中商品数量不匹配」→ 清空购物车 + 跳过整单。
+         · `iframeDoc.querySelector('[data-asin="B0FB3VS68J"]')` → 先命中这个模板
+           （文档序在前）→ 读到的数量是模板占位的 0 → 数量不符 → 仅日志 + 清车跳过
+           （报告 §4.2.2 第 3 步：数量不符只写本地日志，后台完全看不见）。
+         · `document.querySelector('[data-a-selector="value"]')` → 同理拿到 "0"。
+         · 清车循环若按 `input[value="Delete"]` 全局找：模板里的删除按钮点了不会消失，
+           `while(true)` 永不退出 → 缺陷 B5（`:512-534`）1 次/秒无限点击。
+       ======================================================================== -->
+  <!-- 报告未记载，仅作包裹 -->
+  <div class="a-hidden" id="a-item-template-host" aria-hidden="true" hidden>
+    <div class="sc-list-item a-hidden" data-asin="B0FB3VS68J" aria-hidden="true">
+      <span class="a-size-base a-color-secondary">{{title}}</span>
+      <span class="a-dropdown-prompt" data-a-selector="value">0</span>
+      <!-- 报告未记载，按常见形态推测 -->
+      <span class="a-declarative" data-action="delete">
+        <input class="a-button-input" type="submit" value="Delete">
+      </span>
+    </div>
+    <div class="sc-list-item a-hidden" data-asin="B0CHXNPXVX" aria-hidden="true">
+      <span class="a-size-base a-color-secondary">{{title}}</span>
+      <span class="sc-non-editable-quantity">0</span>
+      <!-- 报告未记载，按常见形态推测 -->
+      <span class="a-declarative" data-action="delete">
+        <input class="a-button-input" type="submit" value="Delete">
+      </span>
+    </div>
+  </div>
+
+  <!-- 报告未记载，仅作包裹 -->
+  <div class="a-row a-spacing-base">
+    <div class="a-column a-span8">
+
+      <!-- ====================================================================
+           ✅ 正主：在售商品区。报告 §4.2.2 第 2/3 步唯一认可的容器。
+           [data-name="Active Items"] 是报告原文记载的属性选择器。
+           ==================================================================== -->
+      <div data-name="Active Items" class="a-section">
+
+        <!-- ------------------------------------------------------------------
+             行 1 / ASIN B0FB3VS68J / 数量 1
+             数量形态：可编辑下拉 —— [data-a-selector="value"]（报告记载形态之一）
+             注意数量值以**文本**形式落在 span 上（Amazon a-dropdown 的真实形态），
+             解析器必须读 textContent；读 .value 会拿到 undefined
+             → 落进报告 §4.2.2「读不到数量 → 仅日志 + 清车跳过」的静默失败分支。
+             ------------------------------------------------------------------ -->
+        <div class="sc-list-item" data-asin="B0FB3VS68J">
+          <!-- 报告未记载，仅作包裹 -->
+          <div class="a-row a-spacing-base">
+            <div class="a-column a-span2">
+              <img class="a-image" alt="Anker 737 Power Bank (PowerCore 24K)"
+                   src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+            </div>
+            <div class="a-column a-span10">
+              <span class="a-size-medium a-color-base a-text-bold">Anker 737 Power Bank (PowerCore 24K), 24,000mAh 3-Port Portable Charger with 140W Output</span>
+              <div class="a-row a-size-small a-color-success">In Stock</div>
+              <div class="a-row a-size-small a-color-secondary">Ships from and sold by Amazon.com.</div>
+              <div class="a-row a-size-small a-color-secondary">Gift options not available</div>
+
+              <!-- 报告未记载，仅作包裹：数量控件外层 -->
+              <div class="a-row a-spacing-mini">
+                <span class="a-size-small a-color-secondary">Qty:</span>
+                <!-- 报告未记载，仅作包裹：a-dropdown 的标准外壳 -->
+                <span class="a-declarative">
+                  <span class="a-dropdown-container">
+                    <span class="a-button a-button-dropdown">
+                      <span class="a-button-inner">
+                        <!-- ✅ 报告记载：[data-a-selector="value"]，文本即当前数量 -->
+                        <span class="a-dropdown-prompt" data-a-selector="value">1</span>
+                        <i class="a-icon a-icon-dropdown"></i>
+                      </span>
+                    </span>
+                    <!-- 报告未记载，仅作包裹：Amazon 藏在下拉背后的原生 select。
+                         干扰点：这里的 <option selected> 与上面的 prompt 文本一致（都是 1），
+                         但解析器若改读 select.value，一旦 Amazon 只更新 prompt 不更新 select
+                         就会静默读错。报告只授权读 [data-a-selector="value"]。 -->
+                    <select class="a-native-dropdown a-hidden" name="quantity" aria-label="Quantity">
+                      <option value="1" selected>1</option>
+                      <option value="2">2</option>
+                      <option value="3">3</option>
+                      <option value="4">4</option>
+                    </select>
+                  </span>
+                </span>
+
+                <span class="a-size-small a-color-secondary">|</span>
+
+                <!-- 报告未记载，按常见形态推测 ---------------------------------
+                     报告只在 §9.1（`:512-534`）说 clearCart「1 次/秒点击删除按钮」，
+                     没有写下选择器。以下 input[value="Delete"] + [data-action="delete"]
+                     包裹是按 Amazon 购物车常见形态推测出来的，**不代表报告背书**。
+                     ------------------------------------------------------------ -->
+                <span class="a-declarative" data-action="delete">
+                  <span class="a-button a-button-base">
+                    <span class="a-button-inner">
+                      <input class="a-button-input" type="submit" value="Delete"
+                             aria-label="Delete Anker 737 Power Bank from cart">
+                      <span class="a-button-text" aria-hidden="true">Delete</span>
+                    </span>
+                  </span>
+                </span>
+
+                <span class="a-size-small a-color-secondary">|</span>
+                <!-- 报告未记载，仅作包裹 -->
+                <span class="a-declarative" data-action="save-for-later">
+                  <span class="a-size-small a-link-normal">Save for later</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- 报告未记载，仅作包裹：行小计。购物车页的价格选择器报告未记载
+                 （报告只在 §4.2.4 记了结算页的 span.lineitem-price-text.a-text-bold）。 -->
+            <div class="a-column a-span2 a-text-right">
+              <span class="a-price a-text-bold">$1,299.99</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- ------------------------------------------------------------------
+             行 2 / ASIN B0CHXNPXVX / 数量 3
+             数量形态：不可编辑文本 —— .sc-non-editable-quantity（报告记载形态之二）
+             这一行**没有** [data-a-selector="value"]：解析器只写第一种形态就会在
+             这行读不到数量 → 报告 §4.2.2「读不到数量 → 仅日志 → 清空购物车跳过」，
+             后台看不见任何失败原因。
+             "Qty:" 字样刻意留在 span 外面，元素内文本是纯数字 3。
+             ------------------------------------------------------------------ -->
+        <div class="sc-list-item" data-asin="B0CHXNPXVX">
+          <!-- 报告未记载，仅作包裹 -->
+          <div class="a-row a-spacing-base">
+            <div class="a-column a-span2">
+              <img class="a-image" alt="Amazon Basics AA Performance Alkaline Batteries"
+                   src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+            </div>
+            <div class="a-column a-span10">
+              <span class="a-size-medium a-color-base a-text-bold">Amazon Basics 48-Pack AA Alkaline High-Performance Batteries, 10-Year Shelf Life</span>
+              <div class="a-row a-size-small a-color-success">In Stock</div>
+              <div class="a-row a-size-small a-color-secondary">Ships from and sold by Amazon.com.</div>
+              <div class="a-row a-size-small a-color-secondary">This item cannot be shipped to your selected delivery location.</div>
+
+              <!-- 报告未记载，仅作包裹：数量区 -->
+              <div class="a-row a-spacing-mini">
+                <span class="a-size-small a-color-secondary">Qty:</span>
+                <!-- ✅ 报告记载：.sc-non-editable-quantity，文本即当前数量 -->
+                <span class="sc-non-editable-quantity">3</span>
+
+                <span class="a-size-small a-color-secondary">|</span>
+
+                <!-- 报告未记载，按常见形态推测（同上，clearCart 的选择器报告没写） -->
+                <span class="a-declarative" data-action="delete">
+                  <span class="a-button a-button-base">
+                    <span class="a-button-inner">
+                      <input class="a-button-input" type="submit" value="Delete"
+                             aria-label="Delete Amazon Basics AA Batteries from cart">
+                      <span class="a-button-text" aria-hidden="true">Delete</span>
+                    </span>
+                  </span>
+                </span>
+
+                <span class="a-size-small a-color-secondary">|</span>
+                <!-- 报告未记载，仅作包裹 -->
+                <span class="a-declarative" data-action="save-for-later">
+                  <span class="a-size-small a-link-normal">Save for later</span>
+                </span>
+              </div>
+            </div>
+
+            <!-- 报告未记载，仅作包裹 -->
+            <div class="a-column a-span2 a-text-right">
+              <span class="a-price a-text-bold">$748.50</span>
+              <div class="a-row a-size-mini a-color-secondary">$249.50 each</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- 报告未记载，仅作包裹：小计条 -->
+        <div class="a-row a-text-right a-spacing-base">
+          <span class="a-size-medium">Subtotal (4 items):
+            <span class="a-text-bold">$2,048.49</span>
+          </span>
+        </div>
+      </div>
+      <!-- /Active Items ===================================================== -->
+
+
+      <!-- ====================================================================
+           干扰项 B：Saved for later
+           ------------------------------------------------------------------
+           [data-name="Saved for later"]（报告未记载，任务要求的干扰项）。
+           里面同样是 .sc-list-item + data-asin，其中 B0CHXNPXVX 与在售行 2 撞车。
+
+           写松了会怎样：
+             · `.sc-list-item` 不带 [data-name="Active Items"] 前缀
+               → §4.2.2 第 2 步数到 4 行（甚至叠加隐藏模板后 6 行）
+               → 与 order.products.length=2 不符 → 清车 + 跳过整单。
+             · 按 ASIN 全局找行：B0CHXNPXVX 可能命中这一条 saved 行，而 saved 行
+               **没有任何数量节点**（既无 [data-a-selector="value"] 也无
+               .sc-non-editable-quantity）→ 读不到数量 → 仅日志 + 清车跳过。
+             · 清车按 input[value="Delete"] 全局找：会把用户「稍后再买」的收藏
+               一并删掉——这是会被真实用户投诉的越权删除。
+           ==================================================================== -->
+      <div data-name="Saved for later" class="a-section a-spacing-top-large">
+        <h2 class="a-size-large">Saved for later (2 items)</h2>
+
+        <div class="sc-list-item" data-asin="B0CHXNPXVX">
+          <!-- 报告未记载，仅作包裹 -->
+          <div class="a-row">
+            <span class="a-size-medium a-color-base">Amazon Basics 48-Pack AA Alkaline High-Performance Batteries, 10-Year Shelf Life</span>
+            <div class="a-row a-size-small a-color-price">$249.50</div>
+            <div class="a-row a-size-small a-color-secondary">In Stock</div>
+            <!-- 报告未记载，按常见形态推测：与在售行同形态的删除控件 -->
+            <span class="a-declarative" data-action="delete">
+              <input class="a-button-input" type="submit" value="Delete"
+                     aria-label="Delete Amazon Basics AA Batteries from Saved for later">
+            </span>
+            <!-- 报告未记载，仅作包裹 -->
+            <span class="a-declarative" data-action="move-to-cart">
+              <input class="a-button-input" type="submit" value="Move to cart">
+            </span>
+          </div>
+        </div>
+
+        <div class="sc-list-item" data-asin="B08N5WRWNW">
+          <!-- 报告未记载，仅作包裹 -->
+          <div class="a-row">
+            <span class="a-size-medium a-color-base">Echo Dot (4th Gen) Smart Speaker with Alexa, Charcoal</span>
+            <div class="a-row a-size-small a-color-price">$1,049.00</div>
+            <div class="a-row a-size-small a-color-secondary">In Stock</div>
+            <!-- 报告未记载，按常见形态推测 -->
+            <span class="a-declarative" data-action="delete">
+              <input class="a-button-input" type="submit" value="Delete"
+                     aria-label="Delete Echo Dot from Saved for later">
+            </span>
+            <!-- 报告未记载，仅作包裹 -->
+            <span class="a-declarative" data-action="move-to-cart">
+              <input class="a-button-input" type="submit" value="Move to cart">
+            </span>
+          </div>
+        </div>
+      </div>
+      <!-- /干扰项 B ======================================================== -->
+
+    </div>
+
+    <!-- ======================================================================
+         右栏：Buy box（结算按钮所在）
+         ====================================================================== -->
+    <div class="a-column a-span4">
+      <!-- 报告未记载，仅作包裹 -->
+      <div class="a-box a-spacing-base">
+        <div class="a-box-inner">
+
+          <div class="a-row a-spacing-mini a-size-medium">
+            Subtotal (4 items): <span class="a-text-bold">$2,048.49</span>
+          </div>
+          <div class="a-row a-spacing-mini a-size-small a-color-success">
+            Your order qualifies for FREE Shipping.
+          </div>
+
+          <!-- ✅ 正主：报告 §4.2.2 第 5 步（`:2750`）
+               #sc-buy-box-ptc-button > span > input
+               —— 直接子代组合器：span 是 .a-button-inner，input 是它的直接子元素。 -->
+          <span id="sc-buy-box-ptc-button" class="a-button a-button-primary a-button-icon">
+            <span class="a-button-inner">
+              <i class="a-icon a-icon-checkout"></i>
+              <!-- ✅ 唯一正确的结算按钮 -->
+              <input class="a-button-input" type="submit" value="Proceed to checkout"
+                     aria-label="Proceed to checkout">
+              <span class="a-button-text" aria-hidden="true">Proceed to checkout</span>
+
+              <!-- 干扰项 C：更深一层的隐藏 input（报告未记载，仅作干扰）
+                   写松了会怎样：`#sc-buy-box-ptc-button input`（后代选择器）或
+                   `#sc-buy-box-ptc-button .a-button-input` 会同时命中两个，
+                   querySelector 取第一个尚且侥幸正确，但一旦 Amazon 调整顺序，
+                   点到的就是这个 type="hidden" 的哑元 → 点击无任何效果 →
+                   §4.2.2 第 6 步 waitForPageNavigation 空等 30 秒超时 →
+                   直接 resolve 返回，而 addressFillingInProgress 已置 true 且永不复位
+                   → 下一单裸 return 静默死锁（报告 §4.2.2 高危缺陷）。
+                   只有报告写的 `> span > input` 子代组合器能排除它。 -->
+              <span class="a-button-text a-hidden" aria-hidden="true">
+                <input class="a-button-input a-hidden" type="hidden" value="Proceed to checkout">
+              </span>
+            </span>
+          </span>
+
+        </div>
+      </div>
+
+      <!-- 干扰项 D：页面底部的第二个「Proceed to checkout」（报告未记载，仅作干扰）
+           Amazon 在长购物车里确实会渲染重复的结算入口。它**没有** id，
+           且被 a-hidden 隐藏（窄屏才显示）。
+           写松了会怎样：按文案或 name 找按钮的解析器
+           —— `input[value="Proceed to checkout"]` / `input[name="proceedToRetailCheckout"]`
+           —— 会命中这个隐藏副本，click() 在隐藏元素上不触发 Amazon 的绑定，
+           表现与干扰项 C 相同：空等 30 秒 → 静默死锁。 -->
+      <div class="a-box a-spacing-base a-hidden" aria-hidden="true">
+        <div class="a-box-inner">
+          <span class="a-button a-button-primary">
+            <span class="a-button-inner">
+              <input class="a-button-input" type="submit" name="proceedToRetailCheckout"
+                     value="Proceed to checkout">
+              <span class="a-button-text" aria-hidden="true">Proceed to checkout</span>
+            </span>
+          </span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       干扰项 E：Sponsored（广告位）
+       ------------------------------------------------------------------------
+       广告卡片同样带 data-asin，其中一张就是在售行 1 的 B0FB3VS68J。
+       写松了会怎样：
+         · `document.querySelectorAll("[data-asin]")` 统计件数 → 数出 8+ 个
+           → §4.2.2 第 2 步行数核对必然不符 → 清车 + 跳过整单。
+         · 按 ASIN 全局定位行 → 可能落到广告卡片上 → 卡片里没有数量节点
+           → 读不到数量 → 仅日志 + 清车跳过（后台看不见）。
+         · 价格解析若全局抓 .a-price → 抓到广告价，与真实行小计无关。
+       ======================================================================== -->
+  <!-- 报告未记载，仅作包裹 -->
+  <div class="a-section a-spacing-top-large" aria-label="Sponsored products">
+    <h2 class="a-size-large">Sponsored products related to items in your cart</h2>
+    <div class="a-row">
+      <div class="a-column a-span3" data-asin="B0FB3VS68J">
+        <span class="a-size-base">Anker 737 Power Bank (PowerCore 24K) - Renewed</span>
+        <span class="a-price">$1,149.99</span>
+        <span class="a-size-mini a-color-secondary">Sponsored</span>
+      </div>
+      <div class="a-column a-span3" data-asin="B09XS7JWHH">
+        <span class="a-size-base">USB-C to USB-C Cable 100W, 6ft Braided Fast Charging Cord</span>
+        <span class="a-price">$18.99</span>
+        <span class="a-size-mini a-color-secondary">Sponsored</span>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       干扰项 F：Recommended（推荐位）
+       ------------------------------------------------------------------------
+       与广告位同理：卡片带 data-asin，并刻意让其中一张复用在售行 2 的
+       B0CHXNPXVX，另一张复用 Saved for later 的 B08N5WRWNW。
+       写松了会怎样：任何不以 [data-name="Active Items"] .sc-list-item 为
+       起点的遍历，都会把推荐卡片当成购物车行；按 ASIN 去重的实现还会因为
+       同一 ASIN 出现 3 次而选到错误节点。
+       ======================================================================== -->
+  <!-- 报告未记载，仅作包裹 -->
+  <div class="a-section a-spacing-top-large" id="a-recommended-section" aria-label="Recommended">
+    <h2 class="a-size-large">Recommended based on your shopping trends</h2>
+    <div class="a-row">
+      <div class="a-column a-span3" data-asin="B0CHXNPXVX">
+        <span class="a-size-base">Amazon Basics 100-Pack AA Alkaline Batteries</span>
+        <span class="a-price">$1,299.00</span>
+      </div>
+      <div class="a-column a-span3" data-asin="B08N5WRWNW">
+        <span class="a-size-base">Echo Dot (4th Gen) Smart Speaker with Alexa, Glacier White</span>
+        <span class="a-price">$1,049.00</span>
+      </div>
+      <div class="a-column a-span3" data-asin="B0BSHF7WHW">
+        <span class="a-size-base">Kindle Paperwhite (16 GB) - 6.8" Display, Ad-Supported</span>
+        <span class="a-price">$2,499.99</span>
+      </div>
+    </div>
+  </div>
+
+</div>

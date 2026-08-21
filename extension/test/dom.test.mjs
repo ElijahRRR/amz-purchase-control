@@ -1,0 +1,165 @@
+#!/usr/bin/env node
+/** 解析层的离线验证。
+ *
+ * 真实 Amazon 页面拿不到,所以对着 test/fixtures/ 里按逆向报告造出来的 DOM 跑。
+ * 夹具里塞满了干扰项(隐藏的同 id 副本、Saved for later、推荐位、模板节点),
+ * 选择器写松了会当场被抓住。
+ *
+ *   npm run test:dom
+ */
+
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+import { chromium } from "/opt/node22/lib/node_modules/playwright/index.mjs";
+
+const here = dirname(fileURLToPath(import.meta.url));
+const KIT = join(here, "..", "dist", "domkit.js");
+
+let pass = 0;
+const failures = [];
+
+function check(name, cond, detail = "") {
+  if (cond) { pass += 1; return; }
+  failures.push(`${name}${detail ? "  → " + detail : ""}`);
+}
+
+function eq(name, got, want) {
+  const g = JSON.stringify(got), w = JSON.stringify(want);
+  check(name, g === w, `期望 ${w},实际 ${g}`);
+}
+
+const browser = await chromium.launch({
+  executablePath: "/opt/pw-browsers/chromium-1194/chrome-linux/chrome",
+});
+
+async function withFixture(file, fn) {
+  const path = join(here, "fixtures", file);
+  let html;
+  try {
+    html = readFileSync(path, "utf8");
+  } catch {
+    // 夹具缺失算失败,不算崩溃 —— 其余夹具还得跑完
+    failures.push(`夹具缺失:${file}`);
+    return;
+  }
+  const page = await browser.newPage();
+  await page.setContent(html);
+  await page.addScriptTag({ path: KIT });
+  const run = (expr) => page.evaluate(expr);
+  try {
+    await fn(run);
+  } finally {
+    await page.close();
+  }
+}
+
+// ── 商品页 ──────────────────────────────────────────────────────────
+await withFixture("product.html", async (run) => {
+  eq("product 有货", await run("amzdom.readInStock(document)"), true);
+  eq("product 数量 1 可选", await run("amzdom.findQuantityOption(document, 1)"), { has: true, matched: true });
+  // 夹具里 3 那个 option 的文本是 " 3 " —— 不 trim 就选不中
+  eq("product 数量 3 可选(文本带空格)", await run("amzdom.findQuantityOption(document, 3)"), { has: true, matched: true });
+  // 夹具里 4 那个 option 的文本带换行与缩进 —— 只 trim 不折叠空白就选不中
+  eq("product 数量 4 可选(文本带换行缩进)", await run("amzdom.findQuantityOption(document, 4)"), { has: true, matched: true });
+  eq("product 数量 7 不可选", await run("amzdom.findQuantityOption(document, 7)"), { has: true, matched: false });
+  // 隐藏的同 id 副本只有 1 个 option,被选中就会让上面那几条挂掉
+  eq("product 选中的是可见的那个 #quantity",
+     await run("amzdom.pickQuantitySelect(document).options.length > 2"), true);
+});
+
+await withFixture("product-oos.html", async (run) => {
+  // 文案是 "Currently unavailable." 带句点 —— 全等判定会漏
+  eq("product-oos 判为无货", await run("amzdom.readInStock(document)"), false);
+});
+
+// ── 购物车 ──────────────────────────────────────────────────────────
+await withFixture("cart.html", async (run) => {
+  const lines = await run("amzdom.readCartLines(document)");
+  eq("cart 只数 Active Items 里的行", lines.length, 2);
+  const byAsin = Object.fromEntries(lines.map((l) => [l.asin, l.quantity]));
+  eq("cart B0FB3VS68J 数量", byAsin["B0FB3VS68J"], 1);
+  eq("cart B0CHXNPXVX 数量(非可编辑形态)", byAsin["B0CHXNPXVX"], 3);
+  check("cart 没把 Saved for later 算进来",
+        !lines.some((l) => l.asin === "B08N5WRWNW" || l.asin === "B09XS7JWHH"),
+        JSON.stringify(lines.map((l) => l.asin)));
+  eq("cart 与本单一致时匹配",
+     await run(`amzdom.cartMatches(amzdom.readCartLines(document),
+       [{asin:"B0FB3VS68J",quantity:1},{asin:"B0CHXNPXVX",quantity:3}])`), true);
+  eq("cart 数量不符时不匹配",
+     await run(`amzdom.cartMatches(amzdom.readCartLines(document),
+       [{asin:"B0FB3VS68J",quantity:1},{asin:"B0CHXNPXVX",quantity:2}])`), false);
+  eq("cart 多一件时不匹配",
+     await run(`amzdom.cartMatches(amzdom.readCartLines(document),
+       [{asin:"B0FB3VS68J",quantity:1}])`), false);
+});
+
+await withFixture("cart-empty.html", async (run) => {
+  eq("cart-empty 行数为 0", await run("amzdom.readCartLines(document).length"), 0);
+});
+
+// ── 结算页 ──────────────────────────────────────────────────────────
+await withFixture("checkout.html", async (run) => {
+  const panels = await run("amzdom.readCheckoutPanels(document)");
+  check("checkout 面板数 > 0", panels.length > 0, String(panels.length));
+  check("checkout 过滤掉了没有 lineitem-container 的空壳面板",
+        panels.every((p) => p.asin || p.unitPrice), JSON.stringify(panels));
+  check("checkout 每个面板都读到了 ASIN",
+        panels.every((p) => /^(B0\w{8}|\d{10}|\d{9}X)$/.test(p.asin ?? "")),
+        JSON.stringify(panels.map((p) => p.asin)));
+  check("checkout 读到了带千分位的单价",
+        panels.some((p) => p.unitPrice && Number(p.unitPrice) > 1000),
+        JSON.stringify(panels.map((p) => p.unitPrice)));
+  check("checkout 认出了 Amazon 发货的面板",
+        panels.some((p) => p.isFba === true), JSON.stringify(panels.map((p) => p.shipper)));
+  check("checkout 认出了第三方发货的面板",
+        panels.some((p) => p.isFba === false), JSON.stringify(panels.map((p) => p.shipper)));
+  check("checkout 每个面板都有交期文案",
+        panels.every((p) => p.deliveryText), JSON.stringify(panels.map((p) => p.deliveryText)));
+
+  check("checkout 读到订单总额", !!(await run("amzdom.readGrandTotal(document)")));
+
+  const summary = await run("amzdom.readOrderSummary(document)");
+  check("checkout 按 label 扫到运费", summary.shipping !== undefined, JSON.stringify(summary));
+  check("checkout 按 label 扫到税费", summary.tax !== undefined, JSON.stringify(summary));
+
+  // 夹具的支付文案里故意先出现别的 4 位数,取"第一个 4 位数字"的写法会当场露馅
+  eq("checkout 卡后四位取的是 ending in 后面那个",
+     await run("amzdom.readPaymentLast4(document)"), "4417");
+});
+
+await withFixture("checkout-thirdparty.html", async (run) => {
+  const panels = await run("amzdom.readCheckoutPanels(document)");
+  check("checkout-thirdparty 全部面板都不是 Amazon 发货",
+        panels.length > 0 && panels.every((p) => p.isFba === false),
+        JSON.stringify(panels.map((p) => ({ s: p.shipper, f: p.isFba }))));
+});
+
+// ── 订单历史 ────────────────────────────────────────────────────────
+await withFixture("order-history.html", async (run) => {
+  const cards = await run("amzdom.readOrderCards(document)");
+  check("orders 读到多张卡", cards.length >= 3, String(cards.length));
+  check("orders 第一张卡的订单号形态正确",
+        /^\d{3}-\d{7}-\d{7}$/.test(cards[0].orderNo ?? ""), String(cards[0].orderNo));
+  check("orders 订单号没把 'ORDER #' 标签当成号",
+        !/order/i.test(cards[0].orderNo ?? ""), String(cards[0].orderNo));
+  check("orders 第一张卡的 ASIN 与本单不同(夹具刻意如此,断言才有意义)",
+        !cards[0].asins.includes("B0FB3VS68J"), JSON.stringify(cards[0].asins));
+  check("orders 没把 Buy it again 推荐位的 ASIN 算进卡里",
+        !cards.some((c) => c.asins.includes("B0NOISE0001")),
+        JSON.stringify(cards.map((c) => c.asins)));
+});
+
+await withFixture("order-history-empty.html", async (run) => {
+  eq("orders-empty 读到 0 张卡", await run("amzdom.readOrderCards(document).length"), 0);
+});
+
+await browser.close();
+
+console.log(`\n  通过 ${pass} 条`);
+if (failures.length) {
+  console.log(`  失败 ${failures.length} 条:`);
+  for (const f of failures) console.log("    ✗ " + f);
+  process.exit(1);
+}
+console.log("  全部通过\n");

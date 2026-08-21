@@ -1,0 +1,616 @@
+<!--
+================================================================================
+  夹具：Amazon 最终结算页（US 站，地址已保存，两件商品）
+================================================================================
+  页面        ：Checkout — Place Your Order
+  URL 形态    ：https://www.amazon.com/checkout/p/p-8829471056332145/ref=chk_pymt_sel
+                （报告 §4.2.2 第 6/7 步：购物车点结算后要连续 3 次稳定命中
+                 `/checkout/p/p-` 才算到达终局页；中间可能经过 `checkout/byg/ref`
+                 或 `/cart/byc/ref`。插件不在标签页里打开它，而是 layer.js type:2
+                 弹层嵌成同源 iframe，用 iframe.contentWindow.document 操作 —— §1.3）
+  事实来源    ：docs/插件功能深度分析.md
+                §4.2.4 `verifyPageInfo`（US/CA，`:1657-1881`）—— 本夹具的主战场
+                §4.2.3 `fillAddressInfo`（`:2209-2517`）—— 地址区落点（第 6 步）
+                §8.1 / §8.3 配送时效解析引擎 —— h2 交期文案的消费方
+                §7.3 时效护栏 / §10.5 对 Amazon 页面结构的硬依赖
+
+  ------------------------------------------------------------------------------
+  报告确实记载的选择器（本夹具必须精确提供，解析器只许依赖这些）
+  ------------------------------------------------------------------------------
+    #deliver-to-address-text                          §4.2.4 检查 1/2（`:1659-1669`）
+    #payment-option-text-default                      §4.2.4 检查 3（`:1670-1682`）
+    [data-csa-c-slot-id="checkout-itemBlockPanel"]     §4.2.4 检查 4（`waitForProductPanels`）
+      └─ .lineitem-container                          §4.2.4 检查 4 的判定依据
+    #col-item-block-description > .aok-hidden         §4.2.4 检查 5（ASIN，按下标 [i] 取）
+    span.lineitem-price-text.a-text-bold              §4.2.4 检查 6（单价）
+    p.a-spacing-none span.a-size-small                §4.2.4 检查 9（FBA 判定）
+    [data-csa-c-slot-id="checkout-itemBlockPanel"] h2 §4.2.4 时效闸门（`:1801-1826`）
+    #checkout-pyo-button-block … .grand-total-cell    §4.2.4 检查 12（总额，`:1758-1776`）
+    #submitOrderButtonId input                        §4.2.4 提交订单（`:1838-1861`）
+    #checkout-deliveryAddressPanel                    §4.2.3 第 1 步
+    [aria-labelledby="delivery-addresses-section-header-id"]  §4.2.3 第 1 步
+
+  ------------------------------------------------------------------------------
+  报告【未】记载、本夹具按 Amazon 常见形态推测的部分（勿当作报告背书）
+  ------------------------------------------------------------------------------
+    订单小结表格（Items: / Shipping & handling: / Total before tax: /
+    Estimated tax to be collected: / Order total:）
+        ⚠️ 报告全文没有记过**结算页**的运费/税选择器。厂商只在**订单详情页**读这些，
+        用的是 §4.3 `extractOrderInfo` 的 `#od-subtotals .a-row.od-line-item-row`
+        （小写文案匹配 `shipping & handling` / `total before tax` /
+        `estimated tax to be collected` / `grand total`）。
+        本夹具**故意不提供 `#od-subtotals`**，也故意把小结做成「label 单元格 +
+        值单元格」的形态，逼解析器按 label 文案扫描而不是照抄 §4.3 的选择器。
+        另注：结算页的末行文案是 `Order total:`，而 §4.3 的订单详情页找的是
+        `grand total` —— 直接搬 §4.3 的 label 表到这一页，总额一行永远读不到。
+    .a-fixed-right-grid / .a-row / .a-column / .a-button / .a-declarative …
+        一切 a-* 包裹层，报告未记载，仅作包裹，逐处已在行内注释标注。
+    #subtotals-marketplace-table / #checkout-sticky-summary
+        干扰项外壳，报告未记载。
+
+  ------------------------------------------------------------------------------
+  本夹具刻意覆盖的边界
+  ------------------------------------------------------------------------------
+   1. **支付文案里先出现一个别的 4 位数**：`#payment-option-text-default` 的全文是
+      "Pay over 4 months, 2026 promo · Visa ending in 4417"。
+      报告 §4.2.4 检查 3 说厂商用 `/\d{4}/` 取**第一个** 4 位连续数字当卡后四位
+      （`:1670-1682`，"不是校验是采集"）。在这段文案上第一个 4 位数是 **2026**，
+      不是 4417。照抄厂商写法的解析器会把促销年份当成卡号采走。
+      正确形态：锚定 `ending in` 之后的 4 位，或取**最后**一个 4 位数。
+   2. **ASIN 是文档级 NodeList 按下标取的**：`#col-item-block-description` 这个 id
+      在每个面板里都重复出现（真实 Amazon 就是这样，HTML 上非法但浏览器的
+      querySelectorAll 会全部返回）。厂商正是靠这一点做 `asinElement[i]`。
+      于是**文档最前面那个隐藏模板面板一旦也含这个结构，全部下标就整体错位**
+      —— 见干扰项 A。正确形态：以 panel 为作用域 `panel.querySelector(...)`。
+   3. **`> .aok-hidden` 是直接子代**：面板里另有一个更深层的 `.aok-hidden`
+      （bundle 子件 ASIN）。写成后代选择器就会多选一个、且顺序错乱。
+   4. **单价有 strike 陪跑**：同一行里 `$1,499.99` 挂 `lineitem-price-text`
+      但**不带 `a-text-bold`**（List price）。只写 `.lineitem-price-text` 的解析器
+      会取到划线原价，Σ 单价×数量被抬高 → §4.2.4 检查 12 的 50% 差额判定被污染。
+   5. **FBA 判据极弱（报告原文）**：检查 9 只要求配送方文案里出现 `amazon`。
+      面板 2 的商品标题本身叫 "Amazon Basics …"，且面板内另有 "Amazon's A-to-z
+      Guarantee" 字样，但它们**都不在 `p.a-spacing-none span.a-size-small` 里**。
+      作用域写松（`panel.querySelectorAll('span.a-size-small')` 或整块 textContent
+      找 amazon）的解析器会把这个第三方配送的面板误判成 FBA 放行。
+   6. **交期取最晚 + 星期名与真实日历刻意不符**：两个 h2 分别是
+      "Wednesday, August 27" 与 "Thursday, August 28"。2026 年 8 月 27 日实际是
+      **周四**、8 月 28 日实际是**周五** —— 星期名是错的，这是故意的：
+      报告 §8.1 的解析顺序里，第 1 步 `parseExplicitDate` 会命中月名+日，
+      而第 4 步的**星期几分支**只看星期名算「下一个该星期几」。两条路径在本夹具上
+      给出不同答案（星期名路径 → 8/26 与 8/27；日期路径 → 8/27 与 8/28），
+      正是 §8.3 缺陷 6「同语义两种写法结论不同」的可观测形态。
+      期望：取最晚一条 = **2026-08-28**。
+   7. **时效闸门正好压在边界上**：站点当天按 2026-08-21（US West）算，
+      到 8/28 的 daysDiff = **7**，而闸门是 `daysDiff > N`（N 默认 7，§7.3）。
+      7 > 7 为假 → 刚好放行。日差算法差一天，这一单就会翻成
+      `updateOrderStatus(99,"预计送达时间超过7天")` + 清空购物车。
+   8. **总额有两个 `.grand-total-cell`**：正主在 `#checkout-pyo-button-block` 里
+      （$2,241.86）；干扰项 D 的粘性底栏里还有一个**过期**的 $1,299.99。
+      不带 `#checkout-pyo-button-block` 前缀的 `document.querySelector` 会先命中
+      过期那个 → |1299.99-2048.49|/1299.99 = 57.6% > 50% → 好单被误判取消。
+   9. **提交按钮里藏着 csrf 隐藏 input**：报告写的是后代选择器
+      `#submitOrderButtonId input`，而块内第一个 input 是 `type="hidden"` 的令牌。
+      照抄的解析器点到隐藏 input，`.click()` 静默无效 → 报告 §4.2.4 的
+      `waitForOrderSuccess` 空等 → 整批挂起。正确形态：`input[type="submit"]`。
+  10. **数量在结算页是可读的，但厂商从没读过**：报告 §4.2.4 第 11 项是死代码
+      （`:1750-1756`，`extractedProducts[i].quantity` 抄自订单对象，比较恒真）。
+      本夹具照真实页面给出 "Qty: 1" / "Qty: 3"，供我们做厂商没做的那次真实核对。
+  11. 金额一律带 `$` 与千分位（$1,299.99 / $2,048.49 / $2,241.86），
+      防止 parseFloat 直接吃逗号截成 1。
+  12. 邮编只显示 **92707**（无 ZIP+4）。报告 §4.2.4 指出第 1/2 项只做
+      `includes(receivingPostCode)` 且无归一化 —— 后台若下发 `92707-1234`，
+      在这一页必然误判失败。此夹具即该场景的输入端。
+
+  ------------------------------------------------------------------------------
+  订单侧的期望值（跑夹具时对照用）
+  ------------------------------------------------------------------------------
+      order.receivingName     = "Marcus Delgado"
+      order.receivingPostCode = "92707"
+      order.products = [ {asin:"B0FB3VS68J", quantity:1},
+                         {asin:"B0CHXNPXVX", quantity:3} ]
+
+      期望解析结果：
+        面板数            = 2（隐藏模板不算，它没有 .lineitem-container）
+        ASIN[0]/[1]       = B0FB3VS68J / B0CHXNPXVX
+        unitPrice[0]/[1]  = 1299.99 / 249.50
+        Σ 单价×订单数量    = 1299.99×1 + 249.50×3 = 2048.49
+        grandTotal        = 2241.86  →  差额 193.37 / 2241.86 = 8.6% ≤ 50% 放行
+        cardLast4         = 4417（不是 2026）
+        deliveryTime      = 2026-08-28（两条 h2 里最晚的一条）
+        FBA               = 面板 1 通过；面板 2 **不通过**
+                            → 期望 updateOrderStatus(99,"商品B0CHXNPXVX配送方式非FBA")
+        小结              = Items 2048.49 / Shipping 12.99 / BeforeTax 2061.48
+                            / Tax 180.38 / OrderTotal 2241.86
+      注：本夹具是**混合**用例（一 FBA + 一非 FBA），整单期望结论是被 FBA 闸门拦下。
+          只验「单面板非 FBA」的干净用例见 checkout-thirdparty.html。
+================================================================================
+-->
+
+<div id="a-page">
+
+  <!-- ==========================================================================
+       干扰项 A：隐藏的商品面板模板（客户端渲染用的空壳）
+       --------------------------------------------------------------------------
+       它**带** [data-csa-c-slot-id="checkout-itemBlockPanel"]，
+       **不带** .lineitem-container，display:none，且**排在文档最前面**。
+
+       写松了会怎样（三处，全是真会踩的）：
+         1. 面板计数：报告 §4.2.4 检查 4 的 waitForProductPanels 查的是
+            `[data-csa-c-slot-id="checkout-itemBlockPanel"] .lineitem-container`，
+            带 .lineitem-container 后缀就不会数到它；改成只查外层属性就会数成 3，
+            连带检查 10（面板数 == 订单商品数）误报。
+         2. ASIN 错位：厂商用文档级 querySelectorAll 再 `asinElement[i]`（检查 5）。
+            这里的 #col-item-block-description > .aok-hidden 排第 0 位，
+            于是 ASIN[0] 读成 B0TMPLATE1、ASIN[1] 读成 B0FB3VS68J，
+            **整列 ASIN 平移一格**，检查 7「ASIN 在订单内」把好单判成 bundle。
+         3. 交期误判：时效闸门收的是 `[data-csa-c-slot-id="..."] h2`（文档级）。
+            这里的 h2 是 "Saturday, December 12, 2026" —— 一旦被收进去，
+            «取最晚» 就变成 12 月，daysDiff 破百 → 好单被
+            `updateOrderStatus(99,"预计送达时间超过7天")` 直接取消。
+            （顺带：这条文案还是报告 §8.3 缺陷 1 的活体样本 —— 带年份的全月名
+             会被那条负向断言回溯截成 “December 1”，仍是远期，结论不变。）
+       正确形态：所有面板级读取都以 `.lineitem-container` 命中的面板为作用域。
+       ========================================================================== -->
+  <div data-csa-c-slot-id="checkout-itemBlockPanel"
+       class="a-section aok-hidden" style="display:none" aria-hidden="true">
+    <!-- 报告未记载，仅作包裹 -->
+    <div class="a-fixed-left-grid">
+      <div id="col-item-block-description" class="a-fixed-left-grid-col">
+        <div class="aok-hidden">B0TMPLATE1</div>
+        <span class="a-size-base a-color-base">{{itemTitle}}</span>
+      </div>
+      <h2 class="a-size-base-plus">Saturday, December 12, 2026</h2>
+      <p class="a-spacing-none">
+        <span class="a-size-small a-color-secondary">Ships from Amazon.com</span>
+      </p>
+      <span class="lineitem-price-text a-text-bold">$0.00</span>
+    </div>
+  </div>
+
+
+  <!-- 报告未记载，仅作包裹：页头 -->
+  <div class="a-container">
+    <h1 class="a-size-large">Review your order</h1>
+  </div>
+
+
+  <!-- ==========================================================================
+       ✅ 正主：收货地址区（报告 §4.2.3 第 6 步 waitForAddressSave 轮询的落点）
+       #deliver-to-address-text 一旦出现即视为地址保存成功。
+       报告 §4.2.4 检查 1/2 只对这个节点的文本做 includes(receivingPostCode)：
+       收件人姓名、街道、城市、州、电话**一概不校验**。
+       ========================================================================== -->
+  <div id="checkout-deliveryAddressPanel" class="a-section">
+    <!-- 报告未记载，仅作包裹 -->
+    <div class="a-row">
+      <span class="a-size-base a-text-bold">Delivering to</span>
+      <!-- 报告记载（§4.2.3 第 1 步）：改地址入口 -->
+      <a class="a-link-normal" aria-label="Change delivery address" href="#">Change</a>
+    </div>
+
+    <!-- ✅ 报告记载：#deliver-to-address-text。收件人 + 街道 + 城市州 + 邮编 92707 -->
+    <div id="deliver-to-address-text" class="a-size-base a-color-base">
+      Marcus Delgado, 1425 S Bristol St Apt 12B, Santa Ana, CA 92707, United States
+    </div>
+
+    <!-- ----------------------------------------------------------------------
+         干扰项 B-1：折叠着的地址簿
+         ------------------------------------------------------------------------
+         [aria-labelledby="delivery-addresses-section-header-id"] 这个选择器**是**
+         报告记载的（§4.2.3 第 1 步，用来判断地址列表是否加载出来），但它属于
+         «选地址» 阶段，不是 «读已生效地址» 阶段。里面这条备用地址的邮编是 98109。
+
+         写松了会怎样：把邮编校验写成「在地址面板里找 /\d{5}/」而不是「读
+         #deliver-to-address-text 的文本」，就会先撞上 98109 → 邮编不一致误报；
+         或者反过来，订单邮编恰好是 98109 的单子会被这条**没被选中**的地址放行。
+         ---------------------------------------------------------------------- -->
+    <div aria-labelledby="delivery-addresses-section-header-id"
+         class="a-section aok-hidden" style="display:none">
+      <!-- 报告未记载，仅作包裹 -->
+      <div class="a-row">
+        <span class="a-size-mini a-color-secondary">Your addresses</span>
+      </div>
+      <div class="a-row">
+        <a id="edit-address-desktop-tango-sasp-0" class="a-link-normal" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1425 S Bristol St Apt 12B, Santa Ana, CA 92707, United States</span>
+      </div>
+      <div class="a-row">
+        <a id="edit-address-desktop-tango-sasp-1" class="a-link-normal" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 410 Terry Ave N, Seattle, WA 98109, United States</span>
+      </div>
+      <a id="add-new-address-desktop-sasp-tango-link" class="a-link-normal" href="#">Add a new address</a>
+    </div>
+  </div>
+
+
+  <!-- ==========================================================================
+       ✅ 正主：支付方式区
+       ========================================================================== -->
+  <div class="a-section">
+    <!-- 报告未记载，仅作包裹 -->
+    <div class="a-row">
+      <span class="a-size-base a-text-bold">Paying with</span>
+    </div>
+
+    <!-- ----------------------------------------------------------------------
+         干扰项 B-2：**没被选中**的另一张卡，排在正主前面
+         ------------------------------------------------------------------------
+         写松了会怎样：把卡号采集写成「在支付面板里找 /ending in (\d{4})/」而不是
+         报告 §4.2.4 检查 3 指名的 #payment-option-text-default，就会先命中
+         8842 —— 一张用户根本没选的店卡。
+         ---------------------------------------------------------------------- -->
+    <div class="a-row a-color-secondary a-size-small">
+      Amazon Store Card ending in 8842 &middot; not selected
+    </div>
+
+    <!-- ✅ 报告记载：#payment-option-text-default（§4.2.4 检查 3，`:1670-1682`）
+         ⚠️ 本行是本夹具最重要的陷阱之一，见文件头「边界 1」。
+            厂商 `/\d{4}/` 取**第一个** 4 位连续数字：
+              "Pay over 4 months, 2026 promo · Visa ending in 4417"
+                              ↑单个 4     ↑↑↑↑ 第一个 4 位数 = 2026（会被当成卡号）
+                                                              ↑↑↑↑ 真卡号 = 4417
+            期望：解析器锚定 "ending in" 之后的 4 位，得到 4417。 -->
+    <div id="payment-option-text-default" class="a-size-base a-color-base">
+      Pay over 4 months, 2026 promo &middot; Visa ending in 4417
+    </div>
+
+    <!-- 报告未记载，仅作包裹：账单地址。邮编 90045，又一个 /\d{5}/ 诱饵。 -->
+    <div class="a-row a-size-small a-color-secondary">
+      Billing address: 6060 Center Dr Fl 10, Los Angeles, CA 90045
+    </div>
+  </div>
+
+
+  <!-- 报告未记载，仅作包裹：区块标题。
+       干扰点：这是一个**不在任何面板里**的 h2。报告 §4.2.4 的时效闸门查的是
+       `[data-csa-c-slot-id="checkout-itemBlockPanel"] h2`；丢掉前缀直接
+       document.querySelectorAll("h2") 就会把这句话当交期文案送进
+       parseDeliveryTime → 解析失败 → 报告 §4.2.4 的 layer.confirm 弹窗
+       «跳过 / 继续下单» 把机器流程卡成人工决策。 -->
+  <h2 class="a-size-base-plus">Review items and shipping</h2>
+
+
+  <!-- ==========================================================================
+       ✅ 正主：商品面板 1 / ASIN B0FB3VS68J / 数量 1 / FBA 通过
+       ========================================================================== -->
+  <div data-csa-c-slot-id="checkout-itemBlockPanel" class="a-section">
+    <!-- ✅ 报告记载：.lineitem-container —— waitForProductPanels 的判定依据 -->
+    <div class="lineitem-container">
+      <!-- 报告未记载，仅作包裹 -->
+      <div class="a-fixed-left-grid">
+
+        <div class="a-fixed-left-grid-col a-col-left">
+          <!-- ----------------------------------------------------------------
+               干扰项 C-1：排在商品主图**前面**的 1x1 占位/埋点图
+               ------------------------------------------------------------------
+               报告 §4.2.4 检查 8 原文就是 `panel.querySelector("img").src`
+               —— 取面板内**第一个** img。照抄就会把这张 1x1 透明 gif 当商品图
+               采上去（后台商品图一栏是一个透明像素，肉眼看不出错）。
+               正确形态：取带 alt 的商品图，或按 `.a-dynamic-image` 之类定位。
+               ---------------------------------------------------------------- -->
+          <img class="a-spacing-none" width="1" height="1" alt=""
+               src="data:image/gif;base64,R0lGODlhAQABAIAAAAAAAP///yH5BAEAAAAALAAAAAABAAEAAAIBRAA7">
+          <img class="a-dynamic-image" alt="Anker 737 Power Bank (PowerCore 24K)"
+               src="data:image/gif;base64,R0lGODlhAQABAIAAAP8AACwAAAAAAQABAAACAkQBADs=">
+        </div>
+
+        <!-- ✅ 报告记载：#col-item-block-description（注意此 id 在每个面板里重复，
+             真实 Amazon 就是这样；厂商正是靠文档级 NodeList + [i] 下标取 ASIN） -->
+        <div id="col-item-block-description" class="a-fixed-left-grid-col a-col-right">
+
+          <!-- ✅ 报告记载：直接子代 .aok-hidden，文本即 ASIN。
+               刻意留了前后换行与空白 —— 解析器必须 trim。 -->
+          <div class="aok-hidden">
+            B0FB3VS68J
+          </div>
+
+          <span class="a-size-base a-color-base a-text-bold">Anker 737 Power Bank (PowerCore 24K), 24,000mAh 3-Port Portable Charger with 140W Output</span>
+
+          <!-- 报告未记载，仅作包裹 -->
+          <div class="a-row a-size-small a-color-secondary">
+            <!-- --------------------------------------------------------------
+                 干扰项 C-2：**孙代** .aok-hidden（bundle 子件的无障碍文本）
+                 ----------------------------------------------------------------
+                 报告写的是直接子代组合器 `#col-item-block-description > .aok-hidden`。
+                 写成后代选择器 `#col-item-block-description .aok-hidden` 会把这条
+                 也选进来：面板 1 变成 2 个匹配，全文档 NodeList 从 3 项变 4 项，
+                 检查 5 的 `asinElement[i]` 下标整体错乱。
+                 -------------------------------------------------------------- -->
+            <span class="aok-hidden">Bundle component B0CMPNT001 included</span>
+            Color: Black &nbsp;|&nbsp; Style: 140W
+          </div>
+
+          <!-- 报告未记载，仅作包裹：数量。报告 §4.2.4 第 11 项是死代码，
+               厂商从没读过这里；我们要读。 -->
+          <div class="a-row a-size-small a-color-secondary">Qty: 1</div>
+
+          <!-- ✅ 报告记载：p.a-spacing-none span.a-size-small（§4.2.4 检查 9 FBA）
+               本面板文案含 "Amazon" → FBA 判定通过。 -->
+          <p class="a-spacing-none">
+            <span class="a-size-small a-color-secondary">Ships from Amazon.com</span>
+          </p>
+          <p class="a-spacing-none">
+            <span class="a-size-small a-color-secondary">Sold by Amazon.com</span>
+          </p>
+
+          <!-- ✅ 报告记载：面板内 h2 = 交期文案（时效闸门，`:1801-1826`）
+               ⚠️ 星期名与 2026 年真实日历不符（8/27 实为周四），故意为之，
+                  见文件头「边界 6」。 -->
+          <h2 class="a-size-base-plus a-color-success">Wednesday, August 27</h2>
+          <!-- 报告未记载，仅作包裹：交期副文案，刻意也含一个日期，
+               但它不在 h2 里 —— 用 h2 之外的选择器抓交期就会抓到这句。 -->
+          <div class="a-row a-size-small a-color-secondary">
+            Order within 4 hrs 12 mins to get it by Wednesday, August 26
+          </div>
+        </div>
+
+        <!-- 报告未记载，仅作包裹：价格列 -->
+        <div class="a-fixed-left-grid-col a-col-far-right a-text-right">
+          <!-- --------------------------------------------------------------
+               干扰项 C-3：划线原价，**同 lineitem-price-text 类但无 a-text-bold**
+               ----------------------------------------------------------------
+               报告 §4.2.4 检查 6 指名的是 `span.lineitem-price-text.a-text-bold`。
+               只写 `.lineitem-price-text` 的解析器会先取到 $1,499.99：
+               Σ 变成 1499.99 + 748.50 = 2248.49，与 grandTotal 2241.86 的差额
+               翻成负数方向，50% 判定的语义被彻底污染（本例仍会放行，
+               但换个税率就会把好单判死 —— 这正是「写松了看不出来」的可怕之处）。
+               -------------------------------------------------------------- -->
+          <span class="lineitem-price-text a-text-strike a-color-secondary">$1,499.99</span>
+          <!-- ✅ 报告记载：单价正主。带 $ 与千分位。 -->
+          <span class="lineitem-price-text a-text-bold">$1,299.99</span>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ==========================================================================
+       ✅ 正主：商品面板 2 / ASIN B0CHXNPXVX / 数量 3 / **第三方配送，FBA 应当不通过**
+       ========================================================================== -->
+  <div data-csa-c-slot-id="checkout-itemBlockPanel" class="a-section">
+    <!-- ✅ 报告记载：.lineitem-container -->
+    <div class="lineitem-container">
+      <!-- 报告未记载，仅作包裹 -->
+      <div class="a-fixed-left-grid">
+
+        <div class="a-fixed-left-grid-col a-col-left">
+          <img class="a-dynamic-image" alt="Amazon Basics AA Performance Alkaline Batteries"
+               src="data:image/gif;base64,R0lGODlhAQABAIAAAP8AACwAAAAAAQABAAACAkQBADs=">
+        </div>
+
+        <!-- ✅ 报告记载：#col-item-block-description（第二次出现，id 重复是真实形态） -->
+        <div id="col-item-block-description" class="a-fixed-left-grid-col a-col-right">
+
+          <!-- ✅ 报告记载：直接子代 .aok-hidden -->
+          <div class="aok-hidden">B0CHXNPXVX</div>
+
+          <!-- ------------------------------------------------------------------
+               干扰项 C-4：**商品标题里天然含 "Amazon"**
+               --------------------------------------------------------------------
+               报告 §4.2.4 检查 9 的原文判据是「配送方文案含 `amazon`」，作用域被
+               严格限定在 `p.a-spacing-none span.a-size-small`。
+               这一行是 a-text-bold 的标题，不在那个作用域里。
+               写松了会怎样：任何形如
+                   panel.textContent.toLowerCase().includes("amazon")
+                   panel.querySelectorAll("span.a-size-small")   ← 丢了 p.a-spacing-none
+               的实现，都会因为标题里的 "Amazon Basics" 把这个**第三方配送**的面板
+               判成 FBA 放行 —— 本夹具存在的首要目的就是抓这个。
+               ------------------------------------------------------------------ -->
+          <span class="a-size-base a-color-base a-text-bold">Amazon Basics 48-Pack AA Alkaline High-Performance Batteries, 10-Year Shelf Life</span>
+
+          <div class="a-row a-size-small a-color-secondary">Qty: 3</div>
+
+          <!-- ✅ 报告记载：p.a-spacing-none span.a-size-small
+               本面板文案**不含** "amazon" → FBA 判定应当失败：
+               期望 updateOrderStatus(99,"商品B0CHXNPXVX配送方式非FBA") -->
+          <p class="a-spacing-none">
+            <span class="a-size-small a-color-secondary">Ships from ThirdParty Seller</span>
+          </p>
+          <p class="a-spacing-none">
+            <span class="a-size-small a-color-secondary">Sold by ThirdParty Seller</span>
+          </p>
+
+          <!-- ------------------------------------------------------------------
+               干扰项 C-5：又一处含 "Amazon" 但不在 p.a-spacing-none 里的文案。
+               它是 div 不是 p，class 也没有 a-spacing-none。
+               与 C-4 同理：作用域写松就会误判 FBA。
+               ------------------------------------------------------------------ -->
+          <div class="a-row a-size-small a-color-secondary">
+            Amazon's A-to-z Guarantee applies to this third-party order
+          </div>
+
+          <!-- ✅ 报告记载：面板内 h2 = 交期文案。
+               这是两条里**最晚**的一条，期望被取中（§4.2.4 时效闸门取最晚）。
+               ⚠️ 星期名同样与真实日历不符（8/28 实为周五），见文件头「边界 6」。 -->
+          <h2 class="a-size-base-plus a-color-success">Thursday, August 28</h2>
+        </div>
+
+        <!-- 报告未记载，仅作包裹：价格列 -->
+        <div class="a-fixed-left-grid-col a-col-far-right a-text-right">
+          <!-- ✅ 报告记载：单价正主（**单价**，不是行小计 $748.50）。
+               干扰点：紧跟着的行小计刻意也放在同一列里，但不带 lineitem-price-text，
+               防止解析器把 748.50 当单价再乘以数量 3。 -->
+          <span class="lineitem-price-text a-text-bold">$249.50</span>
+          <div class="a-row a-size-mini a-color-secondary">$748.50 total</div>
+        </div>
+
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ==========================================================================
+       干扰项 D：Frequently bought together（任务点名的干扰区）
+       --------------------------------------------------------------------------
+       这里**也有** span.lineitem-price-text.a-text-bold，但它不在任何
+       [data-csa-c-slot-id="checkout-itemBlockPanel"] 里。
+
+       写松了会怎样：
+         · 单价用 document.querySelectorAll("span.lineitem-price-text.a-text-bold")
+           再按下标取（而不是 panel 作用域），就会把 $39.99 / $59.00 混进单价序列，
+           Σ 单价×数量 彻底失真 → §4.2.4 检查 12 的 50% 判定要么误放要么误杀。
+         · 这里的 h2 "Frequently bought together" 会被丢了面板前缀的时效闸门
+           当交期文案送进 parseDeliveryTime → 解析失败 → 人工弹窗卡流程。
+       ========================================================================== -->
+  <div class="a-section a-spacing-large">
+    <h2 class="a-size-base-plus">Frequently bought together</h2>
+    <!-- 报告未记载，仅作包裹 -->
+    <div class="a-row">
+      <div class="a-column a-span4">
+        <span class="a-size-small">Anker 140W USB-C Charger (Nano II)</span>
+        <span class="lineitem-price-text a-text-bold">$59.00</span>
+        <p class="a-spacing-none">
+          <span class="a-size-small a-color-secondary">Ships from Amazon.com</span>
+        </p>
+      </div>
+      <div class="a-column a-span4">
+        <span class="a-size-small">USB-C to USB-C Cable, 6 ft, 240W</span>
+        <span class="lineitem-price-text a-text-bold">$39.99</span>
+        <p class="a-spacing-none">
+          <span class="a-size-small a-color-secondary">Ships from Amazon.com</span>
+        </p>
+      </div>
+    </div>
+  </div>
+
+
+  <!-- ==========================================================================
+       干扰项 E：赞助推荐位
+       --------------------------------------------------------------------------
+       它带 .lineitem-container，但**外面没有** [data-csa-c-slot-id="checkout-itemBlockPanel"]。
+
+       写松了会怎样：报告 §4.2.4 检查 4 的 waitForProductPanels 查的是
+       `[data-csa-c-slot-id="checkout-itemBlockPanel"] .lineitem-container`。
+       图省事只查 `.lineitem-container` 就会数出 3 个「商品」，
+       检查 10（商品集合条数 == 订单商品数）报假警，
+       检查 5/6 还会试图从这个广告位里读 ASIN 和单价。
+       ========================================================================== -->
+  <div class="a-section a-spacing-medium" data-csa-c-type="widget">
+    <span class="a-size-mini a-color-secondary">Sponsored</span>
+    <div class="lineitem-container">
+      <span class="a-size-small">Anker Soundcore Life Q30 Headphones</span>
+      <span class="a-size-small a-color-price">$79.99</span>
+    </div>
+  </div>
+
+
+  <!-- ==========================================================================
+       干扰项 F：过期的粘性底栏小结（排在正主 #checkout-pyo-button-block **之前**）
+       --------------------------------------------------------------------------
+       里面有一个 .grand-total-cell，值是 $1,299.99 —— 加第二件商品之前的旧值
+       （真实 Amazon 的粘性条确实会短暂滞后）。同样带一套 label/值单元格。
+
+       写松了会怎样：
+         · 总额若写成 document.querySelector(".grand-total-cell") 而不是
+           报告 §4.2.4 指名的 `#checkout-pyo-button-block … .grand-total-cell`，
+           先命中的就是这个 1299.99：
+             |1299.99 - 2048.49| / 1299.99 = 57.6% > 50%
+           → 一张完全正常的单被判「金额异常」取消。
+         · 订单小结若按 label 文案做**全文档**扫描（而不是限定在
+           #subtotals-marketplace-table 里），Items/Order total 会读到旧值。
+       ========================================================================== -->
+  <div id="checkout-sticky-summary" class="a-section aok-hidden" style="display:none">
+    <table class="a-normal">
+      <tr>
+        <td class="a-color-secondary a-size-small">Items:</td>
+        <td class="a-text-right a-size-small">$1,299.99</td>
+      </tr>
+      <tr>
+        <td class="a-color-base a-size-base a-text-bold">Order total:</td>
+        <td class="a-text-right grand-total-cell">$1,299.99</td>
+      </tr>
+    </table>
+  </div>
+
+
+  <!-- ==========================================================================
+       ⚠️ 订单小结 —— 报告【未记载】结算页的运费/税选择器
+       --------------------------------------------------------------------------
+       厂商只在**订单详情页**读这几项，用的是 §4.3 `extractOrderInfo` 的
+       `#od-subtotals .a-row.od-line-item-row`，按小写文案匹配
+       `shipping & handling` / `total before tax` / `estimated tax to be collected`
+       / `grand total`。**结算页上厂商压根没读过运费和税。**
+
+       所以本区块：
+         · 故意**不提供** #od-subtotals，也不提供 .od-line-item-row
+           —— 照搬 §4.3 选择器的解析器在这一页什么也读不到，必须自己走 label 扫描；
+         · 故意做成「label 单元格 + 值单元格」的两列表格形态（Amazon 结算页的真实
+           形态），逼解析器按 label 文案定位再取同行的值单元格；
+         · 末行的 label 是 `Order total:`，**不是** §4.3 那张表里的 `grand total`
+           —— 直接复用 §4.3 的 label 列表，总额一行必然落空。
+       表格外壳 #subtotals-marketplace-table 是报告未记载的推测形态，仅作包裹。
+
+       金额自洽关系（供断言用）：
+         2048.49 + 12.99 = 2061.48 ;  2061.48 + 180.38 = 2241.86
+       ========================================================================== -->
+  <div class="a-box a-spacing-medium">
+    <table id="subtotals-marketplace-table" class="a-normal a-spacing-none">
+      <tr class="a-row">
+        <td class="a-color-secondary a-size-base a-text-left">Items:</td>
+        <td class="a-color-base a-size-base a-text-right">$2,048.49</td>
+      </tr>
+      <tr class="a-row">
+        <td class="a-color-secondary a-size-base a-text-left">Shipping &amp; handling:</td>
+        <td class="a-color-base a-size-base a-text-right">$12.99</td>
+      </tr>
+      <tr class="a-row">
+        <td class="a-color-secondary a-size-base a-text-left">Total before tax:</td>
+        <td class="a-color-base a-size-base a-text-right">$2,061.48</td>
+      </tr>
+      <tr class="a-row">
+        <td class="a-color-secondary a-size-base a-text-left">Estimated tax to be collected:</td>
+        <td class="a-color-base a-size-base a-text-right">$180.38</td>
+      </tr>
+      <tr class="a-row">
+        <td class="a-color-base a-size-medium a-text-left a-text-bold">Order total:</td>
+        <td class="a-color-price a-size-medium a-text-right a-text-bold">$2,241.86</td>
+      </tr>
+    </table>
+  </div>
+
+
+  <!-- ==========================================================================
+       ✅ 正主：下单块
+       #checkout-pyo-button-block 内的 .grand-total-cell = 报告 §4.2.4 检查 12 的
+       orderTotalPrice 来源（`:1758-1776`）；#submitOrderButtonId input = 真实下单
+       （`:1838-1861`）。
+       ========================================================================== -->
+  <div id="checkout-pyo-button-block" class="a-box a-spacing-base">
+
+    <!-- 报告未记载，仅作包裹 -->
+    <div class="a-row a-spacing-mini">
+      <span class="a-size-medium a-text-bold">Order total:</span>
+      <!-- ✅ 报告记载：.grand-total-cell（正主，$2,241.86） -->
+      <span class="grand-total-cell a-color-price a-size-medium a-text-bold">$2,241.86</span>
+    </div>
+
+    <!-- ✅ 报告记载：#submitOrderButtonId input -->
+    <span id="submitOrderButtonId" class="a-button a-button-primary">
+      <!-- ------------------------------------------------------------------
+           干扰项 G：排在真正提交按钮**前面**的隐藏 csrf input
+           ----------------------------------------------------------------------
+           报告写的是后代选择器 `#submitOrderButtonId input`（取第一个）。
+           照抄就会拿到这个 type="hidden" 的令牌，`.click()` 对它**静默无效**：
+           页面不跳转 → 报告 §4.2.4 的 waitForOrderSuccess 空等 →
+           （叠加报告 §4.2.2 的 addressFillingInProgress 永不复位缺陷）
+           整批拍单静默死锁，UI 卡在「正在拍单中...」。
+           正确形态：#submitOrderButtonId input[type="submit"]（或 .a-button-input）。
+           ------------------------------------------------------------------ -->
+      <input type="hidden" name="anti-csrftoken-a2z" value="hK9tQ2mVx0LbR7ny">
+      <span class="a-button-inner">
+        <input class="a-button-input" type="submit"
+               title="Place your order" aria-labelledby="submitOrderButtonId-announce">
+        <span id="submitOrderButtonId-announce" class="a-button-text" aria-hidden="true">
+          Place your order
+        </span>
+      </span>
+    </span>
+
+    <!-- 报告未记载，仅作包裹 -->
+    <div class="a-row a-size-mini a-color-secondary">
+      By placing your order, you agree to Amazon's privacy notice and conditions of use.
+    </div>
+  </div>
+
+</div>
