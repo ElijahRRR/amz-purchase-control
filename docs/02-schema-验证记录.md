@@ -99,3 +99,56 @@ CREATE UNIQUE INDEX uq_tasks_one_claimed_per_env
 >
 > 所以：要么真防住（约束落到数据库），要么明确写清「这里不防，因为前提是 X」。
 > `services/task_queue.py` 的模块 docstring 采用了后者。
+
+---
+
+## 全链路实跑(2026-08-21,空库起)
+
+按 README 的快速开始从一个**全新的库**走了一遍,验的是「文档写的步骤真能跑通」,
+以及各层拼起来之后行为是否还对。环境:PostgreSQL 17 + uvicorn + 插件自己的
+`Loop`/`runTask`(页面动作走模拟驱动,不碰 Amazon)。
+
+```
+createdb amz_fresh → cli.py db_init → 9 张表
+建 env-172 → cli.py task_intake(5 行,1 行 price_cap=0)
+```
+
+| 步骤 | 结果 |
+|---|---|
+| `task_intake --dry-run` | 5 行 → 将新增 4,拒收 1(`#4 UP-F900: price_cap 必须大于 0`) |
+| `task_intake` 真跑 | 新增 4,拒收 1 —— **与空跑逐字一致** |
+| 认领 → 拍单(happy) | `purchased`,单号已回填 |
+| 超限价 | `manual` / `PRICE_CAP_EXCEEDED` |
+| 订单卡 ASIN 不符 | `manual` / `ORDER_NO_AMBIGUOUS`,**单号未写入** |
+| 下单后未见确认页 | `manual` / `ORDER_CONFIRM_TIMEOUT` |
+| 物流同步 | `delivered`,4 条轨迹,`delivered_at` 已落 |
+
+后台接口(curl 直打):
+
+| 动作 | 结果 |
+|---|---|
+| 状态桶计数 | manual 3 / purchased 1 / exception 0 / ready 0 |
+| 批量单号(上游号 + AMZ 号 + 一个查不到的) | 盖过状态桶,命中 2,`missing_order_numbers` 报出那一个 |
+| 实例判活 | `env-172 online 可派单=True 队列=0 今日=1 待人工=3`,阈值 60 秒 |
+| 详情 | 商品 1 / 事件 9 / 物流无,事件类型序列完整 |
+| 重置一条 `ORDER_CONFIRM_TIMEOUT` | **拒绝**:`NEEDS_ACK` |
+| 带 `acknowledged` 再来 | `ready` |
+| 强制回填不写说明 | **拒绝**:`NOTE_REQUIRED` |
+| 强制回填一个已被占用的单号 | **拒绝**:`ORDER_NO_TAKEN`,并指出挂在哪条任务上 |
+| 强制回填正常 | `purchased`,事件里留下 `assertion_skipped: true` + 说明 + 操作人 |
+
+### 这一轮验到的、单元测试验不到的东西
+
+**空跑与真跑逐字一致。** 这一条只有整条链路跑起来才看得出来 ——
+`dry_run` 与 `ingest` 是两个函数,单元测试里各自都对,但「同一份输入进去,
+人看到的两段输出是不是同一回事」得端到端才成立。之前它们**不一致**过
+(空跑不查库,少报了一行拒收),那时两边的单元测试都是绿的。
+
+**拒绝路径不改库。** `NEEDS_ACK` / `NOTE_REQUIRED` / `ORDER_NO_TAKEN` 三条拒绝之后,
+任务状态原样不动。这一点在路由层是靠「拒绝判定一律发生在写库之前」保证的,
+而不是靠事务回滚 —— 后者在 `pg_conn` 的语义下会把同一次请求里**更早的**写也一起吞掉
+(见本文档上面那条 2026-08-21 的记录)。
+
+**留痕能追到人。** 强制回填这个动作在库里留下的是:谁(operator)、
+凭什么(note)、跳过了什么闸(assertion_skipped)、原来卡在哪个码(was_error_code)。
+事后追责时这四样缺一不可。
