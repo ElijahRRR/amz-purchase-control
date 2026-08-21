@@ -158,9 +158,21 @@ def detail(conn, task_id: int) -> dict[str, Any] | None:
     out["products"] = [dict(r) for r in conn.execute(
         "SELECT asin, quantity, actual_unit_price, image_url FROM procure.task_products "
         " WHERE task_id = %(task_id)s ORDER BY id", {"task_id": task_id}).fetchall()]
+    # 事件带上是哪个实例干的。tasks.claimed_by 是**在途指针**,任务一落终态就清空 ——
+    # 「此刻谁拿着」和「当初谁执行的」是两回事,后者属于历史,历史在事件流里。
+    # 界面上那一格(买家号信息 · 认领实例)要的是后者。
     out["events"] = [dict(r) for r in conn.execute(
-        "SELECT kind, code, payload, created_at FROM procure.task_events "
-        " WHERE task_id = %(task_id)s ORDER BY created_at, id", {"task_id": task_id}).fetchall()]
+        """SELECT e.kind, e.code, e.payload, e.created_at, i.instance_uid
+             FROM procure.task_events e
+             LEFT JOIN procure.plugin_instances i ON i.id = e.instance_id
+            WHERE e.task_id = %(task_id)s
+            ORDER BY e.created_at, e.id""", {"task_id": task_id}).fetchall()]
+
+    # 顺手给一个现成的:这一单是谁跑的。取最后一次认领的那个实例 ——
+    # 重置回队列后被另一个实例领走的话,最后那次才算数。
+    out["executed_by_uid"] = next(
+        (e["instance_uid"] for e in reversed(out["events"])
+         if e["kind"] == "claimed" and e["instance_uid"]), None)
     ship = conn.execute(
         "SELECT carrier, tracking_no, tracking_url, status, delivered_at "
         "  FROM logistics.shipments WHERE task_id = %(task_id)s ORDER BY id DESC LIMIT 1",

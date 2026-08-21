@@ -281,3 +281,44 @@ def test_instances_liveness(client, conn, seed):
     conn.commit()
     rows = client.get("/v1/admin/instances").json()["data"]["items"]
     assert rows[0]["liveness"] == "paused" and rows[0]["dispatchable"] is False
+
+
+def test_detail_says_which_instance_executed_it_after_completion(client, conn, seed):
+    """tasks.claimed_by 是**在途指针**,任务一落终态就清空。
+
+    「此刻谁拿着」和「当初谁执行的」是两回事。设计画布上「买家号信息 · 认领实例」
+    那一格要的是后者 —— 只看 claimed_by 的话,所有已完成的单那一格永远是空的,
+    而已完成恰恰是最需要追「这单是哪台机器跑的」的时候。
+    """
+    from services import task_queue
+
+    env_id, inst_id, _tasks = seed
+    task = task_queue.claim(conn, env_id, inst_id)
+    task_queue.complete(conn, task["id"], amazon_order_no="111-0000007-0000007",
+                        instance_id=inst_id, totals={})
+    conn.commit()
+
+    d = client.get(f"/v1/admin/tasks/{task['id']}").json()["data"]
+    assert d["status"] == "purchased"
+    assert d["claimed_by_uid"] is None          # 在途指针已清空,这是对的
+    assert d["executed_by_uid"] == "inst-A"     # 但历史还在
+    assert any(e["kind"] == "claimed" and e["instance_uid"] == "inst-A" for e in d["events"])
+
+
+def test_executed_by_takes_the_last_claim(client, conn, seed):
+    """重置回队列后被另一个实例领走的话,最后那次才算数。"""
+    from services import task_queue
+
+    env_id, inst_id, _tasks = seed
+    other = conn.execute(
+        """INSERT INTO procure.plugin_instances (buyer_env_id, instance_uid)
+           VALUES (%s,'inst-B') RETURNING id""", (env_id,)).fetchone()["id"]
+
+    task = task_queue.claim(conn, env_id, inst_id)
+    task_queue.fail(conn, task["id"], "OUT_OF_STOCK", instance_id=inst_id)
+    conn.execute("UPDATE procure.tasks SET status='ready' WHERE id=%s", (task["id"],))
+    again = task_queue.claim(conn, env_id, other)
+    conn.commit()
+
+    d = client.get(f"/v1/admin/tasks/{again['id']}").json()["data"]
+    assert d["executed_by_uid"] == "inst-B"
