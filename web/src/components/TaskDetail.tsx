@@ -187,7 +187,6 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
   }
 
   const s = statusLabel(t.status);
-  const p = t.products?.[0];
   const bought = !!t.amazon_order_no;
   const addressBlock =
     `${t.ship_name}\n${t.ship_phone}\n${t.ship_line1}\n${t.ship_city}, ${t.ship_state} ${t.ship_postcode}\n${t.ship_country}`;
@@ -561,9 +560,16 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
               {t.error_code} 意味着这一单可能已经在亚马逊上真下成了。
             </b>
             {" "}重置回队列 = 让下一个实例把同一单再买一遍。
-            请先去买家号 <span className="id text-zinc-700">{t.env_code}</span> 的订单页确认
-            <span className="id text-zinc-700"> {p?.asin ?? ""} </span>
-            没有这一单,再点确认。
+            请先去买家号 <span className="id text-zinc-700">{t.env_code}</span> 的订单页,
+            确认下面这{(t.products?.length ?? 0) > 1 ? ` ${t.products!.length} 个商品` : "个商品"}
+            都没有下过单,再点确认:
+            {/* **列全部 ASIN,不能只报第一个。** 只报 products[0] 的话,一单三件商品时
+                运营去订单页只找那一个,找不到就如实点下「我已确认没有这一单」——
+                而真下成的那一张订单里另外两件明明在。确认的对象说错了,
+                这道闸就等于没有:它拦的正是重复下单。 */}
+            <span className="id text-zinc-800 ml-1">
+              {(t.products ?? []).map((x) => x.asin).join("、") || "(这一单没有商品行)"}
+            </span>
           </div>
           <Button size="sm" onClick={() => setConfirm(null)}>先去看看</Button>
           <Button size="sm" variant="danger" disabled={busy}
