@@ -77,6 +77,7 @@
 cli.py          命令行唯一入口(锁/运行记录/dry-run)
 server/         FastAPI 应用,插件的 HTTP 入口(只做请求校验 + 调 services)
 workflows/      每文件一个 run(),对应一条可调度的业务链
+                db_init / task_intake(上游采购行落库) / task_sweep(认领超时清扫)
 services/       跨入口复用的业务积木(先查重再新增)
 api/            外部系统适配(上游 ERP、通知)
 registry/       接线盒:db.py(连接) paths.py(路径) settings.py(可调参数)

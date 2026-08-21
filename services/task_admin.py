@@ -166,3 +166,20 @@ def update_asin(conn, task_id: int, old_asin: str, new_asin: str, *,
                       payload={"action": "update_asin", "from": old_asin, "to": new_asin,
                                "operator": operator, "line_key_unchanged": True})
     return {"task_id": task_id, "asin": new_asin}
+
+
+def release(conn, task_id: int, *, operator: str | None = None) -> dict[str, Any]:
+    """输入:任务 id → 输出:{task_id, status}。pending → ready。
+
+    落库与放行分开,是因为中间这一格有用:护栏参数(限价、交期上限)在这里还能改,
+    改完再放出去。厂商面板也有这么一格(待审核 0),但他们实测 0 条 —— 导入后直接
+    就是待拍单,那一格形同虚设。我们把它保留成一个真闸口。
+    """
+    t = _task(conn, task_id)
+    if t["status"] != "pending":
+        raise AdminRefused("BAD_STATUS", f"只有待放行能放行,当前是 {t['status']}")
+    conn.execute("UPDATE procure.tasks SET status='ready', updated_at=now() WHERE id = %s",
+                 (task_id,))
+    task_event.record(conn, task_id, "admin",
+                      payload={"action": "release", "operator": operator})
+    return {"task_id": task_id, "status": "ready"}

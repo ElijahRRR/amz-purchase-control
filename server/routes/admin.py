@@ -12,7 +12,7 @@ from fastapi.responses import JSONResponse
 from registry import settings
 from server import schemas
 from server.deps import conn_ctx
-from services import instance, task_admin, task_query
+from services import instance, task_admin, task_intake, task_query
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
@@ -94,6 +94,24 @@ def asin(task_id: int, req: schemas.AsinReq, conn=Depends(conn_ctx)):
     try:
         got = task_admin.update_asin(conn, task_id, req.old_asin, req.new_asin,
                                      operator=req.operator)
+    except task_admin.AdminRefused as exc:
+        return _refused(exc)
+    return schemas.Envelope(ok=True, data=got)
+
+
+@router.post("/tasks/import")
+def import_tasks(req: schemas.IntakeReq, conn=Depends(conn_ctx)) -> schemas.Envelope:
+    """上游采购行落库。每一行的去向都在 details 里,不存在被静默丢掉的行。"""
+    rows = [r.model_dump() for r in req.rows]
+    got = task_intake.ingest(conn, rows, release=req.release)
+    return schemas.Envelope(ok=True, data=got)
+
+
+@router.post("/tasks/{task_id}/release")
+def release_task(task_id: int, conn=Depends(conn_ctx)):
+    """pending → ready。放行闸口:落库与放行分开,中间那一格留给上游或人来把关。"""
+    try:
+        got = task_admin.release(conn, task_id)
     except task_admin.AdminRefused as exc:
         return _refused(exc)
     return schemas.Envelope(ok=True, data=got)

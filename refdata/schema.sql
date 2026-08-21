@@ -38,7 +38,10 @@ CREATE INDEX IF NOT EXISTS idx_plugin_instances_env
 -- 采购任务
 CREATE TABLE IF NOT EXISTS procure.tasks (
     id                bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
-    line_key          text NOT NULL UNIQUE,   -- sha256(上游单号|asin) 十六进制
+    line_key          text NOT NULL UNIQUE,
+        -- sha256("上游单号|asin1xN,asin2xM"),ASIN 排序后拼。
+        -- 一条 task = 一张上游订单 = 一次 Amazon 下单,可含多个商品,
+        -- 所以键覆盖整个商品集合。生成在 services/task_intake.line_key()
     upstream_order_no text NOT NULL,          -- 上游订单号,便于人工追溯
     buyer_env_id      bigint NOT NULL REFERENCES procure.buyer_envs(id),
     marketplace       text NOT NULL DEFAULT 'US',

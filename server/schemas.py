@@ -211,3 +211,32 @@ class AsinReq(BaseModel):
     old_asin: str
     new_asin: str
     operator: str | None = None
+
+
+class IntakeProduct(BaseModel):
+    asin: str
+    quantity: int
+    image_url: str | None = None
+
+
+class IntakeRow(BaseModel):
+    upstream_order_no: str
+    buyer_env_code: str
+    marketplace: str = "US"
+    ship_name: str
+    ship_phone: str
+    ship_line1: str
+    ship_city: str
+    ship_state: str
+    ship_postcode: str
+    ship_country: str = "US"
+    #: 上游 ERP 算好下发,本系统只取用不计算
+    price_cap: Decimal
+    max_delivery_days: int = 7
+    products: list[IntakeProduct]
+
+
+class IntakeReq(BaseModel):
+    rows: list[IntakeRow]
+    #: True = 直接落成 ready(可被认领);默认落成 pending(等放行)
+    release: bool = False

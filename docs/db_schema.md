@@ -59,7 +59,7 @@
 | 列 | 类型 | 说明 |
 |---|---|---|
 | `id` | bigint identity | |
-| `line_key` | text UNIQUE | `sha256(上游单号 \| asin)` 十六进制 |
+| `line_key` | text UNIQUE | `sha256("上游单号|asin1xN,asin2xM")` 十六进制，ASIN 排序后拼。**一条 task = 一张上游订单 = 一次 Amazon 下单**，里面可以有多个商品，所以键必须覆盖整个商品集合——只拿其中一个 ASIN 在多商品时没有答案，含糊的唯一键比没有唯一键更糟：它会让同一张上游订单在某些组合下重复落库，而看代码的人以为有去重。生成在 `services/task_intake.line_key()` |
 | `upstream_order_no` | text | 上游订单号，便于人工追溯 |
 | `buyer_env_id` | bigint FK | 派给哪个买家号 |
 | `marketplace` | text | 首期恒为 `US` |
