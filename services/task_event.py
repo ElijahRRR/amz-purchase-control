@@ -18,7 +18,10 @@ RETURNING id
 """
 
 KINDS = frozenset(
-    {"claimed", "step", "guard_block", "error", "purchased", "released", "assert_failed"}
+    {"claimed", "step", "guard_block", "error", "purchased", "released", "assert_failed",
+     # 人在后台动的手。和插件跑出来的结果落在同一条时间线上,但必须分得开 ——
+     # 「这个单号是机器读的还是人填的」在事后追责时是第一个要问的问题。
+     "admin"}
 )
 
 

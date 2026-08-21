@@ -50,6 +50,13 @@ TO_MANUAL = frozenset({
 })
 
 
+#: 「可能已经在 Amazon 上真下了单」的那一类。重置回队列前必须有人先去买家号里
+#: 确认过 —— 直接重置就是让下一个实例把同一单再买一遍。
+POSSIBLY_ORDERED = frozenset({
+    "ORDER_CONFIRM_TIMEOUT", "ORDER_NO_AMBIGUOUS", "CLAIM_TIMEOUT",
+})
+
+
 def validate(code: str) -> str:
     """输入:错误码 → 输出:原样返回;不在封闭集内抛 ValueError。
 

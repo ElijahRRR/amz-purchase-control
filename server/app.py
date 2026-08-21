@@ -10,12 +10,13 @@
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import JSONResponse
 
-from server.routes import instances, shipments, tasks
+from server.routes import admin, instances, shipments, tasks
 
 app = FastAPI(title="amz-purchase-control", version="0.1.0")
 app.include_router(instances.router)
 app.include_router(tasks.router)
 app.include_router(shipments.router)
+app.include_router(admin.router)
 
 
 @app.exception_handler(HTTPException)

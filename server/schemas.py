@@ -4,6 +4,7 @@
 插件发 subtotal」的字段错位就是靠多处副本产生的。
 """
 
+from datetime import date
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -160,3 +161,53 @@ class ShipmentSyncReq(BaseModel):
     tracking_url: str | None = None
     status: Literal["not_shipped", "in_transit", "delivered", "cancelled"] | None = None
     events: list[ShipmentEventIn] = Field(default_factory=list)
+
+
+# ── 后台(运营台)────────────────────────────────────────────────────────
+#
+# 后台与插件用同一套契约定义。不做鉴权(所有者定稿),服务默认只监听本机。
+
+
+class TaskSearchReq(BaseModel):
+    status: str | None = None
+    env_code: str | None = None
+    #: created = 创建时间(单子什么时候下发到我们这儿);purchased = 采购时间(什么时候真买的)
+    date_field: Literal["created", "purchased"] = "created"
+    date_from: date | None = None
+    date_to: date | None = None
+    #: 粘一沓单号进来,每行一个。上游号与 AMZ 号可以混着粘,服务端自动分流。
+    #: 一旦非空就**盖过**状态桶与时间范围 —— 按号找单的人是来找特定几张单的。
+    order_numbers: list[str] = Field(default_factory=list)
+    asin: str | None = None
+    page: int = 1
+    page_size: int = 50
+
+
+class ResetReq(BaseModel):
+    #: 错误码属于「可能已经真下了单」那一类时必须为 True ——
+    #: 它是「我已经去买家号里确认过没有这一单」的回执。
+    acknowledged: bool = False
+    operator: str | None = None
+
+
+class ForceBackfillReq(BaseModel):
+    amazon_order_no: str
+    #: 必填。事后追责时「当时为什么敢写」必须留在库里。
+    note: str
+    operator: str | None = None
+
+
+class AddressReq(BaseModel):
+    ship_name: str | None = None
+    ship_phone: str | None = None
+    ship_line1: str | None = None
+    ship_city: str | None = None
+    ship_state: str | None = None
+    ship_postcode: str | None = None
+    operator: str | None = None
+
+
+class AsinReq(BaseModel):
+    old_asin: str
+    new_asin: str
+    operator: str | None = None

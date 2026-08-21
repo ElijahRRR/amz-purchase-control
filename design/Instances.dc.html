@@ -211,9 +211,9 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
               <div style="font-size:12.5px;color:#52525b;line-height:1.65"><span style="color:#18181b">登录态存疑</span> · 结局不确定,用琥珀空心。可能只是掉登录,也可能号被风控</div>
             </div>
             <div style="background:#fafafa;border:1px solid #f4f4f5;border-radius:6px;padding:9px 10px;font-size:12px;color:#71717a;line-height:1.6">
-              「新鲜」到底是几秒,等 admin 列表接口落地时一起定 —— 现在代码里只有
-              <span class="id" style="font-size:11.5px">/v1/instances/heartbeat</span> 这个上报端点,还没有判活的阈值。
-              画布上不写一个代码里没有的数。
+              「新鲜」= <span class="id" style="font-size:11.5px;color:#18181b">60 秒</span>内有心跳。插件 20 秒一次,
+              连续三次没到才判离线 —— 一次网络抖动不该让运营看到一排红点,那样红点就不再有意义了。
+              阈值在 <span class="id" style="font-size:11.5px">registry/settings.heartbeat_stale_seconds()</span>。
             </div>
           </div>
         </section>
