@@ -160,3 +160,36 @@ export interface ErrorStats {
   trend: { day: string; code: string; n: number }[];
   total: number;
 }
+
+export interface WorkflowRun {
+  id: number;
+  workflow: string;
+  params: Record<string, unknown> | null;
+  started_at: string;
+  finished_at: string | null;
+  status: "running" | "success" | "failed";
+  summary: string | null;
+  operator: string | null;
+  seconds: number;
+  /** 停在 running 又超时:不是「在跑」,是「开跑后再没消息」。
+   *  这两种的处置相反 —— 一个是等它,一个是去查它。 */
+  stuck: boolean;
+}
+
+export interface RunsOut {
+  items: WorkflowRun[];
+  /** 每条工作流的最后一次运行。**从没跑过的也在里面**(last 为 null)——
+   *  一条从没跑过的 task_sweep 在「最近运行」列表里是看不见的,
+   *  而那恰恰是最该报警的情况。 */
+  by_workflow: {
+    workflow: string;
+    last: WorkflowRun | null;
+    age_seconds: number | null;
+    /** 这条该不该定时跑。按需跑的从没跑过是正常的 —— 把它也标红
+     *  会把人训练成忽略红色,等真该报警时那一格红得跟旁边一模一样。 */
+    scheduled: boolean;
+    expected_seconds: number | null;
+    overdue: boolean;
+  }[];
+  stuck_after_seconds: number;
+}

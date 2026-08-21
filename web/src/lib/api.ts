@@ -6,7 +6,8 @@
  */
 
 import type {
-  Envelope, ErrorStats, InstanceRow, Meta, SearchOut, SearchReq, Summary, TaskDetail,
+  Envelope, ErrorStats, InstanceRow, Meta, RunsOut, SearchOut, SearchReq, Summary,
+  TaskDetail,
 } from "@/types";
 
 export type ApiResult<T> =
@@ -66,6 +67,7 @@ export const api = {
     call<Summary>(`/v1/admin/summary?${qs(q)}`),
   errorStats: (q: { date_from?: string | null; date_to?: string | null }) =>
     call<ErrorStats>(`/v1/admin/error-stats?${qs(q)}`),
+  runs: () => call<RunsOut>("/v1/admin/runs"),
   instances: () => call<{ stale_seconds: number; items: InstanceRow[] }>("/v1/admin/instances"),
 
   releaseTask: (id: number) => post<{ status: string }>(`/v1/admin/tasks/${id}/release`, {}),

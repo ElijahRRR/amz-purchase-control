@@ -84,21 +84,64 @@ def _single_instance(workflow: str):
         fh.close()
 
 
-def _record_run(workflow: str, params: dict, started_at, status: str, summary: str | None):
-    """输入:运行信息 → 输出:无(写一行 ops.runs;数据库不可用时不阻断执行)。"""
+def _open_run(workflow: str, params: dict, started_at) -> int | None:
+    """输入:运行信息 → 输出:ops.runs 的 id(数据库不可用时 None,不阻断执行)。
+
+    **开跑就写一行 `running`**,不是等跑完再补一行。
+
+    早先是跑完才 INSERT 的,后果是:进程中途被杀(容器回收、OOM、机器重启)
+    就一行都不写 —— 一次挂死的运行在库里跟「从来没跑过」一模一样。
+    偏偏 task_sweep 是全项目唯一必须挂定时的那一条,它挂死正是最该被看见的事。
+    schema 里 status 的封闭集本来就写着 running,只是从来没人写过这个值。
+
+    现在中途被杀会留下一行停在 running 的记录,运营台那一页把它标成
+    「开跑后再没消息」—— 有痕迹才查得动。
+    """
+    from registry import db
+
+    try:
+        with db.pg_conn() as conn:
+            row = conn.execute(
+                """
+                INSERT INTO ops.runs (workflow, params, started_at, status, operator)
+                VALUES (%s, %s, %s, 'running', %s)
+                RETURNING id
+                """,
+                (workflow, json.dumps(params, ensure_ascii=False), started_at,
+                 os.environ.get("AMZ_OPERATOR", "manual")),
+            ).fetchone()
+            return row["id"] if isinstance(row, dict) else row[0]
+    except Exception:
+        return None
+
+
+def _close_run(run_id: int | None, workflow: str, params: dict, started_at,
+               status: str, summary: str | None):
+    """输入:_open_run 给的 id + 结果 → 输出:无(数据库不可用时不阻断执行)。
+
+    开跑那一行没写成(库当时连不上)时补一行完整的 —— 宁可有一行 finished_at
+    与 started_at 都对得上的记录,也不要因为开头没记上就把整次运行丢掉。
+    """
     from registry import db
 
     with contextlib.suppress(Exception):
         with db.pg_conn() as conn:
-            conn.execute(
-                """
-                INSERT INTO ops.runs (workflow, params, started_at, finished_at,
-                                      status, summary, operator)
-                VALUES (%s, %s, %s, now(), %s, %s, %s)
-                """,
-                (workflow, json.dumps(params, ensure_ascii=False), started_at,
-                 status, summary, os.environ.get("AMZ_OPERATOR", "manual")),
-            )
+            if run_id is not None:
+                conn.execute(
+                    """UPDATE ops.runs SET finished_at = now(), status = %s, summary = %s
+                        WHERE id = %s""",
+                    (status, summary, run_id),
+                )
+            else:
+                conn.execute(
+                    """
+                    INSERT INTO ops.runs (workflow, params, started_at, finished_at,
+                                          status, summary, operator)
+                    VALUES (%s, %s, %s, now(), %s, %s, %s)
+                    """,
+                    (workflow, json.dumps(params, ensure_ascii=False), started_at,
+                     status, summary, os.environ.get("AMZ_OPERATOR", "manual")),
+                )
 
 
 def _run_one(workflow: str, params: dict) -> tuple[bool, str]:
@@ -107,14 +150,17 @@ def _run_one(workflow: str, params: dict) -> tuple[bool, str]:
     try:
         module = importlib.import_module(f"workflows.{workflow}")
     except ModuleNotFoundError as exc:
+        # import 失败不写 ops.runs:它压根没开始跑,记一行「失败」会把
+        # 「代码有问题」和「这次运行出错了」混成同一件事。
         return False, f"找不到工作流 {workflow}:{exc}"
+    run_id = _open_run(workflow, params, started_at)
     try:
         summary = module.run(params) or "(无摘要)"
-        _record_run(workflow, params, started_at, "success", summary)
+        _close_run(run_id, workflow, params, started_at, "success", summary)
         return True, summary
     except Exception:
         detail = traceback.format_exc(limit=6)
-        _record_run(workflow, params, started_at, "failed", detail)
+        _close_run(run_id, workflow, params, started_at, "failed", detail)
         return False, detail
 
 

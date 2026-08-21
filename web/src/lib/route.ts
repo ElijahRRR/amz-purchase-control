@@ -6,7 +6,7 @@
 
 import { useEffect, useState } from "react";
 
-export const PAGES = ["tasks", "instances", "errors"] as const;
+export const PAGES = ["tasks", "instances", "runs", "errors"] as const;
 export type Page = (typeof PAGES)[number];
 
 const parse = (): Page => {

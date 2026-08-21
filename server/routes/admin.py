@@ -14,7 +14,8 @@ from fastapi.responses import JSONResponse
 from registry import settings
 from server import schemas
 from server.deps import conn_ctx
-from services import error_codes, instance, task_admin, task_intake, task_query, vocab
+from services import (error_codes, instance, ops_query, task_admin, task_intake,
+                      task_query, vocab)
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
@@ -83,6 +84,13 @@ def error_stats(
                                  date_from=date_from or today - timedelta(days=13),
                                  date_to=date_to or today)
     return schemas.Envelope(ok=True, data=got)
+
+
+@router.get("/runs")
+def runs(limit: int = 60, conn=Depends(conn_ctx)) -> schemas.Envelope:
+    """工作流运行记录。ops.runs 之前是只写不读的 —— 写了没人看等于没写,
+    而 task_sweep 是全项目唯一必须挂定时的一条,它悄悄停了没人会知道。"""
+    return schemas.Envelope(ok=True, data=ops_query.recent(conn, limit=limit))
 
 
 @router.post("/tasks/search")

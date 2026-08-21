@@ -1,11 +1,12 @@
 import { lazy, Suspense, useEffect, useState } from "react";
-import { LayoutGrid, LineChart, UserRound } from "lucide-react";
+import { Clock, LayoutGrid, LineChart, UserRound } from "lucide-react";
 import { api } from "@/lib/api";
 import { useRoute, type Page } from "@/lib/route";
 import { cn } from "@/lib/utils";
 import type { InstanceRow, Summary } from "@/types";
 import TasksPage from "@/pages/Tasks";
 import InstancesPage from "@/pages/Instances";
+import RunsPage from "@/pages/Runs";
 // Recharts 一个人就占掉打包体积的一半多,而它只在这一页用。
 // 拆出去之后进控制台的首屏少加载 ~400KB —— 那一页多等半秒没人会注意到。
 const ErrorsPage = lazy(() => import("@/pages/Errors"));
@@ -13,6 +14,7 @@ const ErrorsPage = lazy(() => import("@/pages/Errors"));
 const NAV: { page: Page; label: string; icon: typeof LayoutGrid; group: string }[] = [
   { page: "tasks", label: "任务队列", icon: LayoutGrid, group: "采购" },
   { page: "instances", label: "买家号", icon: UserRound, group: "采购" },
+  { page: "runs", label: "工作流记录", icon: Clock, group: "运行" },
   { page: "errors", label: "错误码分布", icon: LineChart, group: "运行" },
 ];
 
@@ -127,6 +129,7 @@ export default function App() {
       <main className="flex-1 flex flex-col min-w-0">
         {page === "tasks" && <TasksPage summary={summary} onMutate={reloadSummary} />}
         {page === "instances" && <InstancesPage />}
+        {page === "runs" && <RunsPage />}
         {page === "errors" && (
           <Suspense fallback={
             <div className="flex-1 flex items-center justify-center text-xs text-zinc-400">加载图表…</div>

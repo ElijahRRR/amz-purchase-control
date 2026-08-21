@@ -484,3 +484,129 @@ def test_list_does_not_duplicate_a_task_that_synced_twice(client, conn, seed):
     rows = [i for i in data["items"] if i["id"] == tasks[0]]
     assert len(rows) == 1
     assert rows[0]["tracking_no"] == "1Z-NEW"      # 取最后一条,不是第一条
+
+
+# ── 工作流运行记录 ──────────────────────────────────────────────────────
+
+def test_runs_lists_every_workflow_including_the_ones_never_run(client, conn):
+    """从没跑过的工作流也要出现。
+
+    一条从没跑过的 task_sweep 在「最近运行」列表里是看不见的(它没有行),
+    而那恰恰是最该报警的情况 —— claimed 的任务会一直堆着没人清扫。
+    """
+    conn.execute("""INSERT INTO ops.runs (workflow, params, started_at, finished_at,
+                                          status, summary, operator)
+                    VALUES ('task_intake','{}'::jsonb, now() - interval '5 minutes',
+                            now(), 'success','落库 3 行','manual')""")
+    conn.commit()
+
+    data = client.get("/v1/admin/runs").json()["data"]
+    names = {r["workflow"] for r in data["by_workflow"]}
+    assert "task_sweep" in names and "task_intake" in names and "db_init" in names
+
+    swept = next(r for r in data["by_workflow"] if r["workflow"] == "task_sweep")
+    assert swept["last"] is None and swept["age_seconds"] is None
+
+    intook = next(r for r in data["by_workflow"] if r["workflow"] == "task_intake")
+    assert intook["last"]["status"] == "success"
+    assert intook["age_seconds"] >= 280           # 5 分钟前跑的
+
+
+def test_runs_marks_a_run_that_started_and_never_reported_back(client, conn):
+    """停在 running 又超时的,不是「在跑」,是「开跑后再没消息」。
+
+    这两种在界面上必须分开:一个是等它,一个是去查它。
+    进程被杀(容器回收、OOM)就是这个样子 —— 早先 ops.runs 是跑完才写的,
+    那种运行在库里跟「从来没跑过」一模一样。
+    """
+    conn.execute("""INSERT INTO ops.runs (workflow, params, started_at, status, operator)
+                    VALUES ('task_sweep','{}'::jsonb, now() - interval '3 hours',
+                            'running','cron')""")
+    conn.execute("""INSERT INTO ops.runs (workflow, params, started_at, status, operator)
+                    VALUES ('task_intake','{}'::jsonb, now() - interval '10 seconds',
+                            'running','manual')""")
+    conn.commit()
+
+    items = {r["workflow"]: r for r in client.get("/v1/admin/runs").json()["data"]["items"]}
+    assert items["task_sweep"]["stuck"] is True     # 3 小时前开跑,没了下文
+    assert items["task_intake"]["stuck"] is False   # 10 秒前开跑,还在跑
+
+
+def test_cli_writes_a_running_row_before_the_workflow_finishes(conn, monkeypatch, tmp_path):
+    """开跑就写一行,不是等跑完再补。
+
+    早先是跑完才 INSERT,后果是进程中途被杀(容器回收、OOM、机器重启)
+    一行都不写 —— 挂死的运行在库里跟「从来没跑过」一模一样。
+    schema 里 status 的封闭集本来就写着 running,只是从来没人写过这个值。
+    """
+    import cli
+
+    seen: dict = {}
+
+    def fake_run(params):
+        # 工作流跑到一半时,库里应该已经有一行 running 了
+        rows = conn.execute(
+            "SELECT workflow, status, finished_at FROM ops.runs ORDER BY id"
+        ).fetchall()
+        seen["mid"] = [dict(r) for r in rows]
+        return "跑完了"
+
+    module = type("M", (), {"run": staticmethod(fake_run)})
+    monkeypatch.setattr(cli.importlib, "import_module", lambda name: module)
+
+    ok, summary = cli._run_one("task_sweep", {"dry_run": False})
+    assert ok and summary == "跑完了"
+
+    # 跑到一半那一刻:已经有行,状态 running,还没有 finished_at
+    assert len(seen["mid"]) == 1
+    assert seen["mid"][0]["status"] == "running"
+    assert seen["mid"][0]["finished_at"] is None
+
+    # 跑完之后:同一行被改成 success,没有多出第二行
+    after = [dict(r) for r in conn.execute(
+        "SELECT status, summary, finished_at FROM ops.runs").fetchall()]
+    assert len(after) == 1, "跑完应该是 UPDATE 同一行,不是再 INSERT 一行"
+    assert after[0]["status"] == "success"
+    assert after[0]["summary"] == "跑完了"
+    assert after[0]["finished_at"] is not None
+
+
+def test_every_workflow_declares_whether_it_should_be_scheduled(client, conn):
+    """加了工作流却没声明「多久没跑算不正常」,在这里断。
+
+    没有这张声明表,界面只能一视同仁地把「从没跑过」标红,于是 db_init
+    (装机时跑一次的引导脚本)会永远红着。**一张永远红着的卡片会把人训练成
+    忽略红色** —— 等 task_sweep 真的停了,那一格红得跟旁边那格一模一样。
+    """
+    from services import ops_query
+
+    real = set(ops_query._workflow_names())
+    declared = set(ops_query.EXPECTED_INTERVAL)
+    assert real == declared, (
+        f"没声明期望的:{sorted(real - declared)};声明了但文件不存在的:{sorted(declared - real)}")
+
+
+def test_only_the_scheduled_workflow_goes_overdue_when_it_never_ran(client, conn):
+    """按需跑的从没跑过 ≠ 异常;该定时的从没跑过 = 异常。"""
+    data = client.get("/v1/admin/runs").json()["data"]
+    by = {r["workflow"]: r for r in data["by_workflow"]}
+
+    assert by["task_sweep"]["scheduled"] is True
+    assert by["task_sweep"]["overdue"] is True      # 一次都没跑过,而它必须定时
+
+    assert by["db_init"]["scheduled"] is False
+    assert by["db_init"]["overdue"] is False        # 装机脚本没跑过是正常的
+    assert by["task_intake"]["overdue"] is False
+
+
+def test_a_scheduled_workflow_goes_overdue_when_it_stops_running(client, conn):
+    """跑过、但停了太久,照样要红 —— 「跑过一次」不是永久的免死金牌。"""
+    conn.execute("""INSERT INTO ops.runs (workflow, params, started_at, finished_at,
+                                          status, summary, operator)
+                    VALUES ('task_sweep','{}'::jsonb, now() - interval '5 hours',
+                            now() - interval '5 hours', 'success','清扫完成:0 条','cron')""")
+    conn.commit()
+    by = {r["workflow"]: r
+          for r in client.get("/v1/admin/runs").json()["data"]["by_workflow"]}
+    assert by["task_sweep"]["last"]["status"] == "success"
+    assert by["task_sweep"]["overdue"] is True, "5 小时前跑过一次,阈值是 2 小时"
