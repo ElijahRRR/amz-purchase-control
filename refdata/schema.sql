@@ -116,8 +116,9 @@ CREATE TABLE IF NOT EXISTS procure.task_events (
     task_id     bigint NOT NULL REFERENCES procure.tasks(id) ON DELETE CASCADE,
     instance_id bigint REFERENCES procure.plugin_instances(id),
     kind        text NOT NULL,   -- claimed / step / guard_block / error / purchased /
-                                 -- released / assert_failed / admin(封闭集)
-                                 -- admin = 人在后台动的手,与插件跑出来的结果区分开
+                                 -- released / assert_failed / admin / shipment(封闭集)
+                                 -- admin    = 人在后台动的手,与插件跑出来的结果区分开
+                                 -- shipment = 物流同步结果,发生在 purchased 之后
     code        text,            -- kind 为 error/guard_block 时必填
     payload     jsonb NOT NULL DEFAULT '{}',
     created_at  timestamptz NOT NULL DEFAULT now()

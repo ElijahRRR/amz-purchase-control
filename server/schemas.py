@@ -153,9 +153,27 @@ class ShipmentEventIn(BaseModel):
     state_code: str | None = None
 
 
+class ShipmentPendingReq(BaseModel):
+    instance_uid: str
+    limit: int | None = None
+
+
+class PendingShipmentOut(BaseModel):
+    task_id: int
+    amazon_order_no: str
+    upstream_order_no: str
+    tracking_url: str | None = None
+
+
 class ShipmentSyncReq(BaseModel):
     instance_uid: str
     task_id: int
+    #: 订单详情页看到的订单本身的状态(报告 §4.3 第 3 步):
+    #:   ok        正常
+    #:   cancelled 页面提示 cancelled / refund
+    #:   not_found 页面提示 unable to load your order details ——
+    #:             这说明我们回填的那个单号可能根本不属于这个买家号
+    order_state: Literal["ok", "cancelled", "not_found"] = "ok"
     carrier: str | None = None
     tracking_no: str | None = None
     tracking_url: str | None = None

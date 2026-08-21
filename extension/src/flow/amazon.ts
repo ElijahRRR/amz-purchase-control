@@ -17,11 +17,14 @@ import { SEL, URLS } from "./dom/selectors.js";
 import { openFrame, withFrame, type Frame } from "./dom/frame.js";
 import { sleep, waitFor, waitStable, WaitTimeout } from "./dom/wait.js";
 import {
-  cartMatches, findInterstitialButton, findQuantityOption, pickQuantitySelect,
-  readCartLines, readCheckoutPanels,
-  readGrandTotal, readInStock, readOrderCards, readOrderSummary, readPaymentLast4,
-  readProductShipper,
+  cartMatches, findInterstitialButton, findQuantityOption, findTrackingLink,
+  pickQuantitySelect, readCarrier, readCartLines, readCheckoutPanels,
+  readDeliveryPromise, readGrandTotal, readInStock, readOrderCards, readOrderState,
+  readOrderSummary, readPaymentLast4, readProductShipper, readTrackingEvents,
+  readTrackingNumber, readTrackingStatus,
+  type OrderState,
 } from "./dom/parse.js";
+import type { ShipmentReader, TrackingRead } from "./shipment.js";
 import { DriverError, type AddResult, type CheckoutReading, type OrderCard, type PageDriver } from "./driver.js";
 import type { Shipping } from "../core/types.js";
 
@@ -352,5 +355,66 @@ export class AmazonDriver implements PageDriver {
       throw new DriverError("PLUGIN_INTERNAL", "购物车/结算页会话不存在,调用顺序错了");
     }
     return this.checkout;
+  }
+}
+
+/** 物流同步用的读取器。与 AmazonDriver 分开:那条流跑在 purchased 之后,
+ *  不碰购物车也不下单,共用一个类只会让「什么时候能调什么」变糊涂。 */
+export class AmazonShipmentReader implements ShipmentReader {
+  readonly name = "amazon";
+  readonly ready = true;
+
+  private frame: Frame | null = null;
+
+  constructor(private readonly origin: string = "https://www.amazon.com") {}
+
+  async dispose(): Promise<void> {
+    this.frame?.close();
+    this.frame = null;
+  }
+
+  async readOrder(amazonOrderNo: string): Promise<{ state: OrderState; trackingUrl: string | null }> {
+    this.frame?.close();
+    this.frame = await openFrame(URLS.orderDetails(this.origin, amazonOrderNo), T.frameLoad);
+    const f = this.frame;
+
+    // 状态判定要**先于**抓取:"订单不存在" 和 "还没加载好" 是两回事,
+    // 分不开就会把前者当成后者一直等下去。
+    let state: OrderState = "loading";
+    try {
+      state = await waitFor("订单详情页就绪", () => {
+        const got = readOrderState(f.doc());
+        return got === "loading" ? null : got;
+      }, { timeoutMs: 20_000 });
+    } catch {
+      // 等不到任何可判定的信号,按"打不开"处理 —— 服务端只记不改。
+      return { state: "not_found", trackingUrl: null };
+    }
+
+    const href = state === "ok" ? findTrackingLink(f.doc()) : null;
+    return { state, trackingUrl: href ? new URL(href, this.origin).toString() : null };
+  }
+
+  async readTracking(url: string): Promise<TrackingRead> {
+    return withFrame(url, async (f) => {
+      try {
+        await waitFor("跟踪页就绪",
+                      () => f.doc().querySelector(SEL.tracking.trackingId) ||
+                            f.doc().querySelector(SEL.tracking.primaryStatus) ||
+                            f.doc().querySelector(SEL.tracking.eventsContainer),
+                      { timeoutMs: 30_000 });
+      } catch {
+        // 跟踪页打不开不是采购失败,别把它当错误抛给上层的批处理。
+        return { trackingNo: null, carrier: null, status: null, promise: null, events: [] };
+      }
+      const doc = f.doc();
+      return {
+        trackingNo: readTrackingNumber(doc),
+        carrier: readCarrier(doc),
+        status: readTrackingStatus(doc),
+        promise: readDeliveryPromise(doc),
+        events: readTrackingEvents(doc),
+      };
+    }, T.frameLoad);
   }
 }

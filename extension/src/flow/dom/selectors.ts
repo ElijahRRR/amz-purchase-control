@@ -75,6 +75,38 @@ export const SEL = {
     suggestionPopup: "#address-ui-widgets-original-address-block_id-outer",
   },
 
+  // ── 订单详情 /gp/your-account/order-details (报告 §4.3) ─────────────
+  orderDetails: {
+    root: "#orderDetails",
+    alertHeading: ".a-alert-heading",
+    shipmentTopRow: "#shipment-top-row",
+    subtotalRow: "#od-subtotals .a-row.od-line-item-row",
+    productLinks: ".a-fixed-left-grid-col.a-col-right .a-row .a-link-normal",
+    paymentDetails: ".pmts-payments-instrument-details",
+    trackLinks: [
+      ".a-button-stack.a-spacing-mini a",
+      ".a-button.a-button-primary.track-package-button a",
+      ".a-button.a-button-base.track-package-button a",
+    ],
+  },
+
+  // ── 包裹跟踪页 (报告 §4.3 extractTrackingInfo / extractTrackingEvents) ──
+  tracking: {
+    trackingId: ".pt-delivery-card-trackingId",
+    trackingIdFallback: "#carrierRelatedInfo-container > div h4",
+    cardWrapper: ".pt-delivery-card-wrapper",
+    cardSmall: ".pt-delivery-card-wrapper .a-spacing-small",
+    promiseNowrap: ".pt-promise-main-slot .nowrap",
+    promise: ".pt-promise-main-slot",
+    primaryStatus: "#primaryStatus",
+    eventsContainer: "#tracking-events-container > div.a-container",
+    eventRow: ".a-row.a-spacing-large.a-spacing-top-medium",
+    eventTime: ".tracking-event-time",
+    eventMessage: ".tracking-event-message",
+    eventLocation: ".tracking-event-location",
+    dateHeader: ".tracking-event-date-header .tracking-event-date",
+  },
+
   // ── 订单历史 /gp/css/order-history (报告 §4.2.5) ────────────────────
   orders: {
     card: ".js-order-card",
@@ -87,6 +119,8 @@ export const SEL = {
 /** URL 形态。报告 §4.2.1 / §4.2.2 记的判定串。 */
 export const URLS = {
   product: (origin: string, asin: string) => `${origin}/dp/${asin}?th=1&psc=1`,
+  orderDetails: (origin: string, orderNo: string) =>
+    `${origin}/gp/your-account/order-details?ie=UTF8&orderID=${encodeURIComponent(orderNo)}`,
   cart: (origin: string) => `${origin}/gp/cart/view.html`,
   orderHistory: (origin: string) => `${origin}/gp/css/order-history`,
   /** 加购成功后会落到这两个之一 */
@@ -95,6 +129,8 @@ export const URLS = {
   interstitial: ["checkout/byg/ref", "/cart/byc/ref"],
   /** 最终结算页 */
   finalCheckout: "/checkout/p/p-",
+  /** 跟踪页链接的两种形态(报告 §4.3 第 1 步) */
+  trackHrefHints: ["/ship-track?", "/progress-tracker/package/"],
   /** 下单成功。**只认 thankyou** —— 厂商把 /gp/cart/view.html 也判成功
    *  (深度分析 §4.2.4 高危),而被退回购物车恰恰是下单失败的典型表现。 */
   thankyou: "/gp/buy/thankyou",

@@ -82,6 +82,25 @@ export class Client {
     }, this.opts);
   }
 
+  shipmentPending(limit?: number): Promise<ApiResult<{
+    items: Array<{ task_id: number; amazon_order_no: string;
+                   upstream_order_no: string; tracking_url: string | null }>;
+  }>> {
+    return post("/v1/shipments/pending", { instance_uid: this.instanceUid, limit }, this.opts);
+  }
+
+  shipmentSync(body: {
+    task_id: number;
+    order_state?: "ok" | "cancelled" | "not_found";
+    carrier?: string;
+    tracking_no?: string;
+    tracking_url?: string;
+    status?: "not_shipped" | "in_transit" | "delivered" | "cancelled";
+    events: Array<Record<string, unknown>>;
+  }): Promise<ApiResult<{ shipment_id: number; events: number; status: string | null }>> {
+    return post("/v1/shipments/sync", { instance_uid: this.instanceUid, ...body }, this.opts);
+  }
+
   release(taskId: number): Promise<ApiResult<{ task_id: number; status: string }>> {
     return post("/v1/tasks/" + taskId + "/release", { instance_uid: this.instanceUid }, this.opts);
   }

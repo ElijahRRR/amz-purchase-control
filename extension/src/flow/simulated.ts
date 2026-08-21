@@ -5,6 +5,7 @@
  */
 
 import { DriverError, type AddResult, type CheckoutReading, type OrderCard, type PageDriver } from "./driver.js";
+import type { ShipmentReader, TrackingRead } from "./shipment.js";
 import type { Shipping } from "../core/types.js";
 
 export type Scenario =
@@ -80,6 +81,56 @@ export class SimulatedDriver implements PageDriver {
       observedAsins: this.scenario === "wrong_asin"
         ? ["B0DIFFERENT"]
         : this.added.map((p) => p.asin),
+    };
+  }
+}
+
+/** 物流同步的模拟读取器。场景与 SimulatedDriver 分开给,
+ *  因为这条流跑在 purchased 之后,和拍单场景不是同一批。 */
+export type ShipScenario = "in_transit" | "delivered" | "not_shipped" | "cancelled" | "not_found";
+
+export class SimulatedShipmentReader implements ShipmentReader {
+  readonly name = "simulated";
+  readonly ready = true;
+  readonly calls: string[] = [];
+
+  constructor(private readonly scenario: ShipScenario = "in_transit") {}
+
+  async dispose(): Promise<void> { this.calls.push("dispose"); }
+
+  async readOrder(amazonOrderNo: string) {
+    this.calls.push("readOrder:" + amazonOrderNo);
+    if (this.scenario === "not_found") return { state: "not_found" as const, trackingUrl: null };
+    if (this.scenario === "cancelled") return { state: "cancelled" as const, trackingUrl: null };
+    if (this.scenario === "not_shipped") return { state: "ok" as const, trackingUrl: null };
+    return {
+      state: "ok" as const,
+      trackingUrl: "https://www.amazon.com/progress-tracker/package/ref=x?orderId=" + amazonOrderNo,
+    };
+  }
+
+  async readTracking(_url: string): Promise<TrackingRead> {
+    this.calls.push("readTracking");
+    const delivered = this.scenario === "delivered";
+    return {
+      trackingNo: "TBA305271884221",
+      carrier: "AMZL US",
+      status: delivered ? "delivered" : "in_transit",
+      promise: delivered ? null : "Wednesday, August 27",
+      events: [
+        ...(delivered
+          ? [{ raw_day: "August 27, 2026", raw_time: "2:15 PM",
+               description: "Delivered, Left with individual",
+               city: "Santa Ana", state_code: "CA" }]
+          : []),
+        { raw_day: "August 26, 2026", raw_time: "8:42 AM",
+          description: "Out for delivery", city: "Santa Ana", state_code: "CA" },
+        { raw_day: "August 25, 2026", raw_time: "11:03 PM",
+          description: "Package arrived at carrier facility",
+          city: "Los Angeles", state_code: "CA" },
+        { raw_day: "August 24, 2026", raw_time: null,
+          description: "Package has left the carrier facility", city: null, state_code: null },
+      ],
     };
   }
 }

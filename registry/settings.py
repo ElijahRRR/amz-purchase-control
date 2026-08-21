@@ -39,3 +39,20 @@ def admin_page_size_max() -> int:
     厂商面板给了 1000~5000 条每页的选项,那不是给人看的,是给浏览器上刑的。
     """
     return int(os.environ.get("AMZ_ADMIN_PAGE_SIZE_MAX", "200"))
+
+
+def shipment_resync_minutes() -> int:
+    """输入:无 → 输出:同一条物流多久之后才值得再同步一次(分钟)。
+
+    Amazon 的轨迹一天更新不了几次,盯太紧只是白开 iframe。
+    已签收/已取消的不再进队列,所以这个值只影响在途单。
+    """
+    return int(os.environ.get("AMZ_SHIPMENT_RESYNC_MIN", "360"))
+
+
+def shipment_batch_size() -> int:
+    """输入:无 → 输出:一次给插件多少条待同步的单。
+
+    每条都要开一次订单详情页 + 一次跟踪页,给太多会让插件在一轮里跑很久。
+    """
+    return int(os.environ.get("AMZ_SHIPMENT_BATCH", "20"))

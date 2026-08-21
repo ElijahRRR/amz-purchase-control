@@ -10,7 +10,8 @@
 import { Client } from "../build/core/client.js";
 import { Log } from "../build/core/log.js";
 import { Loop } from "../build/background/loop.js";
-import { SimulatedDriver } from "../build/flow/simulated.js";
+import { SimulatedDriver, SimulatedShipmentReader } from "../build/flow/simulated.js";
+import { syncShipments } from "../build/flow/shipment.js";
 
 const argv = process.argv.slice(2);
 const arg = (k, d) => {
@@ -51,6 +52,14 @@ const loop = new Loop({ client, log, config: () => ({ mode: "simulate" }), drive
 const r = await loop.tickOnce();
 
 console.log("\n  结果:", JSON.stringify(r.kind === "ran" ? { kind: r.kind, task: r.task.task_id, outcome: r.outcome } : r));
+
+// 物流同步是独立一条流,跑在 purchased 之后。--ship 指定场景就顺带跑一轮。
+const shipScenario = arg("ship", null);
+if (shipScenario) {
+  console.log(`\n  --- 物流同步 · 场景 ${shipScenario} ---`);
+  const summary = await syncShipments(client, new SimulatedShipmentReader(shipScenario), log);
+  console.log("  物流:", JSON.stringify(summary));
+}
 
 if (r.kind === "ran" && r.outcome.kind === "unreported") process.exit(2);
 if (r.kind === "transport-error") process.exit(2);

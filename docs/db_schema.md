@@ -129,7 +129,7 @@
 | `id` | bigint identity | |
 | `task_id` | bigint FK CASCADE | |
 | `instance_id` | bigint FK | |
-| `kind` | text | `claimed` / `step` / `guard_block` / `error` / `purchased` / `released` / `assert_failed` / `admin`（封闭集，由 `services/task_event.py` 校验）。`admin` = 人在后台动的手，与插件跑出来的结果分开 |
+| `kind` | text | `claimed` / `step` / `guard_block` / `error` / `purchased` / `released` / `assert_failed` / `admin` / `shipment`（封闭集，由 `services/task_event.py` 校验）。`admin` = 人在后台动的手；`shipment` = 物流同步结果，发生在 purchased 之后，混进 `step` 会让「这一单拍得顺不顺」的时间线被轨迹刷屏 |
 | `code` | text | `kind` 为 `error` / `guard_block` 时**必填**；填什么受 `services/error_codes.py` 的封闭集校验 |
 | `payload` | jsonb | |
 | `created_at` | timestamptz | |

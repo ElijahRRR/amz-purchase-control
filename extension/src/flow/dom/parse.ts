@@ -5,7 +5,7 @@
  * 这是能做到的最强验证。
  */
 
-import { ASIN_RE, ORDER_NO_RE, SEL } from "./selectors.js";
+import { ASIN_RE, ORDER_NO_RE, SEL, URLS } from "./selectors.js";
 
 const text = (el: Element | null | undefined): string =>
   (el?.textContent ?? "").replace(/\s+/g, " ").trim();
@@ -253,4 +253,178 @@ export function readOrderCards(doc: Document): OrderCardRead[] {
     }
     return { orderNo, asins };
   }).filter((c) => c.orderNo !== null);
+}
+
+// ── 订单详情页(物流同步流) ───────────────────────────────────────────
+
+export type OrderState = "ok" | "cancelled" | "not_found" | "loading";
+
+/** 报告 §4.3 第 3 步:状态判定要**先于**抓取。
+ *  页面还没渲染完就去抓,抓到的是空;而"订单不存在"和"还没加载好"是两回事。 */
+export function readOrderState(doc: Document): OrderState {
+  const heading = Array.from(doc.querySelectorAll(SEL.orderDetails.alertHeading))
+    .map(text).join(" | ");
+  if (/unable to load your order details/i.test(heading)) return "not_found";
+  if (/cancell?ed/i.test(heading)) return "cancelled";
+  const top = text(doc.querySelector(SEL.orderDetails.shipmentTopRow));
+  if (/refund/i.test(top)) return "cancelled";
+  return doc.querySelector(SEL.orderDetails.root) ? "ok" : "loading";
+}
+
+/** 报告 §4.3 extractOrderInfo:#od-subtotals 里每行是「label + 金额」。
+ *  按 label 文案扫,不按行下标 —— Amazon 会按订单形态增减行(礼品卡、促销、小费)。 */
+export function readOrderSubtotals(doc: Document): {
+  shipping?: string; beforeTax?: string; tax?: string; total?: string;
+} {
+  const out: { shipping?: string; beforeTax?: string; tax?: string; total?: string } = {};
+  for (const row of Array.from(doc.querySelectorAll(SEL.orderDetails.subtotalRow))) {
+    if (isHidden(row)) continue;
+    const t = text(row);
+    const money = parseMoney(t);
+    if (!money) continue;
+    if (out.shipping === undefined && /shipping\s*(&|and)?\s*handling/i.test(t)) out.shipping = money;
+    else if (out.beforeTax === undefined && /total\s+before\s+tax/i.test(t)) out.beforeTax = money;
+    else if (out.tax === undefined && /tax\s+to\s+be\s+collected|estimated\s+tax|\bgst\b|\bhst\b/i.test(t)) out.tax = money;
+    else if (out.total === undefined && /grand\s+total|order\s+total/i.test(t)) out.total = money;
+  }
+  return out;
+}
+
+export function readOrderAsins(doc: Document): string[] {
+  const root = doc.querySelector(SEL.orderDetails.root) ?? doc;
+  const out: string[] = [];
+  for (const a of Array.from(root.querySelectorAll(SEL.orderDetails.productLinks))) {
+    if (isHidden(a)) continue;
+    const m = ASIN_RE.exec(a.getAttribute("href") ?? "");
+    if (m && !out.includes(m[1])) out.push(m[1]);
+  }
+  return out;
+}
+
+/** 卡后四位的取法与结算页一致:先认 ending in,再认掩码,都不中才退到最后一组。
+ *  厂商取的是**第一个** 4 位连续数字,文案里的年份、分期数都会被误采。 */
+export function last4FromText(t: string): string | undefined {
+  if (!t) return undefined;
+  const ending = /ending\s+(?:in|with)\s+(\d{4})/i.exec(t);
+  if (ending) return ending[1];
+  const masked = /(?:[*•·]\s*){2,}\s*(\d{4})/.exec(t);
+  if (masked) return masked[1];
+  const all = t.match(/\b\d{4}\b/g);
+  return all ? all[all.length - 1] : undefined;
+}
+
+export function readOrderPaymentLast4(doc: Document): string | undefined {
+  return last4FromText(text(doc.querySelector(SEL.orderDetails.paymentDetails)));
+}
+
+/** 报告 §4.3 第 1 步:优先用服务端下发的 platformTrackUrl,否则从页面找。
+ *  两条路径都要,去重后取第一条。 */
+export function findTrackingLink(doc: Document): string | null {
+  for (const sel of SEL.orderDetails.trackLinks) {
+    for (const a of Array.from(doc.querySelectorAll(sel))) {
+      if (isHidden(a)) continue;
+      const href = a.getAttribute("href") ?? "";
+      if (URLS.trackHrefHints.some((h) => href.includes(h))) return href;
+    }
+  }
+  return null;
+}
+
+// ── 包裹跟踪页 ───────────────────────────────────────────────────────
+
+export function readTrackingNumber(doc: Document): string | null {
+  const el = visible(doc, SEL.tracking.trackingId) ?? visible(doc, SEL.tracking.trackingIdFallback);
+  const m = /tracking\s*id:?\s*([A-Za-z0-9]+)/i.exec(text(el));
+  if (m) return m[1];
+  // 退化选择器那条常常只有号本身,没有 "Tracking ID:" 前缀
+  const bare = text(el);
+  return /^[A-Za-z0-9]{8,}$/.test(bare) ? bare : null;
+}
+
+/** 承运商。
+ *
+ * 厂商的取法是 `.pt-delivery-card-wrapper .a-spacing-small` 文本 `split(" ")[2]`
+ * —— 盲取第 3 个词(报告 §4.3)。"Shipped with AMZL US" 取到 "AMZL" 还算对,
+ * "Package was shipped by USPS" 取到的是 "shipped"。所以这里按语义取,
+ * 认不出返回 null:宁可是空,也不要往库里写一个 "shipped"。
+ */
+export function readCarrier(doc: Document): string | null {
+  const t = text(visible(doc, SEL.tracking.cardSmall) ?? doc.querySelector(SEL.tracking.cardSmall));
+  const m = /(?:shipped\s+(?:with|by)|carrier|delivered\s+by)\s*:?\s*([A-Za-z0-9][A-Za-z0-9 .&/-]{1,29})/i.exec(t);
+  return m ? m[1].trim().replace(/[.,]$/, "") : null;
+}
+
+export function readDeliveryPromise(doc: Document): string | null {
+  return text(visible(doc, SEL.tracking.promiseNowrap) ?? visible(doc, SEL.tracking.promise)) || null;
+}
+
+/** 把跟踪页的主状态文案映射到我们的封闭集。
+ *  认不出返回 null —— 由服务端保留原状态,不猜。 */
+export function readTrackingStatus(doc: Document): "not_shipped" | "in_transit" | "delivered" | "cancelled" | null {
+  const t = text(visible(doc, SEL.tracking.primaryStatus));
+  if (!t) return null;
+  if (/cancell?ed/i.test(t)) return "cancelled";
+  if (/delivered/i.test(t)) return "delivered";
+  if (/out for delivery|in transit|on (its|the) way|shipped|arriving|package (has )?left/i.test(t)) return "in_transit";
+  if (/not yet shipped|preparing|order placed|label created/i.test(t)) return "not_shipped";
+  return null;
+}
+
+export interface TrackingEvent {
+  raw_day: string | null;
+  raw_time: string | null;
+  description: string | null;
+  city: string | null;
+  state_code: string | null;
+}
+
+/** 报告 §4.3 extractTrackingEvents:在 #tracking-events-container 内遍历事件行,
+ *  日期靠**向上回溯兄弟节点**找最近的日期头。
+ *
+ *  容器前缀不能丢 —— 页面别处也有同样类名的 .a-row 结构。 */
+export function readTrackingEvents(doc: Document): TrackingEvent[] {
+  const container = doc.querySelector(SEL.tracking.eventsContainer);
+  if (!container) return [];
+
+  const out: TrackingEvent[] = [];
+  let currentDay: string | null = null;
+
+  // 按文档顺序走:遇到日期头就更新当前日期,遇到事件行就带上它。
+  // 比逐行向上回溯兄弟节点简单,结果一样,而且不会在结构嵌套时失效。
+  const walk = (node: Element) => {
+    for (const child of Array.from(node.children)) {
+      if (isHidden(child)) continue;
+      const dateEl = child.matches(SEL.tracking.dateHeader)
+        ? child
+        : child.querySelector(SEL.tracking.dateHeader);
+      if (dateEl && !child.matches(SEL.tracking.eventRow)) {
+        currentDay = text(dateEl) || currentDay;
+        continue;
+      }
+      if (child.matches(SEL.tracking.eventRow)) {
+        const loc = text(child.querySelector(SEL.tracking.eventLocation));
+        let city: string | null = null;
+        let state: string | null = null;
+        if (loc) {
+          const parts = loc.split(",").map((x) => x.trim()).filter(Boolean);
+          city = parts[0] ?? null;
+          if (parts.length > 1) {
+            // "CA 90001" → 去掉最后一个 token(邮编)剩下的是州
+            const tail = parts[parts.length - 1].split(/\s+/);
+            state = (tail.length > 1 ? tail.slice(0, -1).join(" ") : tail[0]) || null;
+          }
+        }
+        out.push({
+          raw_day: currentDay,
+          raw_time: text(child.querySelector(SEL.tracking.eventTime)) || null,
+          description: text(child.querySelector(SEL.tracking.eventMessage)) || null,
+          city, state_code: state,
+        });
+        continue;
+      }
+      walk(child);
+    }
+  };
+  walk(container);
+  return out;
 }
