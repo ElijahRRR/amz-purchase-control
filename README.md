@@ -40,7 +40,7 @@ python cli.py db_init
 
 # 2. 跑测试(需要一个可连的 PostgreSQL 17;连不上会整体 skip)
 export AMZ_TEST_ADMIN_DSN="dbname=postgres"
-python -m pytest -q                       # 122 条
+python -m pytest -q                       # 156 条
 
 # 3. 起服务
 python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
@@ -58,10 +58,23 @@ python tools/mock_plugin.py --scenario wrong_asin  # 订单卡 ASIN 不符,转�
 # 6. 插件侧
 cd extension && npm install
 npm run typecheck && npm run build        # → dist/,可加载进 Chrome
-npm run test:dom                          # 65 条 DOM 解析断言(不需要服务端)
+npm run test:dom                          # 68 条 DOM 解析断言(不需要服务端)
 npm run smoke                             # 用插件自己的 Loop/runTask 跑闭环
 node tools/smoke.mjs --scenario happy --ship in_transit
+
+# 7. 运营台
+cd web && npm install
+npm run dev                               # → http://127.0.0.1:5173,/v1 由 Vite 代到 8781
+npm run build                             # → web/dist,由 server/app.py 挂在 / 上
 ```
+
+运营台**开发时用 `npm run dev`**(Vite 把 `/v1` 代到本机 8781),
+**生产用 `npm run build`** 再直接开 <http://127.0.0.1:8781/>。
+走代理而不是给服务端开 CORS:这个服务不做鉴权、只监听 127.0.0.1,
+给它加一个宽松的跨域白名单是白送风险面。
+
+没 build 过就开 `/` 会明确返回 `WEB_NOT_BUILT` 而不是一个 404 ——
+静默 404 会让人以为服务坏了,其实只是前端没构建。
 
 `rows.json` 的形状见 `server/schemas.IntakeReq`,或直接照 `tests/test_task_intake.py` 里的 `_row()`。
 
@@ -69,10 +82,11 @@ node tools/smoke.mjs --scenario happy --ship in_transit
 
 | | 状态 |
 |---|---|
-| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 122 条 pytest,跑在真 PostgreSQL 17 上 |
+| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 156 条 pytest,跑在真 PostgreSQL 17 上 |
 | 插件与服务端的时序(认领 → 执行 → 护栏 → 回填 → 失败清车) | ✅ 8 个场景实跑,跑的是插件自己的 `Loop`/`runTask` |
 | 物流同步时序 | ✅ 实跑 |
-| DOM 解析层(选择器是否按报告的语义在读) | ✅ 65 条断言,对着按报告造的夹具跑 |
+| DOM 解析层(选择器是否按报告的语义在读) | ✅ 68 条断言,对着按报告造的夹具跑 |
+| 运营台前端 | ✅ 真库 + 真服务 + 真浏览器跑过四页、详情弹窗、改地址、剪贴板、NEEDS_ACK 流程 |
 | **真实 Amazon 页面** | ❌ **从未跑过**。这里没有可登录的买家号 |
 
 最后一行是这套系统眼下最大的未知。夹具能保证「报告里记着的选择器,我们确实按它们的语义在读」,
@@ -102,9 +116,16 @@ python cli.py task_sweep
 超时的单转 **manual 而不是 ready** —— 插件那侧可能已经在 Amazon 上真下了单,
 退回队列就是让下一个实例把同一单再买一遍。
 
-每次 `cli.py` 调起的 workflow 都会:加 flock 单实例锁 → 往 `ops.runs` 写一行
-(工作流名、参数、起止时间、状态、摘要)→ 执行 → 按退出码收尾。
-所以「上一次清扫是什么时候、扫到了什么」在库里查得到,不用翻日志文件。
+每次 `cli.py` 调起的 workflow 都会:加 flock 单实例锁 → **开跑就往 `ops.runs`
+写一行 `running`** → 执行 → 跑完把那一行 UPDATE 成 success/failed。
+所以「上一次清扫是什么时候、扫到了什么」在库里查得到,不用翻日志文件,
+运营台「工作流记录」那一页读的就是它。
+
+开跑就写、而不是跑完补写,是为了让**中途被杀**留下痕迹:
+容器回收、OOM、机器重启的话,跑完才写就一行都不写 ——
+一次挂死的运行在库里跟「从来没跑过」一模一样。现在它会留下一行停在 `running`,
+界面上标成「开跑后没了下文」,与「正在跑」分开显示(这两种的处置正好相反:
+一个是等它,一个是去查它)。
 
 ## 配置
 
@@ -130,9 +151,13 @@ python cli.py task_sweep
 | `POST /v1/tasks/{id}/guard-check` | **护栏裁决在服务端**,插件只报数 |
 | `POST /v1/tasks/{id}/complete` `/fail` `/release` | 落终态 |
 | `POST /v1/shipments/pending` `/sync` | 物流同步 |
-| `POST /v1/admin/tasks/import` `/search` · `GET /{id}` | 落库与查询 |
+| `POST /v1/admin/tasks/import` `/search` `/export` · `GET /{id}` | 落库、查询、导出 CSV(整个筛选结果,不只当前页) |
 | `POST /v1/admin/tasks/{id}/release` `/reset` `/force-backfill` `/address` `/asin` | 五个人工动作 |
 | `GET /v1/admin/instances` | 买家号与判活 |
+| `GET /v1/admin/meta` | 封闭集连中文标签下发。**前端不存副本** |
+| `GET /v1/admin/summary` | 状态桶计数(跟着 env/时间筛选走;顶栏两个数字保持全局) |
+| `GET /v1/admin/error-stats` | 错误码分布:按码 / 按买家号 / 按天 |
+| `GET /v1/admin/runs` | 工作流运行记录 |
 
 ## 几条贯穿全项目的判断
 
@@ -156,6 +181,11 @@ python cli.py task_sweep
 - 我们自己的 `task_event` 曾写着「错误码是封闭集」,却只校验了 kind、从没校验过 code
 - 我们自己的 `task_intake --dry-run` 曾只做字段校验、不查库,空跑报 1 行会拒、真跑拒了 2 行
 - pytest 曾**假通过**一条回滚 bug,因为测试夹具没有复刻 `pg_conn` 的事务语义
+- 19 个错误码看着是个三分的封闭分类,实际有 **7 个不在任何一组** —— 而且恰好是最常见的
+  那几个(无货、非 FBA、地址不可投递)。照着分组建处置 SOP 的人会漏掉三分之一
+- `RETRYABLE` 这一组**没有任何自动重试在消费它**:没有 workflow 把 `exception` 退回 `ready`。
+  界面上因此不许写「系统自己会再试」—— 那会让人把一桶其实没人管的单晾在那儿
+- `ops.runs` 曾是**只写不读**的:每跑一条 workflow 就写一行,全项目没有任何地方读它
 
 **不申请 `cookies` 权限。** 登录态留在浏览器 profile 里,不读也不上传。
 这不是暂缓,是架构选择:服务端因此无法脱离操作员的浏览器独立下单 —— 这正是不想具备的能力。
@@ -171,6 +201,7 @@ python cli.py task_sweep
 | `docs/03-运营台字段对照.md` | 厂商面板 8 组字段 → 我们的库,逐条取舍 |
 | `design/` | 设计画布源文件(5 块画板)+ 离线渲染自检工具 |
 | `extension/README.md` | 插件:三档模式、离线验证、写进代码的几条规矩 |
+| `web/README.md` | 运营台前端:四页、两种行密度、写进代码的十几条规矩 |
 
 ## 进度
 
@@ -183,5 +214,6 @@ python cli.py task_sweep
 | P4 | 运营台接口:列表/批量单号/五个人工动作/实例判活 | ✅ |
 | P5 | 物流同步 | ✅ |
 | — | 任务落库(上游 → procure.tasks) | ✅ |
-| 下一步 | 运营台 Web 前端(设计画布已就绪,代码未写) | 待办 |
-| 下一步 | 上游 ERP 真实接口(现走文件投放) | 待办 |
+| P6 | 运营台 Web 前端:四页 + 点行弹出的订单详情 + 点击即复制 | ✅ |
+| 下一步 | 上游 ERP 真实接口(现走文件投放) | 待办 —— 等对方给契约 |
+| 下一步 | 自动重试:目前 `RETRYABLE` 那一组没有任何东西在消费它 | 待定 |

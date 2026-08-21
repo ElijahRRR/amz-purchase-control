@@ -6,16 +6,16 @@
  */
 
 import { useCallback, useEffect, useMemo, useState } from "react";
-import { List, RotateCcw } from "lucide-react";
+import { Download, List, RotateCcw } from "lucide-react";
 import { TaskTable, type Density } from "@/components/TaskTable";
 import { TaskDetailModal } from "@/components/TaskDetail";
 import { Button } from "@/components/ui/button";
 import { Input, Textarea } from "@/components/ui/input";
 import { Tag } from "@/components/ui/tag";
-import { api } from "@/lib/api";
+import { api, downloadTasksCsv } from "@/lib/api";
 import { useMeta } from "@/lib/meta";
 import { cn } from "@/lib/utils";
-import type { InstanceRow, SearchOut, Summary, TaskStatus } from "@/types";
+import type { InstanceRow, SearchOut, SearchReq, Summary, TaskStatus } from "@/types";
 
 type Range = "today" | "7d" | "30d" | "all";
 
@@ -85,23 +85,27 @@ export default function TasksPage({ summary, onMutate }: {
   const [loading, setLoading] = useState(false);
   const [selected, setSelected] = useState<number | null>(null);
   const [cursor, setCursor] = useState(0);
+  const [exporting, setExporting] = useState(false);
 
   useEffect(() => { void api.instances().then((r) => r.ok && setEnvs(r.data.items)); }, []);
 
   const dates = useMemo(() => rangeToDates(range), [range]);
 
+  /** 导出用的条件必须和列表**完全一致**,所以从同一处算出来 ——
+   *  两边各拼一份的话,改了筛选却忘了改导出,导出来的会是另一批单子。 */
+  const query = (): SearchReq => ({
+    status: batchOn ? null : status,
+    env_code: batchOn ? null : envCode,
+    date_field: dateField,
+    date_from: batchOn ? null : dates.date_from,
+    date_to: batchOn ? null : dates.date_to,
+    order_numbers: batchOn ? batchText.split("\n") : [],
+    asin: asin.trim() || null,
+  });
+
   const load = useCallback(async () => {
     setLoading(true);
-    const r = await api.searchTasks({
-      status: batchOn ? null : status,
-      env_code: batchOn ? null : envCode,
-      date_field: dateField,
-      date_from: batchOn ? null : dates.date_from,
-      date_to: batchOn ? null : dates.date_to,
-      order_numbers: batchOn ? batchText.split("\n") : [],
-      asin: asin.trim() || null,
-      page, page_size: 50,
-    });
+    const r = await api.searchTasks({ ...query(), page, page_size: 50 });
     setLoading(false);
     if (r.ok) { setOut(r.data); setErr(null); }
     // 「查不到」和「服务挂了」在界面上是两句话。混成一句会让人跑去上游翻一张其实好好的单。
@@ -157,6 +161,16 @@ export default function TasksPage({ summary, onMutate }: {
         <span className="ml-auto text-xs text-zinc-400">
           {loading ? "查询中…" : out ? `${out.total} 条` : ""}
         </span>
+        <Button size="sm" disabled={exporting || !out?.total}
+                title={out ? `导出当前筛选下的全部 ${out.total} 条,不只是这一页` : ""}
+                onClick={async () => {
+                  setExporting(true);
+                  const e = await downloadTasksCsv(query());
+                  setExporting(false);
+                  if (e) setErr(e);
+                }}>
+          <Download className="w-3 h-3" />{exporting ? "导出中…" : "导出 CSV"}
+        </Button>
       </div>
 
       <div className="shrink-0 bg-white border-b border-zinc-200 flex flex-col">

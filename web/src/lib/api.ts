@@ -65,6 +65,41 @@ const post = <T>(path: string, body: unknown) =>
 const act = <T>(path: string, body: Record<string, unknown> = {}) =>
   post<T>(path, { operator: getOperator(), ...body });
 
+/** CSV 导出。走 fetch 拿 blob 再触发下载,不是一个 <a href> ——
+ *  筛选条件是一整个对象,塞不进 query string 而不出岔子(批量单号可能有几百个)。
+ *
+ *  服务端导的是**整个筛选结果**,不是当前这一页。只导一页是最阴的那种错:
+ *  表看着完整、其实少了后面几千行,拿去对账会得出一个错的结论。
+ */
+export async function downloadTasksCsv(req: SearchReq): Promise<string | null> {
+  try {
+    const res = await fetch("/v1/admin/tasks/export", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify(req),
+    });
+    if (!res.ok) return `导出失败:HTTP ${res.status}`;
+    const blob = await res.blob();
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    const p = (n: number) => String(n).padStart(2, "0");
+    const d = new Date();
+    // 文件名用纯 ASCII:中文名在下载、转发邮件、丢到 Windows 共享盘的路上
+    // 各有各的编码坑,而这个名字唯一的用处是让人分得清哪次导的。
+    a.download = `tasks-${d.getFullYear()}${p(d.getMonth() + 1)}${p(d.getDate())}`
+               + `-${p(d.getHours())}${p(d.getMinutes())}.csv`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    // 立刻 revoke 会在某些浏览器里赶在下载真正开始之前把 blob 收掉。
+    setTimeout(() => URL.revokeObjectURL(url), 60_000);
+    return null;
+  } catch (e) {
+    return `导出失败:${e instanceof Error ? e.message : String(e)}`;
+  }
+}
+
 export const api = {
   searchTasks: (req: SearchReq) => post<SearchOut>("/v1/admin/tasks/search", req),
   taskDetail: (id: number) => call<TaskDetail>(`/v1/admin/tasks/${id}`),

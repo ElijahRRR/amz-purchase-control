@@ -337,3 +337,91 @@ def error_stats(conn, *, date_from: date, date_to: date) -> dict[str, Any]:
         "trend": trend,
         "total": sum(totals.values()),
     }
+
+
+#: 导出的列。顺序照运营台「详细」那一行的 8 组字段 —— 导出来的表和界面上看到的
+#: 是同一个东西,才不用在两边之间对着找。
+EXPORT_COLUMNS: list[tuple[str, str]] = [
+    ("upstream_order_no", "上游单号"),
+    ("marketplace", "站点"),
+    ("status_label", "状态"),
+    ("status", "状态(库里的值)"),
+    ("error_label", "错误码"),
+    ("error_code", "错误码(英文)"),
+    ("error_detail", "错误详情"),
+    ("asin", "ASIN"),
+    ("quantity", "数量"),
+    ("price_cap", "整单限价"),
+    ("actual_unit_price", "实付单价"),
+    ("actual_shipping", "运费"),
+    ("actual_tax", "税费"),
+    ("actual_total", "实付总计"),
+    ("over_cap", "是否超限价"),
+    ("amazon_order_no", "AMZ 单号"),
+    ("env_code", "买家号"),
+    ("amazon_customer_id", "买家号ID"),
+    ("payment_last4", "信用卡尾号"),
+    ("ship_name", "收件人"),
+    ("ship_phone", "电话"),
+    ("ship_line1", "地址"),
+    ("ship_city", "城市"),
+    ("ship_state", "州"),
+    ("ship_postcode", "邮编"),
+    ("carrier", "物流商"),
+    ("tracking_no", "运单号"),
+    ("shipment_label", "物流状态"),
+    ("delivery_date", "预计送达"),
+    ("created_at", "创建时间"),
+    ("purchased_at", "采购时间"),
+]
+
+
+def export_rows(conn, *, page_size: int, **filters) -> Any:
+    """输入:与 search 同一套筛选 → 输出:逐行产出导出用的 dict(生成器)。
+
+    **导出的是整个筛选结果,不是当前这一页。**
+    只导当前页是这个项目最怕的那种错:导出来的表看着完整、其实少了后面几千行,
+    而且没有任何地方提示少了 —— 拿它去对账会得出一个错的结论。
+
+    所以这里自己翻页,一页一页往下走到没有为止。
+
+    多商品的单会展开成多行(一行一个 ASIN),每行都带上整单的费用与单号 ——
+    表格软件里按 ASIN 筛的人要的就是这个。整单金额因此会在多行里重复,
+    对这几列求和会重复计算;列名写的是「实付总计」而不是「金额」,
+    并且这件事在 docs 里记了一笔。
+    """
+    from services import error_codes, vocab
+
+    page = 1
+    while True:
+        got = search(conn, page=page, page_size=page_size, **filters)
+        if not got["items"]:
+            return
+        for t in got["items"]:
+            products = t.get("products") or [{}]
+            for p in products:
+                over = (t["actual_total"] is not None
+                        and t["actual_total"] > t["price_cap"])
+                yield {
+                    **{k: t.get(k) for k in (
+                        "upstream_order_no", "marketplace", "status", "error_code",
+                        "error_detail", "price_cap", "actual_shipping", "actual_tax",
+                        "actual_total", "amazon_order_no", "env_code",
+                        "amazon_customer_id", "payment_last4", "ship_name", "ship_phone",
+                        "ship_line1", "ship_city", "ship_state", "ship_postcode",
+                        "carrier", "tracking_no", "delivery_date",
+                        "created_at", "purchased_at")},
+                    "status_label": vocab.STATUS_LABELS.get(t["status"], t["status"]),
+                    "error_label": (error_codes.LABELS.get(t["error_code"], t["error_code"])
+                                    if t["error_code"] else None),
+                    "shipment_label": (vocab.SHIPMENT_LABELS.get(t["shipment_status"],
+                                                                 t["shipment_status"])
+                                       if t.get("shipment_status") else None),
+                    "asin": p.get("asin"),
+                    "quantity": p.get("quantity"),
+                    "actual_unit_price": p.get("actual_unit_price"),
+                    "over_cap": "是" if over else "",
+                }
+        if page * page_size >= got["total"]:
+            return
+        page += 1

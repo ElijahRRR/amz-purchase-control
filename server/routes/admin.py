@@ -6,10 +6,12 @@
 不做鉴权(所有者定稿),服务默认只监听 127.0.0.1。
 """
 
+import csv
+import io
 from datetime import date, timedelta
 
 from fastapi import APIRouter, Depends
-from fastapi.responses import JSONResponse
+from fastapi.responses import JSONResponse, StreamingResponse
 
 from registry import settings
 from server import schemas
@@ -102,6 +104,47 @@ def search(req: schemas.TaskSearchReq, conn=Depends(conn_ctx)) -> schemas.Envelo
         page=req.page, page_size=req.page_size,
     )
     return schemas.Envelope(ok=True, data=got)
+
+
+@router.post("/tasks/export")
+def export_tasks(req: schemas.TaskSearchReq, conn=Depends(conn_ctx)):
+    """按当前筛选导出 CSV。
+
+    **导的是整个筛选结果,不是当前这一页** —— 只导一页是最阴的那种错:
+    表看着完整、其实少了后面几千行,拿去对账会得出一个错的结论。
+
+    流式吐,不在内存里攒完再发:几千行本身不大,但「先攒完」会让人误以为
+    这个接口对行数没上限,哪天真导十万行就变成一次 OOM。
+
+    带 UTF-8 BOM:Excel 不看 BOM 会把中文当成 GBK,一表格乱码。
+    这一个字节省下来没有任何好处,而少了它运营第一次打开就会来问。
+    """
+    def rows():
+        buf = io.StringIO()
+        w = csv.writer(buf)
+
+        def flush() -> str:
+            out = buf.getvalue()
+            buf.seek(0)
+            buf.truncate(0)
+            return out
+
+        w.writerow([label for _, label in task_query.EXPORT_COLUMNS])
+        yield "\ufeff" + flush()
+
+        for row in task_query.export_rows(
+            conn, page_size=settings.admin_page_size_max(),
+            status=req.status, env_code=req.env_code, date_field=req.date_field,
+            date_from=req.date_from, date_to=req.date_to,
+            order_numbers=req.order_numbers, asin=req.asin,
+        ):
+            w.writerow(["" if row.get(k) is None else str(row[k])
+                        for k, _ in task_query.EXPORT_COLUMNS])
+            yield flush()
+
+    return StreamingResponse(rows(), media_type="text/csv; charset=utf-8", headers={
+        "Content-Disposition": 'attachment; filename="tasks.csv"',
+    })
 
 
 @router.get("/tasks/{task_id}")

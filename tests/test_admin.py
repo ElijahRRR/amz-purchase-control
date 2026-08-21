@@ -610,3 +610,59 @@ def test_a_scheduled_workflow_goes_overdue_when_it_stops_running(client, conn):
           for r in client.get("/v1/admin/runs").json()["data"]["by_workflow"]}
     assert by["task_sweep"]["last"]["status"] == "success"
     assert by["task_sweep"]["overdue"] is True, "5 小时前跑过一次,阈值是 2 小时"
+
+
+# ── 导出 ────────────────────────────────────────────────────────────────
+
+def test_export_covers_the_whole_filtered_set_not_just_one_page(client, conn, seed,
+                                                                monkeypatch):
+    """导的必须是整个筛选结果,不是当前这一页。
+
+    只导一页是最阴的那种错:表看着完整、其实少了后面几千行,而且没有任何地方
+    提示少了 —— 拿它去对账会得出一个错的结论。
+    这里把每页压到 1 条,逼它必须翻页才拿得全。
+    """
+    from registry import settings
+
+    monkeypatch.setattr(settings, "admin_page_size_max", lambda: 1)
+    conn.commit()
+
+    body = client.post("/v1/admin/tasks/export", json={}).text
+    lines = [ln for ln in body.splitlines() if ln.strip()]
+    assert len(lines) == 4, f"表头 + 3 行,拿到 {len(lines)} 行:{lines}"
+    assert all(f"UP-{i}" in body for i in range(3))
+
+
+def test_export_starts_with_a_bom_so_excel_does_not_mangle_chinese(client, conn, seed):
+    """没有 BOM 的话 Excel 会把中文当 GBK,一表格乱码。
+
+    这一个字节省下来没有任何好处,而少了它运营第一次打开就会来问。
+    """
+    body = client.post("/v1/admin/tasks/export", json={}).text
+    assert body.startswith("﻿")
+    assert "上游单号" in body and "整单限价" in body
+
+
+def test_export_flattens_multi_product_orders_into_one_row_each(client, conn, seed):
+    """一单多商品展开成多行 —— 表格软件里按 ASIN 筛的人要的就是这个。"""
+    _env, _inst, tasks = seed
+    conn.execute("INSERT INTO procure.task_products (task_id, asin, quantity)"
+                 " VALUES (%s, 'B0SECOND01', 2)", (tasks[0],))
+    conn.commit()
+
+    body = client.post("/v1/admin/tasks/export", json={}).text
+    lines = [ln for ln in body.splitlines() if ln.strip()]
+    assert len(lines) == 5, "3 单,其中一单两个商品 → 4 行 + 表头"
+    assert "B0SECOND01" in body
+
+
+def test_export_marks_the_rows_that_went_over_the_cap(client, conn, seed):
+    """超限价那一列比对着两个数字自己算要靠得住 —— 而且和界面上红色那条是同一个判据。"""
+    _env, _inst, tasks = seed
+    _set(conn, tasks[0], status="purchased", amazon_order_no="111-0000009-0000009",
+         actual_total="99.99")          # price_cap 是 12.50
+    conn.commit()
+
+    body = client.post("/v1/admin/tasks/export", json={}).text
+    over = [ln for ln in body.splitlines() if "111-0000009-0000009" in ln]
+    assert len(over) == 1 and "是" in over[0]
