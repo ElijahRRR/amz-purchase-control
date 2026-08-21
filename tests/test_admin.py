@@ -746,3 +746,62 @@ def test_batch_reset_records_who_did_it_on_every_row(client, conn, seed):
     assert len(rows) == 2
     assert all(r["payload"]["operator"] == "小李" for r in rows)
     assert all(r["payload"]["acknowledged"] is False for r in rows)
+
+
+# ── 前端静态文件 ────────────────────────────────────────────────────────
+
+def test_web_root_says_not_built_instead_of_a_bare_404(client, tmp_path, monkeypatch):
+    """没构建过就明说,别静默 404 —— 404 会让人以为服务坏了,其实只是前端没 build。"""
+    from server import app as app_mod
+
+    monkeypatch.setattr(app_mod, "_WEB_DIST", tmp_path / "nope")
+    r = client.get("/")
+    assert r.status_code == 503
+    assert r.json()["error"]["code"] == "WEB_NOT_BUILT"
+
+
+def test_web_root_picks_up_a_build_that_appeared_after_startup(client, tmp_path, monkeypatch):
+    """先起服务、再 build,刷新就该好 —— 不用重启。
+
+    在 import 时定死的话,提示会让你去做的正是你刚做完的那件事,
+    你得先知道要重启服务才想得通。
+    """
+    from server import app as app_mod
+
+    dist = tmp_path / "dist"
+    monkeypatch.setattr(app_mod, "_WEB_DIST", dist)
+    assert client.get("/").status_code == 503        # 还没 build
+
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("<div id=root></div>", encoding="utf-8")
+    (dist / "assets" / "index-abc123.js").write_text("console.log(1)", encoding="utf-8")
+
+    r = client.get("/")                              # 没重启,直接好了
+    assert r.status_code == 200 and "id=root" in r.text
+    assert client.get("/assets/index-abc123.js").status_code == 200
+
+
+def test_asset_route_refuses_to_walk_out_of_the_assets_dir(client, tmp_path, monkeypatch):
+    """照着 URL 拼路径的读文件接口不该靠「只监听 127.0.0.1」来兜底。"""
+    from server import app as app_mod
+
+    dist = tmp_path / "dist"
+    (dist / "assets").mkdir(parents=True)
+    (dist / "index.html").write_text("x", encoding="utf-8")
+    (tmp_path / "secret.txt").write_text("不该被读到", encoding="utf-8")
+    monkeypatch.setattr(app_mod, "_WEB_DIST", dist)
+
+    for path in ("../secret.txt", "../../secret.txt", "..%2fsecret.txt"):
+        r = client.get(f"/assets/{path}")
+        assert r.status_code == 404, f"{path} 竟然读到了:{r.text[:80]}"
+
+    # 上面那几条走 HTTP,URL 可能在到达路由之前就被规范化掉 ——
+    # 那样测的是客户端而不是守卫。所以再直接调一次处理函数。
+    from fastapi import HTTPException
+
+    for path in ("../../secret.txt", "../../../etc/passwd", "/etc/passwd"):
+        try:
+            app_mod._asset(path)
+            raise AssertionError(f"{path} 竟然读到了")
+        except HTTPException as exc:
+            assert exc.status_code == 404

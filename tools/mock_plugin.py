@@ -11,10 +11,15 @@ P1 的验收工具 —— 用它确认服务端的状态流转、护栏裁决、
 """
 
 import argparse
+import json
+import os
 import sys
 import urllib.error
 import urllib.request
-import json
+
+sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
+
+from registry import settings  # noqa: E402
 
 UID = "mock-plugin-001"
 
@@ -117,7 +122,14 @@ def run(base: str, env_code: str, scenario: str) -> int:
 
 def main() -> int:
     ap = argparse.ArgumentParser(description="模拟插件(不碰 Amazon)")
-    ap.add_argument("--base", default="http://127.0.0.1:8781")
+    # 默认跟着 AMZ_SERVER_HOST / AMZ_SERVER_PORT 走,而不是写死 8781。
+    #
+    # 写死的后果不是「连不上」——那还好办,报个错就完了。是**连上了另一台**:
+    # 同一机器上跑着演示库和排练库时,你以为在对排练库跑闭环,
+    # 其实把演示库里的单拍掉了,而两边都不会有任何异常。
+    ap.add_argument("--base",
+                    default=f"http://{settings.server_host()}:{settings.server_port()}",
+                    help="服务端地址(默认取 AMZ_SERVER_HOST/AMZ_SERVER_PORT)")
     ap.add_argument("--env", default="env-172")
     ap.add_argument("--scenario", default="happy",
                     choices=["happy", "over_cap", "oos", "wrong_asin"])

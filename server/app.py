@@ -9,7 +9,6 @@
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import FileResponse, JSONResponse
-from fastapi.staticfiles import StaticFiles
 
 from registry import paths
 from server.routes import admin, instances, shipments, tasks
@@ -47,23 +46,39 @@ def health():
 # (走代理而不是开 CORS —— 这个服务不做鉴权、只监听 127.0.0.1,
 #  给它加一个宽松的跨域白名单是白送风险面)。
 #
-# 生产就是 `npm run build` 出来的静态文件,由这里挂上。
-# 没 build 过就不挂,并且**说出来** —— 静默挂一个 404 的根路径会让人
-# 以为服务坏了,其实只是前端没构建。
+# 生产就是 `npm run build` 出来的静态文件,由这里发出去。
+#
+# **每次请求都看一眼磁盘,不在 import 时定死。**
+# 定死的话:先起服务、再 npm run build,刷新浏览器仍然是「还没构建」,
+# 而提示让你去做的正是你刚做完的那件事 —— 你得先知道要重启服务才想得通。
+# 这个服务是本机开发/运维用的,一次 stat 换掉这种坑,划算得离谱。
 _WEB_DIST = paths.repo_root() / "web" / "dist"
 
-if _WEB_DIST.is_dir():
-    app.mount("/assets", StaticFiles(directory=_WEB_DIST / "assets"), name="assets")
 
-    @app.get("/")
-    def _index():
-        return FileResponse(_WEB_DIST / "index.html")
-else:
-    @app.get("/")
-    def _no_web():
-        return JSONResponse(status_code=503, content={
-            "ok": False, "data": None,
-            "error": {"code": "WEB_NOT_BUILT",
-                      "message": "运营台还没构建。cd web && npm install && npm run build;"
-                                 "开发期直接用 npm run dev(它会把 /v1 代到本进程)。"},
-        })
+def _not_built() -> JSONResponse:
+    return JSONResponse(status_code=503, content={
+        "ok": False, "data": None,
+        "error": {"code": "WEB_NOT_BUILT",
+                  "message": "运营台还没构建。cd web && npm install && npm run build;"
+                             "开发期直接用 npm run dev(它会把 /v1 代到本进程)。"},
+    })
+
+
+@app.get("/assets/{path:path}", include_in_schema=False)
+def _asset(path: str):
+    """构建产物。文件名带内容哈希,所以可以放心让浏览器长期缓存。"""
+    target = (_WEB_DIST / "assets" / path).resolve()
+    # 路径穿越:`../../etc/passwd` 这类。这个服务只监听 127.0.0.1、
+    # 前面也没有反向代理,但一个照着 URL 拼路径的读文件接口不该靠部署方式来兜底。
+    if not target.is_file() or not target.is_relative_to((_WEB_DIST / "assets").resolve()):
+        raise HTTPException(404, detail="asset not found")
+    return FileResponse(target, headers={"Cache-Control": "public, max-age=31536000, immutable"})
+
+
+@app.get("/", include_in_schema=False)
+def _index():
+    index = _WEB_DIST / "index.html"
+    if not index.is_file():
+        return _not_built()
+    # index.html 不能缓存:里面写着带哈希的资源名,缓存住它等于把新版本挡在门外。
+    return FileResponse(index, headers={"Cache-Control": "no-store"})
