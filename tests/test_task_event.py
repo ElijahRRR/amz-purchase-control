@@ -126,3 +126,33 @@ def test_docs_layout_lists_every_service_and_workflow():
         listed = {m[1] for m in listed}
         missing = real - listed
         assert not missing, f"{pkg}/ 里有文档没提的文件:{sorted(missing)}"
+
+
+def test_extension_error_codes_match_the_server():
+    """插件那份离线副本必须与服务端一字不差。
+
+    它必须存在(断网时面板还要显示状态),所以这是唯一一份合理的副本 ——
+    合理不等于安全,得有东西盯着。厂商那套「文档写 subTotal、插件发 subtotal」
+    就是没人盯的下场。
+    """
+    import re
+
+    from registry import paths
+    from services import error_codes
+
+    src = (paths.repo_root() / "extension" / "src" / "core" / "codes.ts").read_text(
+        encoding="utf-8")
+
+    block = src[src.index("export const ERROR_CODES = ["):src.index("] as const;")]
+    in_ext = set(re.findall(r'"([A-Z_]+)"', block))
+    assert in_ext == set(error_codes.ERROR_CODES), (
+        f"只在插件里:{sorted(in_ext - set(error_codes.ERROR_CODES))};"
+        f"只在服务端:{sorted(set(error_codes.ERROR_CODES) - in_ext)}")
+
+    # 分组也要一致:一个码在服务端算「转人工」、在插件里算「可重试」,
+    # 会让同一次失败在两边得到相反的处置
+    to_manual_block = src[src.index("export const TO_MANUAL"):src.index("export function toManual")]
+    assert set(re.findall(r'"([A-Z_]+)"', to_manual_block)) == set(error_codes.TO_MANUAL)
+
+    retry_block = src[src.index("export const RETRYABLE"):src.index("export const TO_MANUAL")]
+    assert set(re.findall(r'"([A-Z_]+)"', retry_block)) == set(error_codes.RETRYABLE)

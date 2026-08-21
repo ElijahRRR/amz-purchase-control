@@ -345,3 +345,142 @@ def test_missing_order_numbers_looks_at_all_pages(client, conn, seed):
     assert d["total"] == 60
     assert len(d["items"]) == 50           # 这一页只有 50 条
     assert d["missing_order_numbers"] == []  # 但一个都不缺
+
+
+def test_meta_serves_the_closed_sets_so_the_web_needs_no_copy(client):
+    d = client.get("/v1/admin/meta").json()["data"]
+    from services import error_codes, vocab
+
+    assert d["task_status"]["labels"] == vocab.STATUS_LABELS
+    assert set(d["task_status"]["labels"]) == set(vocab.STATUS_TONE)
+    assert d["error_code"]["labels"] == error_codes.LABELS
+    assert set(d["error_code"]["labels"]) == set(error_codes.ERROR_CODES)
+
+
+def test_status_labels_cover_every_status_in_the_schema():
+    """schema.sql 里注释着的 7 个状态,vocab 必须一个不落。
+
+    少一个的话界面上会直接显示英文枚举值 —— 而运营看不懂 `exception`,
+    他们看得懂「拍单异常」。
+    """
+    import re
+
+    from registry import paths
+    from services import vocab
+
+    sql = (paths.repo_root() / "refdata" / "schema.sql").read_text(encoding="utf-8")
+    block = sql[sql.index("status            text NOT NULL DEFAULT 'pending'"):]
+    block = block[:block.index("(封闭集)")]
+    in_sql = set(re.findall(r"^\s+--\s+(\w+)\s", block, re.M))
+    assert in_sql == set(vocab.STATUS_LABELS), (
+        f"只在 schema:{sorted(in_sql - set(vocab.STATUS_LABELS))};"
+        f"只在 vocab:{sorted(set(vocab.STATUS_LABELS) - in_sql)}")
+
+
+# ── 状态桶计数与错误码分布 ────────────────────────────────────────────────
+
+def test_summary_reports_every_status_including_the_empty_ones(client, conn, seed):
+    """空桶要给 0,不能不出现。
+
+    SQL 的 GROUP BY 只吐有行的状态,照直用会让「拍单异常」在清零时从界面上消失 ——
+    而「异常 0」正是运营最想看到的那句话,让它消失等于把好消息也藏了。
+    """
+    _env, _inst, tasks = seed
+    _set(conn, tasks[0], status="manual", error_code="ORDER_NO_AMBIGUOUS")
+    conn.commit()
+
+    data = client.get("/v1/admin/summary").json()["data"]
+    by = data["by_status"]
+
+    from services import vocab
+    assert set(by) == set(vocab.STATUS_LABELS), "七个状态一个都不能少"
+    assert by["manual"] == 1
+    assert by["ready"] == 2
+    assert by["exception"] == 0          # ← 这一条正是本用例存在的理由
+
+
+def test_summary_counts_follow_the_same_filters_as_the_list(client, conn, seed):
+    """筛了买家号之后那排数字不能还是全局的 —— 点进去数量对不上,像是界面丢了单。"""
+    _env, _inst, _tasks = seed
+    other = conn.execute(
+        "INSERT INTO procure.buyer_envs (code) VALUES ('env-999') RETURNING id").fetchone()
+    conn.execute(
+        """INSERT INTO procure.tasks
+             (line_key, upstream_order_no, buyer_env_id, ship_name, ship_phone,
+              ship_line1, ship_city, ship_state, ship_postcode, price_cap, status)
+           VALUES ('key-x','UP-X',%s,'N','1','1 St','SA','CA','92707',9.99,'ready')""",
+        (other["id"],))
+    conn.commit()
+
+    everything = client.get("/v1/admin/summary").json()["data"]
+    scoped = client.get("/v1/admin/summary", params={"env_code": "env-172"}).json()["data"]
+    assert everything["by_status"]["ready"] == 4
+    assert scoped["by_status"]["ready"] == 3
+
+    # 与列表口径一致:同样的条件,列表数出来的总数要对得上
+    listed = client.post("/v1/admin/tasks/search",
+                         json={"status": "ready", "env_code": "env-172"}).json()["data"]
+    assert listed["total"] == scoped["by_status"]["ready"]
+
+
+def test_summary_top_bar_numbers_stay_global(client, conn, seed):
+    """顶栏那两个数字回答的是「今天整体怎么样」,筛掉一半再报数就不是那个问题的答案。"""
+    _env, _inst, _tasks = seed
+    other = conn.execute(
+        "INSERT INTO procure.buyer_envs (code) VALUES ('env-888') RETURNING id").fetchone()
+    conn.execute(
+        """INSERT INTO procure.tasks
+             (line_key, upstream_order_no, buyer_env_id, ship_name, ship_phone,
+              ship_line1, ship_city, ship_state, ship_postcode, price_cap, status)
+           VALUES ('key-y','UP-Y',%s,'N','1','1 St','SA','CA','92707',9.99,'ready')""",
+        (other["id"],))
+    conn.commit()
+
+    scoped = client.get("/v1/admin/summary", params={"env_code": "env-172"}).json()["data"]
+    assert scoped["by_status"]["ready"] == 3     # 桶跟着筛
+    assert scoped["queue_depth"] == 4            # 顶栏不跟
+
+
+def test_error_stats_splits_by_env_and_by_day(client, conn, seed):
+    """分买家号是为了看出「是不是某一台机器的问题」(比如某个买家号被风控了)。"""
+    _env, _inst, tasks = seed
+    _set(conn, tasks[0], status="manual", error_code="ORDER_NO_AMBIGUOUS")
+    _set(conn, tasks[1], status="exception", error_code="PRICE_CAP_EXCEEDED")
+    _set(conn, tasks[2], status="exception", error_code="PRICE_CAP_EXCEEDED")
+    conn.commit()
+
+    data = client.get("/v1/admin/error-stats").json()["data"]
+    assert data["total"] == 3
+    top = data["items"][0]
+    assert top["code"] == "PRICE_CAP_EXCEEDED" and top["n"] == 2
+    assert top["by_env"] == {"env-172": 2}
+    assert sum(p["n"] for p in data["trend"]) == 3
+
+
+def test_error_stats_ignores_rows_without_a_code(client, conn, seed):
+    """没出过错的行不该进分布图 —— 那张图是用来找卡点的,不是统计总量的。"""
+    _env, _inst, tasks = seed
+    _set(conn, tasks[0], status="purchased", amazon_order_no="111-0000001-0000001")
+    conn.commit()
+    assert client.get("/v1/admin/error-stats").json()["data"]["total"] == 0
+
+
+def test_list_does_not_duplicate_a_task_that_synced_twice(client, conn, seed):
+    """一单同步过两次轨迹,列表里还是一行。
+
+    列表为了「详细」密度要带物流列,拿的是 LEFT JOIN LATERAL 的最后一条。
+    换成普通 JOIN 的话,这条任务会裂成两行,`total` 也跟着虚高 ——
+    运营看到的「待处理 41」就不再是 41 张单。
+    """
+    _env, _inst, tasks = seed
+    for tracking in ("1Z-OLD", "1Z-NEW"):
+        conn.execute(
+            "INSERT INTO logistics.shipments (task_id, carrier, tracking_no, status)"
+            " VALUES (%s,'UPS',%s,'in_transit')", (tasks[0], tracking))
+    conn.commit()
+
+    data = client.post("/v1/admin/tasks/search", json={}).json()["data"]
+    assert data["total"] == 3
+    rows = [i for i in data["items"] if i["id"] == tasks[0]]
+    assert len(rows) == 1
+    assert rows[0]["tracking_no"] == "1Z-NEW"      # 取最后一条,不是第一条

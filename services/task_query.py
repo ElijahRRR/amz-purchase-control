@@ -16,13 +16,23 @@ from registry import settings
 #: 不该逼人先分好类再贴。
 AMZ_ORDER_RE = re.compile(r"^\d{3}-\d{7}-\d{7}$")
 
+#: 列表的「详细」密度照厂商那一行做:8 组字段竖着堆在各自格子里(所有者定稿,
+#: 「这是订单详情,需要把它作为模板」)。那 8 组里有电话、地址、运费税费、
+#: 信用卡尾号、物流单号 —— 都不在原来这条 SELECT 里。
+#:
+#: 所以这里一次把它们取全,而不是让列表渲染时按行去拉详情:
+#: 一屏 50 行就是 50 个请求,而且行是虚拟滚动的,滚一下又是一批。
+#: 宽一点的一次查询比 N 次窄查询便宜得多,50 行 × 30 列也就几十 KB。
 _LIST_SQL = """
 SELECT t.id, t.line_key, t.upstream_order_no, t.marketplace, t.status,
-       t.ship_name, t.ship_city, t.ship_state, t.ship_postcode,
-       t.price_cap, t.actual_total, t.amazon_order_no,
+       t.ship_name, t.ship_phone, t.ship_line1,
+       t.ship_city, t.ship_state, t.ship_postcode,
+       t.price_cap, t.actual_total, t.actual_shipping, t.actual_tax,
+       t.payment_last4, t.delivery_date, t.amazon_order_no,
        t.error_code, t.error_detail,
        t.created_at, t.purchased_at,
-       e.code AS env_code,
+       e.code AS env_code, e.amazon_customer_id,
+       s.carrier, s.tracking_no, s.status AS shipment_status,
        (SELECT json_agg(json_build_object('asin', p.asin, 'quantity', p.quantity,
                                           'image_url', p.image_url,
                                           'actual_unit_price', p.actual_unit_price)
@@ -30,6 +40,13 @@ SELECT t.id, t.line_key, t.upstream_order_no, t.marketplace, t.status,
           FROM procure.task_products p WHERE p.task_id = t.id) AS products
   FROM procure.tasks t
   JOIN procure.buyer_envs e ON e.id = t.buyer_env_id
+  -- 一单可能同步过多次轨迹,取最后一条。LATERAL 而不是普通 JOIN:
+  -- 普通 JOIN 会把有两条 shipment 的任务在列表里裂成两行,总数也跟着虚高。
+  LEFT JOIN LATERAL (
+      SELECT carrier, tracking_no, status
+        FROM logistics.shipments
+       WHERE task_id = t.id ORDER BY id DESC LIMIT 1
+  ) s ON TRUE
  WHERE {where}
  ORDER BY t.{order_col} DESC NULLS LAST, t.id DESC
  LIMIT %(limit)s OFFSET %(offset)s
@@ -190,3 +207,123 @@ def detail(conn, task_id: int) -> dict[str, Any] | None:
         {"task_id": task_id}).fetchone()
     out["shipment"] = dict(ship) if ship else None
     return out
+
+
+_SUMMARY_SQL = """
+SELECT t.status, count(*) AS n
+  FROM procure.tasks t
+  JOIN procure.buyer_envs e ON e.id = t.buyer_env_id
+ WHERE {where}
+ GROUP BY t.status
+"""
+
+
+def summary(
+    conn,
+    *,
+    env_code: str | None = None,
+    date_field: str = "created",
+    date_from: date | None = None,
+    date_to: date | None = None,
+) -> dict[str, Any]:
+    """输入:除状态外的筛选条件 → 输出:每个状态桶各有多少 + 今日已拍单。
+
+    界面上那排状态筛选是带数字的。数字必须跟**其它筛选条件同步** ——
+    选了 env-172 之后,「拍单异常 12」如果还是全局的 12,点进去只看到 3 条,
+    运营会以为界面丢了单。所以这里接同一套 env/时间条件,只是不接 status。
+
+    批量单号筛选生效时不该调这个:那时状态桶被盖过了,再显示一排数字是在
+    邀请人去点一个点不动的东西。界面在那种情况下把整排藏起来。
+
+    **每个状态都出现,空桶给 0**。SQL 的 GROUP BY 只会吐出有行的状态,
+    照直用会让「拍单异常」在清零时从界面上消失 —— 而「异常 0」正是运营最想看到的
+    那句话,让它消失等于把好消息也藏了。
+    """
+    from services import vocab
+
+    if date_field not in ("created", "purchased"):
+        raise ValueError(f"date_field 只能是 created / purchased,收到 {date_field!r}")
+    order_col = "created_at" if date_field == "created" else "purchased_at"
+
+    clauses = ["TRUE"]
+    params: dict[str, Any] = {}
+    if env_code:
+        clauses.append("e.code = %(env_code)s")
+        params["env_code"] = env_code
+    if date_from:
+        clauses.append(f"t.{order_col} >= %(date_from)s")
+        params["date_from"] = date_from
+    if date_to:
+        clauses.append(f"t.{order_col} < (%(date_to)s::date + 1)")
+        params["date_to"] = date_to
+    if date_field == "purchased":
+        clauses.append("t.purchased_at IS NOT NULL")
+
+    rows = conn.execute(_SUMMARY_SQL.format(where=" AND ".join(clauses)), params).fetchall()
+    by_status = {s: 0 for s in vocab.STATUS_LABELS}
+    for r in rows:
+        by_status[r["status"]] = r["n"]
+
+    # 顶栏那两个数字是**全局**的,不跟着筛选走 —— 它们回答的是「今天整体怎么样」,
+    # 筛掉一半再报数就不是那个问题的答案了。
+    today = conn.execute(
+        "SELECT count(*) AS n FROM procure.tasks "
+        " WHERE status = 'purchased' AND purchased_at >= date_trunc('day', now())"
+    ).fetchone()["n"]
+    queue = conn.execute(
+        "SELECT count(*) AS n FROM procure.tasks WHERE status = 'ready'"
+    ).fetchone()["n"]
+
+    return {"by_status": by_status, "purchased_today": today, "queue_depth": queue}
+
+
+_ERROR_STATS_SQL = """
+SELECT t.error_code, e.code AS env_code, count(*) AS n
+  FROM procure.tasks t
+  JOIN procure.buyer_envs e ON e.id = t.buyer_env_id
+ WHERE t.error_code IS NOT NULL
+   AND t.created_at >= %(date_from)s
+   AND t.created_at < (%(date_to)s::date + 1)
+ GROUP BY t.error_code, e.code
+"""
+
+_ERROR_TREND_SQL = """
+SELECT date_trunc('day', t.created_at)::date AS day, t.error_code, count(*) AS n
+  FROM procure.tasks t
+ WHERE t.error_code IS NOT NULL
+   AND t.created_at >= %(date_from)s
+   AND t.created_at < (%(date_to)s::date + 1)
+ GROUP BY 1, 2
+ ORDER BY 1
+"""
+
+
+def error_stats(conn, *, date_from: date, date_to: date) -> dict[str, Any]:
+    """输入:时间范围 → 输出:错误码分布(总数 / 分买家号 / 按天)。
+
+    这一页要回答的是「最近在哪儿卡住」。所以三个切面都要:
+    总数说明轻重,分买家号说明是不是某一台机器的问题(比如某个买家号被风控了),
+    按天说明是一直这样还是昨天开始的 —— 后者往往对应一次亚马逊改版。
+
+    只统计 `error_code` 非空的行。注意它**不等于**失败:走到 `manual` 的单也带码,
+    那正是要看的重点。界面按 error_codes 的三个集合(可重试/转人工/可能已下单)分色。
+    """
+    rows = conn.execute(_ERROR_STATS_SQL, {"date_from": date_from, "date_to": date_to}).fetchall()
+
+    totals: dict[str, int] = {}
+    by_env: dict[str, dict[str, int]] = {}
+    for r in rows:
+        totals[r["error_code"]] = totals.get(r["error_code"], 0) + r["n"]
+        by_env.setdefault(r["error_code"], {})[r["env_code"]] = r["n"]
+
+    trend = [
+        {"day": r["day"].isoformat(), "code": r["error_code"], "n": r["n"]}
+        for r in conn.execute(_ERROR_TREND_SQL,
+                              {"date_from": date_from, "date_to": date_to}).fetchall()
+    ]
+    return {
+        "items": [{"code": c, "n": n, "by_env": by_env.get(c, {})}
+                  for c, n in sorted(totals.items(), key=lambda kv: -kv[1])],
+        "trend": trend,
+        "total": sum(totals.values()),
+    }

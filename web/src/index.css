@@ -1,0 +1,19 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  html, body, #root { height: 100%; }
+  body {
+    @apply bg-zinc-50 text-zinc-900 font-sans antialiased;
+  }
+  /* 等宽标识符:设计里所有 ID / 单号 / 金额都用它 */
+  .id { @apply font-mono text-[12.5px] tracking-[-0.01em] text-zinc-700; }
+  .num { @apply font-mono text-[12.5px] tabular-nums text-right; }
+}
+
+@layer components {
+  /* 可复制字段。规则挂在类上,不是一个字段一个字段挂事件 ——
+     新加一个 mono 字段带上这个类就自动有行为。 */
+  .copyable { @apply cursor-pointer border-b border-dashed border-zinc-200 hover:border-zinc-400; }
+}

@@ -56,6 +56,28 @@ POSSIBLY_ORDERED = frozenset({
     "ORDER_CONFIRM_TIMEOUT", "ORDER_NO_AMBIGUOUS", "CLAIM_TIMEOUT",
 })
 
+#: 业务性拦截:重试多少次结果都一样,但也不涉及「可能已经下单」的风险。
+#: 处置是改单(换 ASIN、改地址、调数量)或者放弃,不是重试也不是去查订单。
+#:
+#: 这一组是 2026-08-21 补的。在此之前 19 个码里有 7 个**不在任何一组**:
+#: 表面上是个三分的封闭分类,实际有三分之一的码落在分类之外。
+#: 照着这三组建处置 SOP 的人会漏掉它们,而它们恰好是最常见的那几个
+#: (无货、非 FBA、地址不可投递)。这就是本项目反复遇到的
+#: 「看起来有护栏、实际防不住」——有测试盯着,见 tests/test_error_codes.py。
+BUSINESS_BLOCKED = frozenset({
+    "OUT_OF_STOCK", "QTY_UNAVAILABLE", "BUNDLE_PRODUCT", "NOT_FBA",
+    "ADDRESS_STATE_UNMATCHED", "ADDRESS_SUGGESTION_BLOCKED", "ADDRESS_NOT_APPLIED",
+})
+
+#: ⚠ RETRYABLE **目前没有任何自动重试在消费它**。
+#: 没有 workflow 把 exception 退回 ready —— task_sweep 只清扫 claimed 超时,
+#: 而且刻意不退回 ready(插件可能已经真下了单)。
+#: 所以这一组当下的含义是「人点一下重置基本能过」,不是「系统会自己再来」。
+#: 界面上的文案必须照这个事实写 —— 写成「系统自己会再试」就是在界面上撒谎,
+#: 运营会因此把一桶其实没人管的单晾在那儿。
+#: 要不要真做自动重试是产品决定,留给所有者;在做出来之前这条注释不许删。
+AUTO_RETRY_IMPLEMENTED = False
+
 
 def validate(code: str) -> str:
     """输入:错误码 → 输出:原样返回;不在封闭集内抛 ValueError。

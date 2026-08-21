@@ -6,13 +6,15 @@
 不做鉴权(所有者定稿),服务默认只监听 127.0.0.1。
 """
 
+from datetime import date, timedelta
+
 from fastapi import APIRouter, Depends
 from fastapi.responses import JSONResponse
 
 from registry import settings
 from server import schemas
 from server.deps import conn_ctx
-from services import instance, task_admin, task_intake, task_query
+from services import error_codes, instance, task_admin, task_intake, task_query, vocab
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
@@ -29,6 +31,58 @@ def _refused(exc: task_admin.AdminRefused) -> JSONResponse:
         "ok": False, "data": None,
         "error": {"code": exc.code, "message": exc.message},
     })
+
+
+@router.get("/meta")
+def meta() -> schemas.Envelope:
+    """封闭集连中文标签一起吐给前端,让前端不必存副本。
+
+    这个项目已经因为「两份副本悄悄分叉」栽过两次。少一份就少一处会分叉的地方。
+    """
+    return schemas.Envelope(ok=True, data={
+        "task_status": {"labels": vocab.STATUS_LABELS, "tone": vocab.STATUS_TONE},
+        "shipment_status": {"labels": vocab.SHIPMENT_LABELS, "tone": vocab.SHIPMENT_TONE},
+        "event_kind": {"labels": vocab.EVENT_LABELS, "tone": vocab.EVENT_TONE},
+        "error_code": {
+            "labels": error_codes.LABELS,
+            "retryable": sorted(error_codes.RETRYABLE),
+            "to_manual": sorted(error_codes.TO_MANUAL),
+            "business_blocked": sorted(error_codes.BUSINESS_BLOCKED),
+            "possibly_ordered": sorted(error_codes.POSSIBLY_ORDERED),
+            # 界面文案要照事实写:这一位是 False 时不许说「系统自己会再试」
+            "auto_retry_implemented": error_codes.AUTO_RETRY_IMPLEMENTED,
+        },
+    })
+
+
+@router.get("/summary")
+def summary(
+    env_code: str | None = None,
+    date_field: str = "created",
+    date_from: date | None = None,
+    date_to: date | None = None,
+    conn=Depends(conn_ctx),
+) -> schemas.Envelope:
+    """状态桶的计数。接的是与列表**同一套** env/时间条件,只是不接 status ——
+    否则筛了买家号之后那排数字还是全局的,点进去数量对不上,像是界面丢了单。"""
+    got = task_query.summary(conn, env_code=env_code, date_field=date_field,
+                             date_from=date_from, date_to=date_to)
+    return schemas.Envelope(ok=True, data=got)
+
+
+@router.get("/error-stats")
+def error_stats(
+    date_from: date | None = None,
+    date_to: date | None = None,
+    conn=Depends(conn_ctx),
+) -> schemas.Envelope:
+    """错误码分布。默认看最近 14 天 —— 够看出趋势,又不至于把一次早就修好的
+    旧故障混进今天的判断里。"""
+    today = date.today()
+    got = task_query.error_stats(conn,
+                                 date_from=date_from or today - timedelta(days=13),
+                                 date_to=date_to or today)
+    return schemas.Envelope(ok=True, data=got)
 
 
 @router.post("/tasks/search")
