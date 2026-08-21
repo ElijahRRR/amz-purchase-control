@@ -1,0 +1,23 @@
+{
+  "manifest_version": 3,
+  "name": "AMZ 采购助手",
+  "version": "0.1.0",
+  "description": "服务端派单 + 在本浏览器环境内执行 Amazon 采购。",
+  "permissions": ["storage", "alarms"],
+  "host_permissions": [
+    "https://www.amazon.com/*",
+    "http://127.0.0.1:8781/*"
+  ],
+  "background": {
+    "service_worker": "background.js",
+    "type": "module"
+  },
+  "content_scripts": [
+    {
+      "matches": ["https://www.amazon.com/*"],
+      "js": ["content.js"],
+      "run_at": "document_idle",
+      "all_frames": false
+    }
+  ]
+}

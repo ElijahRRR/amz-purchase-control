@@ -373,14 +373,14 @@ UP-20836
 
         <div class="cell">
           <div class="gt">上游订单</div>
-          <div class="kv"><span class="kvk">上游单号</span><span class="kvv id" style="font-size:12.5px;color:#18181b">{{sel.upstream}}</span></div>
+          <div class="kv"><span class="kvk">上游单号</span><span class="kvv id" style="font-size:12.5px;color:#18181b">{{sel.upstream}}<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="#c4c4c8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="margin-left:5px;position:relative;top:1px"><rect width="13" height="13" x="9" y="9" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span></div>
           <div class="kv"><span class="kvk">行唯一键</span><span class="kvv id" style="font-size:11.5px;color:#71717a">{{sel.lineKey}}</span></div>
           <div class="kv"><span class="kvk">站点</span><span class="kvv">US · amazon.com</span></div>
           <div style="margin-top:2px;font-size:11.5px;color:#a1a1aa;line-height:1.6">店铺留在上游 ERP,这里不存。行唯一键 = sha256(上游单号|ASIN)</div>
         </div>
 
         <div class="cell">
-          <div class="gt">收货信息 <span style="color:#0ea5e9">· 上游下发,只读</span></div>
+          <div class="gt">收货信息 <span style="color:#0ea5e9">· 上游下发,只读</span><span style="margin-left:auto;color:#71717a;display:inline-flex;align-items:center;gap:4px">复制整段<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="#a1a1aa" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="position:relative;top:1px"><rect width="13" height="13" x="9" y="9" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span></div>
           <div class="kv"><span class="kvk">姓名</span><span class="kvv">{{sel.shipName}}</span></div>
           <div class="kv"><span class="kvk">电话</span><span class="kvv id" style="font-size:12px">{{sel.shipPhone}}</span></div>
           <div class="kv"><span class="kvk">地址</span><span class="kvv" style="line-height:1.55">{{sel.shipLine1}}</span></div>
@@ -395,7 +395,7 @@ UP-20836
               <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="#c4c4c8" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
             </span>
             <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:3px">
-              <span class="id" style="font-size:13px;color:#18181b">{{sel.asin}}</span>
+              <span class="id" style="font-size:13px;color:#18181b">{{sel.asin}}<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="#c4c4c8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="margin-left:5px;position:relative;top:1px"><rect width="13" height="13" x="9" y="9" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span>
               <span style="font-size:12px;color:#71717a">数量 <span class="num" style="color:#27272a;font-size:12.5px">{{sel.qty}}</span></span>
             </div>
           </div>
@@ -405,7 +405,7 @@ UP-20836
 
         <div class="cell" style="border-right:none">
           <div class="gt">订单信息</div>
-          <div class="kv"><span class="kvk">AMZ 单号</span><span class="kvv id" style="font-size:12.5px;{{sel.amzStyle}}">{{sel.amz}}</span></div>
+          <div class="kv"><span class="kvk">AMZ 单号</span><span class="kvv id" style="font-size:12.5px;{{sel.amzStyle}}">{{sel.amz}}<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="#c4c4c8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="margin-left:5px;position:relative;top:1px"><rect width="13" height="13" x="9" y="9" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span></div>
           <div class="kv"><span class="kvk">下单时间</span><span class="kvv id" style="font-size:12px">{{sel.purchasedAt}}</span></div>
           <div style="display:flex;align-items:center;gap:7px;margin-top:3px">
             <span class="{{sel.assertDotCls}}" style="{{sel.assertDotStyle}}"></span>
@@ -439,7 +439,7 @@ UP-20836
           <div class="gt">物流信息</div>
           <sc-if value="{{sel.hasShip}}" hint-placeholder-val="{{true}}">
             <div class="kv"><span class="kvk">物流商</span><span class="kvv">{{sel.carrier}}</span></div>
-            <div class="kv"><span class="kvk">运单号</span><span class="kvv id" style="font-size:11.5px">{{sel.tracking}}</span></div>
+            <div class="kv"><span class="kvk">运单号</span><span class="kvv id" style="font-size:11.5px">{{sel.tracking}}<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="#c4c4c8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="margin-left:5px;position:relative;top:1px"><rect width="13" height="13" x="9" y="9" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span></div>
             <div class="kv"><span class="kvk">状态</span><span class="kvv"><span class="{{sel.shipTagCls}}" style="{{sel.shipTagStyle}}">{{sel.shipStatus}}</span></span></div>
             <div class="kv"><span class="kvk">预计送达</span><span class="kvv">{{sel.deliveryDate}}</span></div>
             <div style="font-size:11.5px;color:#a1a1aa;line-height:1.55">Amazon 原文「{{sel.deliveryRaw}}」{{sel.shipWhen}}</div>
@@ -452,7 +452,7 @@ UP-20836
         <div class="cell">
           <div class="gt">买家号信息</div>
           <div class="kv"><span class="kvk">环境名</span><span class="kvv">{{sel.env}}</span></div>
-          <div class="kv"><span class="kvk">买家号ID</span><span class="kvv id" style="font-size:11.5px">{{sel.customerId}}</span></div>
+          <div class="kv"><span class="kvk">买家号ID</span><span class="kvv id" style="font-size:11.5px">{{sel.customerId}}<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="#c4c4c8" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" style="margin-left:5px;position:relative;top:1px"><rect width="13" height="13" x="9" y="9" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg></span></div>
           <div class="kv"><span class="kvk">信用卡</span><span class="kvv id" style="font-size:12px">{{sel.last4}}</span></div>
           <div class="kv"><span class="kvk">认领实例</span><span class="kvv id" style="font-size:11.5px">{{sel.instance}}</span></div>
           <div style="font-size:11.5px;color:#a1a1aa;line-height:1.55">没有「同步时间」—— 那是等插件回传的等待态,我们改用事件流</div>
@@ -512,7 +512,7 @@ UP-20836
       <div style="height:56px;flex:none;border-top:1px solid #e4e4e7;background:#fafafa;display:flex;align-items:center;gap:8px;padding:0 18px">
         <span class="btn sm bs">改地址</span>
         <span class="btn sm bs">改 ASIN</span>
-        <span class="btn sm bs">复制运单号</span>
+        <span class="btn sm bs">复制收货地址</span>
         <span style="margin-left:auto"></span>
         <span class="btn sm bghost" onClick="{{closeSel}}">关闭</span>
         <span class="{{sel.actCls}}" style="{{sel.actStyle}}" onClick="{{sel.actClick}}">{{sel.actLabel}}</span>

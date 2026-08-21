@@ -151,6 +151,34 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
         <div style="display:flex;align-items:center;gap:8px"><span style="color:#a1a1aa;width:96px;flex:none">插件主动放弃</span><span class="tag tagdash" style="background:#fff;color:#0369a1;border-color:#bae6fd">待拍单</span><span style="color:#a1a1aa">退回队列</span></div>
         <div style="display:flex;align-items:center;gap:8px"><span style="color:#a1a1aa;width:96px;flex:none">认领超时</span><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">待人工</span><span style="color:#a1a1aa">不退回待拍单</span></div>
       </div>
+      <div style="height:1px;background:#f4f4f5;margin-top:4px"></div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        <div style="font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.05em;color:#a1a1aa">可复制字段 · 点一下就进剪贴板</div>
+        <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:#3f3f46">
+          <span class="id" style="display:inline-flex;align-items:center;gap:5px;padding:2px 6px;border:1px solid #e4e4e7;border-radius:4px;background:#fff">B0FB3VS68J
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="#a1a1aa" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="13" height="13" x="9" y="9" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </span>
+          <span class="id" style="display:inline-flex;align-items:center;gap:5px;padding:2px 6px;border:1px solid #e4e4e7;border-radius:4px;background:#fff">111-4820193-7736514
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="#a1a1aa" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="13" height="13" x="9" y="9" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </span>
+          <span class="id" style="display:inline-flex;align-items:center;gap:5px;padding:2px 6px;border:1px solid #e4e4e7;border-radius:4px;background:#fff">TBA305271884221
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="#a1a1aa" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round"><rect width="13" height="13" x="9" y="9" rx="2"/><path d="M5 15H4a2 2 0 0 1-2-2V4a2 2 0 0 1 2-2h9a2 2 0 0 1 2 2v1"/></svg>
+          </span>
+          <span class="btn sm bs">复制收货地址</span>
+          <span style="display:inline-flex;align-items:center;gap:6px;padding:4px 9px;border-radius:6px;background:#18181b;color:#fff;font-size:12px">
+            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#34d399" stroke-width="2.4" stroke-linecap="round" stroke-linejoin="round"><path d="M20 6 9 17l-5-5"/></svg>
+            已复制 B0FB3VS68J
+          </span>
+        </div>
+        <div style="font-size:12px;color:#71717a;line-height:1.8">
+          <b>凡是等宽字体的标识符,点一下就复制。</b>ASIN、上游单号、AMZ 单号、运单号、买家号ID、邮编、电话 ——
+          这些值存在的意义就是被粘到别处去(粘进 Amazon 搜索框、粘进工单、粘进对账表),让人先选中再 Ctrl+C 是白让人做功。
+          hover 时出现复制图标,点击即复制。<br>
+          <b>收货信息给一个「复制收货地址」,复制整段。</b>粘进别处要的是完整地址,不是一个字段一个字段点七次。<br>
+          <b>复制必须有反馈。</b>没有那句「已复制」的复制等于没复制 —— 人会点第二次,然后开始怀疑这个按钮坏了。
+          反过来,复制<i>不算危险动作</i>:它不改任何东西,不需要确认步。
+        </div>
+      </div>
       <div style="font-size:12px;color:#71717a;line-height:1.8;margin-top:2px">
         <b>超时不退回待拍单,这条要在界面上写死。</b>插件可能已经在 Amazon 上真下了单只是没回传,
         自动重试就是重复下单。所以超时走待人工,人确认过才决定放回还是回填。

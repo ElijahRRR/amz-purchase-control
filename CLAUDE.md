@@ -92,3 +92,12 @@ tests/          pytest;需要一个可连的 PostgreSQL 17,连不上则整体 sk
 export AMZ_TEST_ADMIN_DSN="dbname=postgres"   # 指向管理库,测试会建/删临时库
 python -m pytest -q
 ```
+
+插件侧自检(不碰 Amazon,要先起服务端):
+
+```bash
+cd extension && npm install
+npm run typecheck && npm run build      # 打出 dist/,可直接加载进 Chrome
+npm run smoke                           # 用插件自己的 Loop/runTask 跑一遍闭环
+node tools/smoke.mjs --scenario wrong_asin
+```

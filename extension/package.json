@@ -1,0 +1,17 @@
+{
+  "name": "amz-purchase-extension",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "build": "vite build --mode background && vite build --mode content && node tools/copy-static.mjs",
+    "build:node": "tsc -p tsconfig.node.json",
+    "smoke": "npm run build:node && node tools/smoke.mjs"
+  },
+  "devDependencies": {
+    "@types/chrome": "^0.0.287",
+    "typescript": "^5.6.3",
+    "vite": "^5.4.10"
+  }
+}

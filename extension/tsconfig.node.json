@@ -1,0 +1,16 @@
+{
+  "extends": "./tsconfig.json",
+  "compilerOptions": {
+    "noEmit": false,
+    "outDir": "build",
+    "types": []
+  },
+  "include": [
+    "src/core",
+    "src/flow",
+    "src/background/loop.ts"
+  ],
+  "exclude": [
+    "src/core/store.chrome.ts"
+  ]
+}
