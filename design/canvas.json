@@ -1,23 +1,90 @@
 {
   "pages": [
-    { "id": "page-proto", "name": "交互原型(主)" },
-    { "id": "page-core",  "name": "设计系统与运行域" }
+    {
+      "id": "page-proto",
+      "name": "交互原型(主)"
+    },
+    {
+      "id": "page-core",
+      "name": "设计系统与运行域"
+    }
   ],
   "artboards": [
-    { "file": "Main.dc.html",   "title": "后台运营台 · 任务队列(可点)", "x": 0,    "y": 0,    "w": 1760, "h": 1120, "expand": "fill", "page": "page-proto" },
-    { "file": "Plugin.dc.html", "title": "插件面板 · 一单的一生(可点)", "x": 1880, "y": 0,    "w": 1280, "h": 900,  "page": "page-proto" },
-    { "file": "DesignSystem.dc.html", "title": "设计系统 · 状态与错误码", "x": 0,    "y": 0,    "w": 1440, "h": 1120, "page": "page-core" },
-    { "file": "Instances.dc.html",    "title": "买家号与插件实例",       "x": 1560, "y": 0,    "w": 1440, "h": 900,  "page": "page-core" }
+    {
+      "file": "Main.dc.html",
+      "title": "后台运营台 · 任务队列(可点,点行弹详情)",
+      "x": 0,
+      "y": 0,
+      "w": 1760,
+      "h": 1120,
+      "expand": "fill",
+      "page": "page-proto"
+    },
+    {
+      "file": "Plugin.dc.html",
+      "title": "插件面板 · 一单的一生(可点)",
+      "x": 1880,
+      "y": 0,
+      "w": 1280,
+      "h": 900,
+      "page": "page-proto"
+    },
+    {
+      "file": "OrderMapping.dc.html",
+      "title": "订单详情字段映射 · 厂商 8 组 → 我们的库",
+      "x": 0,
+      "y": 1240,
+      "w": 1760,
+      "h": 1180,
+      "page": "page-proto"
+    },
+    {
+      "file": "DesignSystem.dc.html",
+      "title": "设计系统 · 状态与错误码",
+      "x": 0,
+      "y": 0,
+      "w": 1440,
+      "h": 1120,
+      "page": "page-core"
+    },
+    {
+      "file": "Instances.dc.html",
+      "title": "买家号与插件实例",
+      "x": 1560,
+      "y": 0,
+      "w": 1440,
+      "h": 900,
+      "page": "page-core"
+    }
   ],
   "annotations": [
     {
-      "id": "proto-note", "x": 0, "y": -200, "w": 780, "page": "page-proto",
-      "text": "两个前端各一块可点画板。\n左:后台运营台。筛选区照厂商面板那 9 个筛选做的取舍 —— 状态桶、创建/采购时间双维度、买家号、批量单号(每行一个,上游号与 AMZ 号混着粘,自动分流)都能点;表格里 ASIN 带主图;右侧详情分「上游下发·只读」与「采购结果」两段,再接物流与事件时间线。\n右:插件注入在亚马逊页面上的面板。顶上六个相位可点,走一单从待命到下单/被护栏拦下的全程。\n视觉词汇整套沿用所有者已有的设计系统(zinc 中性色 + Inter/JetBrains Mono + 中间态虚线/终态实心 + 危险动作先预览),没有另起一套。"
+      "id": "proto-note",
+      "x": 0,
+      "y": -210,
+      "w": 800,
+      "page": "page-proto",
+      "text": "两个前端各一块可点画板,外加一块字段映射。\n左上:后台运营台。筛选区照厂商面板那 9 个筛选做的取舍 —— 状态桶、创建/采购时间双维度、买家号、批量单号(每行一个,上游号与 AMZ 号混着粘,自动分流)。表格里 ASIN 带主图,收货人直接摆在列表上。详情默认不开,点任意一行才弹出。\n右上:插件注入在亚马逊页面上的面板,顶上六个相位可点。\n下:订单详情的字段映射 —— 厂商那一行 8 组字段逐个对到我们库里的落点,不抄的标出原因。\n视觉词汇整套沿用所有者已有的设计系统,没有另起一套。"
     },
     {
-      "id": "core-note", "x": 0, "y": -170, "w": 700, "page": "page-core",
+      "id": "detail-note",
+      "x": 1880,
+      "y": 1240,
+      "w": 620,
+      "page": "page-proto",
+      "text": "详情弹窗照厂商那一行的分组与顺序排:店铺/买家/产品/订单 一排,费用/物流/买家号/其他 一排,末尾补上他们完全没有的事件时间线(他们那一整段只有一个 failContent 自由文本字段)。\n\n每个格子里出现的字段,refdata/schema.sql 里都有落点;他们有而我们不存的,在映射板上标了原因。"
+    },
+    {
+      "id": "core-note",
+      "x": 0,
+      "y": -170,
+      "w": 700,
+      "page": "page-core",
       "text": "左:把旧系统的状态语汇映射到这套系统真有的 7 个任务状态和 18 个错误码 —— 库里没有的状态画布上也没有。右:买家号页,画的是「服务端按 buyer_env_id 派单、同号不会两处同登」这条前提在界面上长什么样,以及领走 15 分钟没回传为什么去 manual 而不是退回队列。"
     }
   ],
-  "launch": { "view": "focused", "file": "Main.dc.html" }
+  "launch": {
+    "view": "focused",
+    "file": "Main.dc.html"
+  }
 }

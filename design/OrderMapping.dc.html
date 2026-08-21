@@ -1,0 +1,182 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Inter','Noto Sans SC',system-ui,sans-serif; -webkit-font-smoothing: antialiased;
+       background: #fafafa; color: #18181b; }
+a { color: #0369a1; text-decoration: none; } a:hover { color: #075985; }
+.mono { font-family: 'JetBrains Mono',ui-monospace,monospace; }
+.card { background: #fff; border: 1px solid #e4e4e7; border-radius: 8px; }
+.chead { display: flex; align-items: center; justify-content: space-between; padding: 0 16px; height: 44px; border-bottom: 1px solid #f4f4f5; }
+.ctitle { font-size: 13px; font-weight: 500; color: #18181b; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 99px; flex: none; }
+.dothollow { display: inline-block; width: 9px; height: 9px; border-radius: 99px; background: #fff; border: 2px solid #f59e0b; flex: none; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #27272a; white-space: nowrap; }
+.tag { display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; height: 20px; border-radius: 4px; font-size: 11px; font-weight: 500; border: 1px solid; white-space: nowrap; }
+.tagdash { border-style: dashed; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; border-radius: 6px;
+       font-weight: 500; font-size: 14px; height: 36px; padding: 0 12px; border: 1px solid transparent; cursor: default; }
+.btn.sm { height: 28px; padding: 0 8px; font-size: 12px; }
+.bp { background: #18181b; color: #fff; }
+.bs { background: #fff; color: #18181b; border-color: #d4d4d8; }
+.bghost { background: transparent; color: #3f3f46; }
+.bdanger { background: #dc2626; color: #fff; }
+table { border-collapse: separate; border-spacing: 0; width: 100%; }
+.th { background: #fafafa; text-align: left; padding: 0 12px; height: 36px; font-size: 11px; font-weight: 500; color: #71717a;
+      text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid #e4e4e7; white-space: nowrap; }
+.td { padding: 0 12px; font-size: 13px; color: #27272a; border-bottom: 1px solid #f4f4f5; vertical-align: middle; }
+.rz .td { height: 40px; } .rc .td { height: 32px; }
+.num { text-align: right; font-family: 'JetBrains Mono',ui-monospace,monospace; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.id { font-family: 'JetBrains Mono',ui-monospace,monospace; font-size: 12.5px; letter-spacing: -0.01em; color: #3f3f46; }
+.kbd { font-family: 'JetBrains Mono',monospace; font-size: 10px; padding: 1px 5px; border: 1px solid #e4e4e7;
+       border-bottom-width: 2px; border-radius: 4px; background: #fafafa; color: #52525b; }
+.grouptitle { padding: 0 16px; margin: 12px 0 4px; font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: .05em; color: #a1a1aa; }
+.navitem { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 16px; font-size: 13px; color: #3f3f46; }
+.navitem.on { background: #18181b; color: #fff; }
+.navbadge { font-family: 'JetBrains Mono',monospace; font-variant-numeric: tabular-nums; font-size: 10px; padding: 0 6px; height: 16px;
+            display: inline-flex; align-items: center; border-radius: 4px; background: #f4f4f5; color: #3f3f46; margin-left: auto; }
+.navbadge.violet { background: #f5f3ff; color: #6d28d9; }
+.kpilabel { font-size: 12px; color: #71717a; }
+.kpival { font-size: 24px; font-weight: 600; font-family: 'JetBrains Mono',ui-monospace,monospace; font-variant-numeric: tabular-nums; color: #18181b; }
+.log { font-family: 'JetBrains Mono',ui-monospace,monospace; font-size: 12px; line-height: 1.7; color: #d4d4d8;
+       background: #18181b; border-radius: 6px; padding: 14px 16px; white-space: pre; overflow: hidden; }
+.log .ok { color: #34d399; } .log .warn { color: #fbbf24; } .log .err { color: #f87171; } .log .dim { color: #71717a; }
+  </style>
+<style>
+.mgrp { margin-top: 13px; padding: 0 0 5px; font-size: 12px; font-weight: 600; color: #18181b;
+        border-bottom: 1px solid #e4e4e7; display: flex; align-items: baseline; gap: 7px; }
+.mgrp .sub { font-size: 11px; font-weight: 400; color: #a1a1aa; }
+.mrow { display: flex; align-items: baseline; gap: 9px; padding: 5px 0; border-bottom: 1px solid #fafafa; }
+.msrc { width: 168px; flex: none; font-family: 'JetBrains Mono',ui-monospace,monospace; font-size: 11.5px; color: #3f3f46; }
+.mar  { width: 12px; flex: none; color: #d4d4d8; font-size: 11px; }
+.mdst { flex: 1; min-width: 0; font-size: 12.5px; color: #27272a; line-height: 1.55; }
+.mdst .f { font-family: 'JetBrains Mono',ui-monospace,monospace; font-size: 11.5px; color: #18181b; }
+.mdst .n { font-size: 11.5px; color: #a1a1aa; }
+.xtag { display: inline-flex; align-items: center; padding: 0 5px; height: 17px; border-radius: 4px; font-size: 10.5px;
+        font-weight: 500; border: 1px dashed #e4e4e7; background: #fff; color: #71717a; margin-right: 5px; }
+.ntag { display: inline-flex; align-items: center; padding: 0 5px; height: 17px; border-radius: 4px; font-size: 10.5px;
+        font-weight: 500; border: 1px solid #ddd6fe; background: #f5f3ff; color: #6d28d9; margin-right: 5px; }
+</style>
+</helmet>
+<div style="width:1760px;height:1180px;background:#fafafa;display:flex;flex-direction:column;overflow:hidden">
+
+  <div style="height:64px;flex:none;background:#fff;border-bottom:1px solid #e4e4e7;display:flex;align-items:center;gap:12px;padding:0 20px">
+    <span style="font-size:14px;font-weight:600">订单详情字段映射</span>
+    <span style="font-size:12px;color:#71717a">厂商面板那一行 8 组字段 → 我们库里的落点</span>
+    <span style="margin-left:auto;font-size:11.5px;color:#a1a1aa">来源:vendor-panel-analysis §2.3(38 字段行模型) · 插件功能深度分析 §5.1 / §5.2(两个回传体)</span>
+  </div>
+
+  <div style="flex:none;background:#fff;border-bottom:1px solid #e4e4e7;padding:10px 20px;display:flex;align-items:center;gap:0">
+    <span style="font-size:11px;font-weight:500;text-transform:uppercase;letter-spacing:.05em;color:#a1a1aa;width:120px;flex:none">厂商那一行</span>
+    <span style="flex:1;display:flex;gap:0">
+      <span style="flex:1;padding:5px 8px;border-left:1px solid #f4f4f5;font-size:12px;color:#3f3f46;text-align:center">店铺信息</span>
+      <span style="flex:1;padding:5px 8px;border-left:1px solid #f4f4f5;font-size:12px;color:#3f3f46;text-align:center">买家信息</span>
+      <span style="flex:1;padding:5px 8px;border-left:1px solid #f4f4f5;font-size:12px;color:#3f3f46;text-align:center">产品信息</span>
+      <span style="flex:1;padding:5px 8px;border-left:1px solid #f4f4f5;font-size:12px;color:#3f3f46;text-align:center">订单信息</span>
+      <span style="flex:1;padding:5px 8px;border-left:1px solid #f4f4f5;font-size:12px;color:#3f3f46;text-align:center">费用信息</span>
+      <span style="flex:1;padding:5px 8px;border-left:1px solid #f4f4f5;font-size:12px;color:#3f3f46;text-align:center">物流信息</span>
+      <span style="flex:1;padding:5px 8px;border-left:1px solid #f4f4f5;font-size:12px;color:#3f3f46;text-align:center">买家号信息</span>
+      <span style="flex:1;padding:5px 8px;border-left:1px solid #f4f4f5;border-right:1px solid #f4f4f5;font-size:12px;color:#3f3f46;text-align:center">其他信息</span>
+    </span>
+  </div>
+
+  <div style="flex:1;min-height:0;padding:16px 20px;display:flex;gap:16px">
+
+    <section class="card" style="flex:1;padding:4px 16px 14px;overflow:hidden">
+      <div class="mgrp" style="margin-top:10px">店铺信息 <span class="sub">3 个字段</span></div>
+      <div class="mrow"><span class="msrc">storeName</span><span class="mar">→</span><span class="mdst"><span class="xtag">不存</span>店铺留在上游 ERP,采购侧不需要知道是哪家店</span></div>
+      <div class="mrow"><span class="msrc">orderNo</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.line_key</span> = sha256(上游单号|asin) <span class="n">· 他们是把两截字符串直接拼起来当主键,人眼分不出边界(截图里 119122366387352 + B0F834Q858 连在一起)</span></span></div>
+      <div class="mrow"><span class="msrc">country</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.marketplace</span> <span class="n">· 首期恒为 US</span></span></div>
+
+      <div class="mgrp">买家信息 <span class="sub">上游下发,只读</span></div>
+      <div class="mrow"><span class="msrc">receivingName</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.ship_name</span></span></div>
+      <div class="mrow"><span class="msrc">receivingPhone</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.ship_phone</span></span></div>
+      <div class="mrow"><span class="msrc">receivingAddress</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.ship_line1</span></span></div>
+      <div class="mrow"><span class="msrc">receivingCity / State</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.ship_city</span> / <span class="f">ship_state</span></span></div>
+      <div class="mrow"><span class="msrc">receivingPostCode</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.ship_postcode</span></span></div>
+      <div class="mrow"><span class="msrc">receivingCountry</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.ship_country</span></span></div>
+      <div class="mrow"><span class="msrc">receivingDistrict</span><span class="mar">→</span><span class="mdst"><span class="xtag">不做</span>日本站才必填,首期只有 US</span></div>
+      <div class="mrow"><span class="msrc">platformPostCode</span><span class="mar">→</span><span class="mdst"><span class="xtag">不存</span>影子字段,专门用来跟导入值比对 <span class="n">· 我们的地址是自己填进去的,没有第二份可比</span></span></div>
+
+      <div class="mgrp">产品信息 <span class="sub">支持多商品行</span></div>
+      <div class="mrow"><span class="msrc">imgUrl</span><span class="mar">→</span><span class="mdst"><span class="f">task_products.image_url</span> <span class="n">· 列表里 ASIN 左边那张图</span></span></div>
+      <div class="mrow"><span class="msrc">asin</span><span class="mar">→</span><span class="mdst"><span class="f">task_products.asin</span></span></div>
+      <div class="mrow"><span class="msrc">quantity</span><span class="mar">→</span><span class="mdst"><span class="f">task_products.quantity</span></span></div>
+      <div class="mrow"><span class="msrc">price</span><span class="mar">→</span><span class="mdst"><span class="ntag">换了语义</span><span class="f">tasks.price_cap</span> —— 他们这是导入价,只摆着看;我们是限价,超了不采</span></div>
+      <div class="mrow"><span class="msrc">(他们没有)</span><span class="mar">→</span><span class="mdst"><span class="f">task_products.actual_unit_price</span> <span class="n">· 结算页实测单价,回传时填</span></span></div>
+
+      <div class="mgrp">订单信息 <span class="sub">回填与校验</span></div>
+      <div class="mrow"><span class="msrc">platformOrderNo</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.amazon_order_no</span> <span class="n">· 加了部分唯一索引:同一个 AMZ 单号不可能落到两条任务上</span></span></div>
+      <div class="mrow"><span class="msrc">asinCheck ✓/✗</span><span class="mar">→</span><span class="mdst"><span class="xtag">不存</span>不存两份再打叉,而是回填那一刻断言,不符<span style="color:#18181b">直接不写</span>(<span class="f">ORDER_NO_AMBIGUOUS</span>)</span></div>
+      <div class="mrow"><span class="msrc">postCodeCheck ✓/✗</span><span class="mar">→</span><span class="mdst"><span class="xtag">不存</span>同上</span></div>
+    </section>
+
+    <section class="card" style="flex:1;padding:4px 16px 14px;overflow:hidden">
+      <div class="mgrp" style="margin-top:10px">费用信息 <span class="sub">来自 purchaseOrderFinishUpdate(§5.1)</span></div>
+      <div class="mrow"><span class="msrc">shipping</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.actual_shipping</span></span></div>
+      <div class="mrow"><span class="msrc">tax</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.actual_tax</span></span></div>
+      <div class="mrow"><span class="msrc">total</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.actual_total</span> <span class="n">· 护栏拿它跟 price_cap 比</span></span></div>
+      <div class="mrow"><span class="msrc">totalBeforeTax</span><span class="mar">→</span><span class="mdst"><span class="xtag">不存</span>展示时算:<span class="f">actual_total − actual_tax</span></span></div>
+      <div class="mrow"><span class="msrc">subTotal</span><span class="mar">→</span><span class="mdst"><span class="xtag">不存</span>他们这一列<span style="color:#18181b">恒为空</span>:插件里 <span class="f">subtotal</span> 声明后从未赋值,而且回传的 key 是小写、面板读的是驼峰 <span class="n">· 我们用 actual_unit_price × quantity 自己算</span></span></div>
+
+      <div class="mgrp">物流信息 <span class="sub">来自 updateTrackingInfo(§5.2,20 字段)</span></div>
+      <div class="mrow"><span class="msrc">platformTrackCarrier</span><span class="mar">→</span><span class="mdst"><span class="f">shipments.carrier</span> <span class="n">· 他们这个值是页面文本 split(" ")[2] 盲取第 3 个词,截图里就是 --</span></span></div>
+      <div class="mrow"><span class="msrc">platformTrackNo</span><span class="mar">→</span><span class="mdst"><span class="f">shipments.tracking_no</span></span></div>
+      <div class="mrow"><span class="msrc">orderStatus</span><span class="mar">→</span><span class="mdst"><span class="f">shipments.status</span> <span class="n">· not_shipped / in_transit / delivered / cancelled</span></span></div>
+      <div class="mrow"><span class="msrc">deliveryTime</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.delivery_date</span></span></div>
+      <div class="mrow"><span class="msrc">origDeliveryTime</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.delivery_raw</span> <span class="n">· Amazon 原文,解析失败时的唯一线索,必须留着</span></span></div>
+      <div class="mrow"><span class="msrc">events[]</span><span class="mar">→</span><span class="mdst"><span class="f">logistics.shipment_events</span> <span class="n">· day / time / 描述 / city / state,seq 0 最新</span></span></div>
+      <div class="mrow"><span class="msrc">deliveryTimeAbnormal</span><span class="mar">→</span><span class="mdst"><span class="ntag">换了做法</span>他们是黄字提示、无系统动作;我们用 <span class="f">max_delivery_days</span> 在下单前硬拦(<span class="f">DELIVERY_TOO_LATE</span>)</span></div>
+      <div class="mrow"><span class="msrc">trackingHtml</span><span class="mar">→</span><span class="mdst"><span class="xtag">不存</span>整页 HTML + 内联全部 CSS 的 base64,无长度上限 <span class="n">· 我们只存结构化事件</span></span></div>
+
+      <div class="mgrp">买家号信息</div>
+      <div class="mrow"><span class="msrc">buyerAccount</span><span class="mar">→</span><span class="mdst"><span class="f">buyer_envs.code</span> <span class="n">· 值其实是防关联浏览器的环境名</span></span></div>
+      <div class="mrow"><span class="msrc">buyerCustomerId</span><span class="mar">→</span><span class="mdst"><span class="f">buyer_envs.amazon_customer_id</span></span></div>
+      <div class="mrow"><span class="msrc">paymentCard</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.payment_last4</span> <span class="n">· 列必须是 text:插件在识别到「用积分付」时会把这个字段直接写成中文「礼品卡」,按纯数字建表会炸</span></span></div>
+      <div class="mrow"><span class="msrc">同步时间</span><span class="mar">→</span><span class="mdst"><span class="xtag">没这概念</span>那是「等插件回传」的等待态 <span class="n">· 我们用 plugin_instances.last_seen_at + task_events</span></span></div>
+
+      <div class="mgrp">其他信息</div>
+      <div class="mrow"><span class="msrc">status</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.status</span> <span class="n">· 他们 4 个(待审核/待拍单/已拍单/拍单异常),我们 7 个,多出 claimed 与 manual</span></span></div>
+      <div class="mrow"><span class="msrc">failContent</span><span class="mar">→</span><span class="mdst"><span class="ntag">换了做法</span><span class="f">error_code</span> + <span class="f">error_detail</span> + <span class="f">task_events</span> 全流 <span class="n">· 一个自由文本字段换成 18 个封闭错误码加只追加的事件流</span></span></div>
+      <div class="mrow"><span class="msrc">createTime</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.created_at</span></span></div>
+      <div class="mrow"><span class="msrc">purchaseTime</span><span class="mar">→</span><span class="mdst"><span class="f">tasks.purchased_at</span></span></div>
+      <div class="mrow"><span class="msrc">remark</span><span class="mar">→</span><span class="mdst"><span class="xtag">不做</span>那是 Excel 导入的批次备注,我们没有导入通道</span></div>
+      <div class="mrow"><span class="msrc">createName</span><span class="mar">→</span><span class="mdst"><span class="xtag">不做</span>单子由上游下发,不是人在这里建的;而且本系统不做鉴权,没有用户</span></div>
+    </section>
+  </div>
+
+  <div style="flex:none;padding:0 20px 16px;display:flex;gap:16px">
+    <div class="card" style="flex:1;padding:11px 14px;display:flex;flex-direction:column;gap:4px">
+      <div style="font-size:12px;font-weight:500;color:#18181b">截图里的算术:导入价 ≠ 实付价</div>
+      <div style="font-size:12px;color:#71717a;line-height:1.65">
+        产品信息写着 <span class="id" style="color:#3f3f46">价格 13.99 · 数量 3</span>,按说税前该是 41.97,可费用信息里税前总额是
+        <span class="id" style="color:#18181b">$37.77</span> —— 实付单价其实是 12.59。<span style="color:#3f3f46">导入价和实付价是两个东西,他们并排摆着却从不比较。</span>
+        我们把这个位置换成上游算好的限价,并且在下单前拿实付跟它比。
+      </div>
+    </div>
+    <div class="card" style="flex:1;padding:11px 14px;display:flex;flex-direction:column;gap:4px">
+      <div style="font-size:12px;font-weight:500;color:#18181b">在途不该是红色</div>
+      <div style="font-size:12px;color:#71717a;line-height:1.65">
+        截图里物流状态「运输中」是个<span style="color:#b91c1c">红标签</span>。红色一旦用来表示正常在途,真出事时就没有颜色可用了。
+        我们的在途是天蓝虚线 <span class="tag tagdash" style="background:#fff;color:#0369a1;border-color:#bae6fd">运输中</span>,红色只留给「坏了」。
+      </div>
+    </div>
+    <div class="card" style="flex:1;padding:11px 14px;display:flex;flex-direction:column;gap:4px">
+      <div style="font-size:12px;font-weight:500;color:#18181b">一行装不下,才要弹详情</div>
+      <div style="font-size:12px;color:#71717a;line-height:1.65">
+        8 组字段全塞进一行,结果是横向拖着看,而且没有一处能放事件流。我们把决策需要的留在列表里,
+        其余 8 组按<span style="color:#3f3f46">同样的分组与顺序</span>放进点击才弹出的详情,末尾补上他们没有的事件时间线。
+      </div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview": {"width": 1760, "height": 1180}}'></script>

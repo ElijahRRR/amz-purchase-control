@@ -53,7 +53,7 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
 <style>
 .thumb { width: 32px; height: 32px; flex: none; border: 1px solid #e4e4e7; border-radius: 4px; background: #fafafa;
          display: inline-flex; align-items: center; justify-content: center; overflow: hidden; }
-.thumb.lg { width: 56px; height: 56px; border-radius: 6px; }
+.thumb.lg { width: 48px; height: 48px; border-radius: 6px; }
 .fld { height: 30px; display: inline-flex; align-items: center; gap: 6px; padding: 0 9px; border: 1px solid #e4e4e7;
        border-radius: 6px; background: #fff; font-size: 12px; color: #3f3f46; white-space: nowrap; }
 .fld.ghost { color: #a1a1aa; }
@@ -62,14 +62,17 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
 .seg span { display: inline-flex; align-items: center; height: 100%; padding: 0 9px; font-size: 12px; color: #71717a; }
 .seg span.on { background: #18181b; color: #fff; }
 .flabel { font-size: 11px; font-weight: 500; text-transform: uppercase; letter-spacing: .05em; color: #a1a1aa; margin-right: 2px; }
-.sect { padding: 11px 16px 4px; font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: .05em; color: #a1a1aa;
-        display: flex; align-items: center; gap: 6px; }
-.kv { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; line-height: 1.7; }
-.kvk { width: 68px; flex: none; color: #a1a1aa; font-size: 12px; }
+.gt { font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: .05em; color: #a1a1aa;
+      display: flex; align-items: center; gap: 5px; margin-bottom: 1px; }
+.kv { display: flex; align-items: baseline; gap: 8px; font-size: 12.5px; line-height: 1.6; }
+.kvk { width: 58px; flex: none; color: #a1a1aa; font-size: 12px; }
 .kvv { color: #27272a; min-width: 0; }
+.cell { padding: 12px 14px; display: flex; flex-direction: column; gap: 6px;
+        border-right: 1px solid #f4f4f5; border-bottom: 1px solid #f4f4f5; min-width: 0; }
+.frow { display: flex; align-items: center; height: 26px; font-size: 12.5px; }
 </style>
 </helmet>
-<div style="width:1760px;height:1120px;display:flex;background:#fafafa;overflow:hidden">
+<div style="width:1760px;height:1120px;display:flex;background:#fafafa;overflow:hidden;position:relative">
 
   <nav style="width:200px;flex:none;background:#fff;border-right:1px solid #e4e4e7;display:flex;flex-direction:column">
     <div style="height:48px;display:flex;align-items:center;gap:8px;padding:0 16px;border-bottom:1px solid #f4f4f5">
@@ -105,11 +108,10 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
       <span class="btn sm bp">批量重置回队列</span>
     </div>
 
-    <!-- 筛选区 -->
     <div style="flex:none;background:#fff;border-bottom:1px solid #e4e4e7;display:flex;flex-direction:column">
       <div style="height:44px;display:flex;align-items:center;gap:6px;padding:0 16px">
         <span class="flabel">状态</span>
-        <sc-for list="{{chips}}" as="c" hint-placeholder-count="8">
+        <sc-for list="{{chips}}" as="c" hint-placeholder-count="6">
           <span class="pill" style="{{c.style}}" onClick="{{c.pick}}">{{c.label}}<span class="num" style="{{c.numStyle}}">{{c.count}}</span></span>
         </sc-for>
       </div>
@@ -126,30 +128,24 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="4" rx="2"/><path d="M3 10h18"/><path d="M8 2v4"/><path d="M16 2v4"/></svg>
           {{rangeText}}
         </span>
-
         <span style="width:1px;height:20px;background:#e4e4e7;margin:0 2px"></span>
-
         <span class="flabel">买家号</span>
         <span class="{{envFldCls}}" onClick="{{toggleEnv}}">
           {{envLabel}}
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="11" height="11" fill="none" stroke="#a1a1aa" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="m6 9 6 6 6-6"/></svg>
         </span>
-
         <span style="width:1px;height:20px;background:#e4e4e7;margin:0 2px"></span>
-
         <span class="{{batchFldCls}}" onClick="{{toggleBatch}}">
           <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round"><path d="M8 6h13"/><path d="M8 12h13"/><path d="M8 18h13"/><path d="M3 6h.01"/><path d="M3 12h.01"/><path d="M3 18h.01"/></svg>
           {{batchLabel}}
         </span>
-        <span class="fld ghost">ASIN / AMZ 单号</span>
-
+        <span class="fld ghost">ASIN</span>
         <span style="margin-left:auto"></span>
         <span class="btn sm bghost" onClick="{{reset}}">重置</span>
         <span class="btn sm bs">保存为常用视图</span>
       </div>
 
-      <!-- 批量单号:粘一沓进来,每行一个 -->
-      <sc-if value="{{batchOpen}}" hint-placeholder-val="{{true}}">
+      <sc-if value="{{batchOpen}}" hint-placeholder-val="{{false}}">
         <div style="border-top:1px solid #f4f4f5;background:#fafafa;padding:12px 16px;display:flex;gap:14px;align-items:flex-start">
           <div style="width:420px;flex:none;display:flex;flex-direction:column;gap:6px">
             <div style="font-size:12px;color:#3f3f46">批量单号 · 每行一个,上游单号和 AMZ 单号可以混着粘</div>
@@ -159,13 +155,11 @@ UP-20836
 111-4820193-7799999</div>
           </div>
           <div style="flex:1;display:flex;flex-direction:column;gap:7px;padding-top:20px">
-            <div style="font-size:12px;color:#71717a;line-height:1.7;max-width:520px">
+            <div style="font-size:12px;color:#71717a;line-height:1.7;max-width:560px">
               粘进来的号会自己分流:形如 <span class="id" style="color:#3f3f46">111-xxxxxxx-xxxxxxx</span> 的按 AMZ 单号查,其余按上游单号查 ——
               运营手里的表两种号混排是常态,不该逼人先分好类再贴。
             </div>
-            <div style="font-size:12px;color:#71717a;line-height:1.7">
-              批量单号一旦生效就<span style="color:#18181b">盖过状态桶和时间范围</span>:按号找单的人是来找特定几张单的,不是来做统计的。
-            </div>
+            <div style="font-size:12px;color:#71717a;line-height:1.7">批量单号一旦生效就<span style="color:#18181b">盖过状态桶和时间范围</span>。</div>
             <div style="display:flex;gap:8px;margin-top:2px">
               <span class="btn sm bp" onClick="{{applyBatch}}">按 4 个单号筛选</span>
               <span class="btn sm bs" onClick="{{clearBatch}}">清空</span>
@@ -174,7 +168,6 @@ UP-20836
         </div>
       </sc-if>
 
-      <!-- 买家号下拉 -->
       <sc-if value="{{envOpen}}" hint-placeholder-val="{{false}}">
         <div style="border-top:1px solid #f4f4f5;background:#fafafa;padding:10px 16px;display:flex;align-items:center;gap:8px">
           <span class="flabel">选买家号</span>
@@ -186,11 +179,10 @@ UP-20836
       </sc-if>
     </div>
 
-    <!-- 批量单号生效横幅 -->
-    <sc-if value="{{batchOn}}" hint-placeholder-val="{{true}}">
+    <sc-if value="{{batchOn}}" hint-placeholder-val="{{false}}">
       <div style="flex:none;height:36px;background:#fafafa;border-bottom:1px solid #e4e4e7;display:flex;align-items:center;gap:8px;padding:0 16px">
         <span class="tag tagdash" style="background:#fff;color:#0369a1;border-color:#bae6fd">批量单号 4 个</span>
-        <span style="font-size:12px;color:#71717a">已盖过状态桶与时间范围 · 匹配 <span class="num" style="color:#18181b;font-size:12.5px">{{batchHit}}</span> / 4 ·<span style="color:#b45309">{{batchMiss}}</span></span>
+        <span style="font-size:12px;color:#71717a">已盖过状态桶与时间范围 · 匹配 <span class="num" style="color:#18181b;font-size:12.5px">{{batchHit}}</span> / 4 · <span style="color:#b45309">{{batchMiss}}</span></span>
         <span style="margin-left:auto"></span>
         <span class="btn sm bghost" onClick="{{clearBatch}}">取消批量筛选</span>
       </div>
@@ -200,13 +192,14 @@ UP-20836
       <section class="card" style="flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden">
         <header class="chead">
           <h2 class="ctitle">{{listTitle}}</h2>
-          <span style="font-size:12px;color:#a1a1aa">舒适 40px · 商品主图取自 task_products.image_url · 点行看详情</span>
+          <span style="font-size:12px;color:#a1a1aa">舒适 40px · 主图取自 task_products.image_url · 点任意一行弹出订单详情</span>
         </header>
         <div style="flex:1;overflow:hidden">
           <table>
             <tr>
               <th class="th" style="width:236px">商品</th>
               <th class="th" style="width:146px">上游单号</th>
+              <th class="th" style="width:224px">收货</th>
               <th class="th" style="width:88px">买家号</th>
               <th class="th" style="width:74px;text-align:right">限价</th>
               <th class="th" style="width:74px;text-align:right">实付</th>
@@ -228,6 +221,7 @@ UP-20836
                   </div>
                 </td>
                 <td class="td id">{{r.upstream}}</td>
+                <td class="td" style="font-size:12px;color:#3f3f46">{{r.shipShort}}</td>
                 <td class="td" style="font-size:12px">{{r.env}}</td>
                 <td class="td num">{{r.cap}}</td>
                 <td class="td num" style="{{r.paidStyle}}">{{r.paid}}</td>
@@ -246,138 +240,172 @@ UP-20836
     </div>
   </div>
 
-  <!-- 右侧详情 -->
+  <!-- 订单详情:点行才弹出 -->
   <sc-if value="{{hasSel}}" hint-placeholder-val="{{true}}">
-  <aside style="width:460px;flex:none;background:#fff;border-left:1px solid #e4e4e7;display:flex;flex-direction:column;overflow:hidden">
-    <div style="height:48px;flex:none;border-bottom:1px solid #f4f4f5;display:flex;align-items:center;gap:8px;padding:0 16px">
-      <span class="id" style="font-size:13px;color:#18181b">{{sel.upstream}}</span>
-      <span class="{{sel.tagCls}}" style="{{sel.tagStyle}}">{{sel.status}}</span>
-      <span style="margin-left:auto;font-size:11px;color:#a1a1aa" onClick="{{closeSel}}">关闭 <span class="kbd">Esc</span></span>
-    </div>
+  <div style="position:absolute;inset:0;background:rgba(24,24,27,.32);display:flex;align-items:center;justify-content:center;z-index:10">
+    <div style="width:1300px;background:#fff;border:1px solid #e4e4e7;border-radius:10px;box-shadow:0 24px 64px rgba(24,24,27,.22);display:flex;flex-direction:column;overflow:hidden">
 
-    <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column">
+      <div style="height:52px;flex:none;display:flex;align-items:center;gap:10px;padding:0 18px;border-bottom:1px solid #e4e4e7">
+        <span style="font-size:13px;font-weight:600;color:#18181b">订单详情</span>
+        <span class="id" style="font-size:13px;color:#18181b">{{sel.upstream}}</span>
+        <span class="{{sel.tagCls}}" style="{{sel.tagStyle}}">{{sel.status}}</span>
+        <span class="tag tagdash" style="background:#fff;color:#52525b;border-color:#e4e4e7">US</span>
+        <span style="margin-left:auto"></span>
+        <span style="font-size:11px;color:#a1a1aa">关闭 <span class="kbd">Esc</span></span>
+        <span class="btn sm bghost" onClick="{{closeSel}}">✕</span>
+      </div>
 
-      <!-- 上游下发 -->
-      <div class="sect"><span class="dot" style="background:#0ea5e9"></span>上游下发 · 只读</div>
-      <div style="padding:2px 16px 12px;display:flex;flex-direction:column;gap:9px;border-bottom:1px solid #f4f4f5">
-        <div style="display:flex;gap:11px;align-items:flex-start">
-          <span class="thumb lg">
-            <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="24" height="24" fill="none" stroke="#c4c4c8" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
-          </span>
-          <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:3px">
-            <div style="display:flex;align-items:center;gap:7px">
+      <!-- 8 组字段,照厂商那一行的分组与顺序 -->
+      <div style="display:grid;grid-template-columns:repeat(4,minmax(0,1fr));border-top:1px solid #f4f4f5">
+
+        <div class="cell">
+          <div class="gt">上游订单</div>
+          <div class="kv"><span class="kvk">上游单号</span><span class="kvv id" style="font-size:12.5px;color:#18181b">{{sel.upstream}}</span></div>
+          <div class="kv"><span class="kvk">行唯一键</span><span class="kvv id" style="font-size:11.5px;color:#71717a">{{sel.lineKey}}</span></div>
+          <div class="kv"><span class="kvk">站点</span><span class="kvv">US · amazon.com</span></div>
+          <div style="margin-top:2px;font-size:11.5px;color:#a1a1aa;line-height:1.6">店铺留在上游 ERP,这里不存。行唯一键 = sha256(上游单号|ASIN)</div>
+        </div>
+
+        <div class="cell">
+          <div class="gt">收货信息 <span style="color:#0ea5e9">· 上游下发,只读</span></div>
+          <div class="kv"><span class="kvk">姓名</span><span class="kvv">{{sel.shipName}}</span></div>
+          <div class="kv"><span class="kvk">电话</span><span class="kvv id" style="font-size:12px">{{sel.shipPhone}}</span></div>
+          <div class="kv"><span class="kvk">地址</span><span class="kvv" style="line-height:1.55">{{sel.shipLine1}}</span></div>
+          <div class="kv"><span class="kvk">城市/州</span><span class="kvv">{{sel.shipCityState}}</span></div>
+          <div class="kv"><span class="kvk">邮编</span><span class="kvv id" style="font-size:12px">{{sel.shipZip}}</span></div>
+        </div>
+
+        <div class="cell">
+          <div class="gt">产品信息</div>
+          <div style="display:flex;gap:10px;align-items:flex-start">
+            <span class="thumb lg">
+              <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="21" height="21" fill="none" stroke="#c4c4c8" stroke-width="1.4" stroke-linecap="round" stroke-linejoin="round"><path d="m7.5 4.27 9 5.15"/><path d="M21 8a2 2 0 0 0-1-1.73l-7-4a2 2 0 0 0-2 0l-7 4A2 2 0 0 0 3 8v8a2 2 0 0 0 1 1.73l7 4a2 2 0 0 0 2 0l7-4A2 2 0 0 0 21 16Z"/><path d="m3.3 7 8.7 5 8.7-5"/><path d="M12 22V12"/></svg>
+            </span>
+            <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:3px">
               <span class="id" style="font-size:13px;color:#18181b">{{sel.asin}}</span>
-              <span class="tag tagdash" style="background:#fff;color:#52525b;border-color:#e4e4e7">{{sel.qtyText}}</span>
-            </div>
-            <div style="display:flex;gap:14px">
-              <span style="font-size:12px;color:#71717a">限价 <span class="id" style="color:#18181b">{{sel.cap}}</span></span>
-              <span style="font-size:12px;color:#71717a">最晚交期 <span class="id" style="color:#18181b">{{sel.capDays}}</span></span>
+              <span style="font-size:12px;color:#71717a">数量 <span class="num" style="color:#27272a;font-size:12.5px">{{sel.qty}}</span></span>
             </div>
           </div>
+          <div class="kv"><span class="kvk">限价</span><span class="kvv id" style="color:#18181b">{{sel.cap}}</span><span style="font-size:11.5px;color:#a1a1aa">上游算好下发</span></div>
+          <div class="kv"><span class="kvk">实付单价</span><span class="kvv id" style="{{sel.unitStyle}}">{{sel.unit}}</span></div>
         </div>
-        <div class="kv"><span class="kvk">收货人</span><span class="kvv">{{sel.shipName}} · <span class="id" style="font-size:12px">{{sel.shipPhone}}</span></span></div>
-        <div class="kv"><span class="kvk">地址</span><span class="kvv" style="line-height:1.6">{{sel.shipLine}}</span></div>
-        <div class="kv"><span class="kvk">买家号</span><span class="kvv">{{sel.env}} <span style="color:#a1a1aa">· 上游派单时就定了</span></span></div>
-      </div>
 
-      <!-- 采购结果 -->
-      <div class="sect"><span class="{{sel.buyDotCls}}" style="{{sel.buyDotStyle}}"></span>采购结果</div>
-      <sc-if value="{{sel.bought}}" hint-placeholder-val="{{true}}">
-        <div style="padding:2px 16px 12px;display:flex;flex-direction:column;gap:9px;border-bottom:1px solid #f4f4f5">
-          <div class="kv"><span class="kvk">AMZ 单号</span><span class="kvv id" style="font-size:12.5px;color:#18181b">{{sel.amz}}</span></div>
+        <div class="cell" style="border-right:none">
+          <div class="gt">订单信息</div>
+          <div class="kv"><span class="kvk">AMZ 单号</span><span class="kvv id" style="font-size:12.5px;{{sel.amzStyle}}">{{sel.amz}}</span></div>
           <div class="kv"><span class="kvk">下单时间</span><span class="kvv id" style="font-size:12px">{{sel.purchasedAt}}</span></div>
-          <div class="kv"><span class="kvk">支付卡</span><span class="kvv id" style="font-size:12px">{{sel.last4}}</span></div>
-          <div style="border:1px solid #f4f4f5;border-radius:6px;overflow:hidden;margin-top:2px">
-            <sc-for list="{{sel.fees}}" as="f" hint-placeholder-count="4">
-              <div style="display:flex;align-items:center;height:28px;padding:0 10px;{{f.rowStyle}}">
-                <span style="font-size:12px;color:{{f.labelColor}}">{{f.label}}</span>
-                <span class="num" style="margin-left:auto;font-size:12.5px;{{f.valStyle}}">{{f.val}}</span>
-              </div>
-            </sc-for>
+          <div style="display:flex;align-items:center;gap:7px;margin-top:3px">
+            <span class="{{sel.assertDotCls}}" style="{{sel.assertDotStyle}}"></span>
+            <span style="font-size:12px;color:{{sel.assertColor}}">{{sel.assertText}}</span>
           </div>
-          <div style="display:flex;align-items:center;gap:7px;padding:2px 0">
-            <span class="{{sel.capDotCls}}" style="{{sel.capDotStyle}}"></span>
-            <span style="font-size:12px;color:#52525b">{{sel.capVerdict}}</span>
-          </div>
-          <div class="kv"><span class="kvk">预计送达</span><span class="kvv">{{sel.deliveryDate}} <span style="color:#a1a1aa">· 原文「{{sel.deliveryRaw}}」</span></span></div>
+          <div style="font-size:11.5px;color:#a1a1aa;line-height:1.6">断言在回填那一刻做,不符就不写库 —— 不存导入值/同步值两份再打红叉</div>
         </div>
-      </sc-if>
-      <sc-if value="{{sel.notBought}}" hint-placeholder-val="{{false}}">
-        <div style="padding:2px 16px 12px;border-bottom:1px solid #f4f4f5">
-          <div style="background:#fafafa;border:1px solid #f4f4f5;border-radius:6px;padding:10px 12px;font-size:12px;color:#71717a;line-height:1.65">{{sel.notBoughtWhy}}</div>
-        </div>
-      </sc-if>
 
-      <!-- 物流 -->
-      <sc-if value="{{sel.hasShip}}" hint-placeholder-val="{{true}}">
-        <div class="sect"><span class="dot" style="{{sel.shipDotStyle}}"></span>物流</div>
-        <div style="padding:2px 16px 12px;display:flex;flex-direction:column;gap:8px;border-bottom:1px solid #f4f4f5">
-          <div class="kv"><span class="kvk">承运商</span><span class="kvv">{{sel.carrier}}</span></div>
-          <div class="kv"><span class="kvk">运单号</span><span class="kvv id" style="font-size:12px">{{sel.tracking}}</span></div>
-          <div class="kv"><span class="kvk">状态</span><span class="kvv"><span class="{{sel.shipTagCls}}" style="{{sel.shipTagStyle}}">{{sel.shipStatus}}</span> <span style="color:#a1a1aa">{{sel.shipWhen}}</span></span></div>
+        <div class="cell">
+          <div class="gt">费用信息</div>
+          <sc-if value="{{sel.bought}}" hint-placeholder-val="{{true}}">
+            <div style="display:flex;flex-direction:column">
+              <sc-for list="{{sel.fees}}" as="f" hint-placeholder-count="5">
+                <div class="frow" style="{{f.rowStyle}}">
+                  <span style="color:{{f.labelColor}}">{{f.label}}</span>
+                  <span class="num" style="margin-left:auto;{{f.valStyle}}">{{f.val}}</span>
+                </div>
+              </sc-for>
+            </div>
+            <div style="display:flex;align-items:center;gap:6px;margin-top:2px">
+              <span class="dot" style="background:#10b981"></span>
+              <span style="font-size:11.5px;color:#52525b">{{sel.capVerdict}}</span>
+            </div>
+          </sc-if>
+          <sc-if value="{{sel.notBought}}" hint-placeholder-val="{{false}}">
+            <div style="font-size:12px;color:#71717a;line-height:1.65">{{sel.notBoughtWhy}}</div>
+          </sc-if>
         </div>
-      </sc-if>
 
-      <!-- 拦截说明 -->
-      <sc-if value="{{sel.showBlock}}" hint-placeholder-val="{{false}}">
-        <div style="padding:12px 16px;border-bottom:1px solid #f4f4f5">
-          <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:5px">
-            <div style="display:flex;align-items:center;gap:6px"><span class="dot" style="background:#8b5cf6"></span><span class="tag mono" style="background:#fff;color:#6d28d9;border-color:#ddd6fe">{{sel.note}}</span></div>
-            <div style="font-size:12px;color:#52525b;line-height:1.6">{{sel.blockDetail}}</div>
-          </div>
+        <div class="cell">
+          <div class="gt">物流信息</div>
+          <sc-if value="{{sel.hasShip}}" hint-placeholder-val="{{true}}">
+            <div class="kv"><span class="kvk">物流商</span><span class="kvv">{{sel.carrier}}</span></div>
+            <div class="kv"><span class="kvk">运单号</span><span class="kvv id" style="font-size:11.5px">{{sel.tracking}}</span></div>
+            <div class="kv"><span class="kvk">状态</span><span class="kvv"><span class="{{sel.shipTagCls}}" style="{{sel.shipTagStyle}}">{{sel.shipStatus}}</span></span></div>
+            <div class="kv"><span class="kvk">预计送达</span><span class="kvv">{{sel.deliveryDate}}</span></div>
+            <div style="font-size:11.5px;color:#a1a1aa;line-height:1.55">Amazon 原文「{{sel.deliveryRaw}}」{{sel.shipWhen}}</div>
+          </sc-if>
+          <sc-if value="{{sel.noShip}}" hint-placeholder-val="{{false}}">
+            <div style="font-size:12px;color:#a1a1aa;line-height:1.65">还没有订单,也就没有轨迹可同步</div>
+          </sc-if>
         </div>
-      </sc-if>
 
-      <!-- 事件时间线 -->
-      <div class="sect">事件时间线 · 只追加</div>
-      <div style="flex:1;overflow:hidden;padding:0 16px 10px">
-        <table>
-          <sc-for list="{{events}}" as="e" hint-placeholder-count="6">
-            <tr class="rc">
-              <td class="td" style="width:24px;padding:0 0 0 2px;border-bottom-color:#fff"><span class="{{e.dotCls}}" style="{{e.dotStyle}}"></span></td>
-              <td class="td" style="border-bottom-color:#fff;font-size:12.5px">{{e.text}}</td>
-              <td class="td id" style="width:60px;text-align:right;color:#a1a1aa;font-size:11px;border-bottom-color:#fff">{{e.at}}</td>
-            </tr>
-          </sc-for>
-        </table>
+        <div class="cell">
+          <div class="gt">买家号信息</div>
+          <div class="kv"><span class="kvk">环境名</span><span class="kvv">{{sel.env}}</span></div>
+          <div class="kv"><span class="kvk">买家号ID</span><span class="kvv id" style="font-size:11.5px">{{sel.customerId}}</span></div>
+          <div class="kv"><span class="kvk">信用卡</span><span class="kvv id" style="font-size:12px">{{sel.last4}}</span></div>
+          <div class="kv"><span class="kvk">认领实例</span><span class="kvv id" style="font-size:11.5px">{{sel.instance}}</span></div>
+          <div style="font-size:11.5px;color:#a1a1aa;line-height:1.55">没有「同步时间」—— 那是等插件回传的等待态,我们改用事件流</div>
+        </div>
+
+        <div class="cell" style="border-right:none">
+          <div class="gt">执行信息</div>
+          <div class="kv"><span class="kvk">状态</span><span class="kvv"><span class="{{sel.tagCls}}" style="{{sel.tagStyle}}">{{sel.status}}</span></span></div>
+          <div class="kv"><span class="kvk">错误码</span><span class="kvv"><span class="{{sel.codeCls}}" style="{{sel.codeStyle}}">{{sel.code}}</span></span></div>
+          <div class="kv"><span class="kvk">创建时间</span><span class="kvv id" style="font-size:12px">{{sel.createdAt}}</span></div>
+          <div class="kv"><span class="kvk">采购时间</span><span class="kvv id" style="font-size:12px">{{sel.purchasedAt}}</span></div>
+          <div style="font-size:11.5px;color:#a1a1aa;line-height:1.55">没有「创建者」—— 单子由上游下发,不是人在这里建的</div>
+        </div>
       </div>
-    </div>
 
-    <!-- 危险动作的预览步 -->
-    <sc-if value="{{confirmOpen}}" hint-placeholder-val="{{false}}">
-      <div style="flex:none;border-top:1px solid #fecaca;background:#fef2f2;padding:12px 16px;display:flex;flex-direction:column;gap:8px">
-        <div style="display:flex;align-items:center;gap:6px">
-          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>
-          <span style="font-size:12px;font-weight:500;color:#b91c1c">要写进库的是这些,写完不可撤销</span>
+      <!-- 处置说明 -->
+      <sc-if value="{{sel.showBlock}}" hint-placeholder-val="{{false}}">
+        <div style="padding:12px 18px;border-bottom:1px solid #f4f4f5">
+          <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:6px;padding:10px 12px;display:flex;align-items:flex-start;gap:9px">
+            <span class="dot" style="background:#8b5cf6;margin-top:5px"></span>
+            <div style="font-size:12.5px;color:#52525b;line-height:1.65">{{sel.blockDetail}}</div>
+          </div>
         </div>
-        <div style="font-size:12px;color:#52525b;line-height:1.65">
-          把 <span class="id" style="color:#3f3f46">{{sel.upstream}}</span> 的 AMZ 单号钉成人工填的值,状态改成 <span class="tag" style="background:#ecfdf5;color:#047857;border-color:#a7f3d0">purchased</span>,
-          并跳过 ASIN 断言 —— 断言正是当初把它挡在这儿的那道闸。
+      </sc-if>
+
+      <!-- 事件时间线:替代他们那一个 failContent 自由文本 -->
+      <div style="padding:12px 18px 14px">
+        <div class="gt" style="margin-bottom:9px">事件时间线 · 只追加 <span style="color:#71717a">· 厂商那边这一整段只有一个 failContent 自由文本字段</span></div>
+        <div style="display:flex;align-items:stretch;gap:0">
+          <sc-for list="{{events}}" as="e" hint-placeholder-count="6">
+            <div style="flex:1;min-width:0;display:flex;flex-direction:column;gap:6px;padding-right:12px;position:relative">
+              <div style="display:flex;align-items:center;gap:0">
+                <span class="{{e.dotCls}}" style="{{e.dotStyle}}"></span>
+                <span style="flex:1;height:1px;background:#f4f4f5"></span>
+              </div>
+              <div style="font-size:12px;color:#27272a;line-height:1.5">{{e.text}}</div>
+              <div class="id" style="font-size:11px;color:#a1a1aa">{{e.at}}</div>
+            </div>
+          </sc-for>
         </div>
-        <div style="display:flex;gap:8px">
+      </div>
+
+      <!-- 危险动作的预览步 -->
+      <sc-if value="{{confirmOpen}}" hint-placeholder-val="{{false}}">
+        <div style="border-top:1px solid #fecaca;background:#fef2f2;padding:12px 18px;display:flex;align-items:center;gap:12px">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>
+          <div style="font-size:12.5px;color:#52525b;line-height:1.6;flex:1">
+            要写进库的是:把 <span class="id" style="color:#3f3f46">{{sel.upstream}}</span> 的 AMZ 单号钉成人工填的值,状态改成
+            <span class="tag" style="background:#ecfdf5;color:#047857;border-color:#a7f3d0">purchased</span>,并跳过 ASIN 断言 ——
+            断言正是当初把它挡在这儿的那道闸。写完不可撤销。
+          </div>
           <span class="btn sm bs" onClick="{{cancelConfirm}}">再想想</span>
           <span class="btn sm bdanger">⚡ 确认写入</span>
         </div>
+      </sc-if>
+
+      <div style="height:56px;flex:none;border-top:1px solid #e4e4e7;background:#fafafa;display:flex;align-items:center;gap:8px;padding:0 18px">
+        <span class="btn sm bs">改地址</span>
+        <span class="btn sm bs">改 ASIN</span>
+        <span class="btn sm bs">复制运单号</span>
+        <span style="margin-left:auto"></span>
+        <span class="btn sm bghost" onClick="{{closeSel}}">关闭</span>
+        <span class="{{sel.actCls}}" style="{{sel.actStyle}}" onClick="{{sel.actClick}}">{{sel.actLabel}}</span>
       </div>
-    </sc-if>
-
-    <div style="flex:none;border-top:1px solid #f4f4f5;padding:11px 16px;display:flex;gap:8px;align-items:center">
-      <span class="btn sm bs">改地址</span>
-      <span class="btn sm bs">改 ASIN</span>
-      <span style="margin-left:auto"></span>
-      <span class="{{sel.actCls}}" style="{{sel.actStyle}}" onClick="{{sel.actClick}}">{{sel.actLabel}}</span>
     </div>
-  </aside>
-  </sc-if>
-
-  <sc-if value="{{noSel}}" hint-placeholder-val="{{false}}">
-  <aside style="width:460px;flex:none;background:#fff;border-left:1px solid #e4e4e7;display:flex;align-items:center;justify-content:center;padding:32px">
-    <div style="text-align:center;display:flex;flex-direction:column;gap:8px;align-items:center">
-      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="#d4d4d8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 9h6v6H9z"/></svg>
-      <div style="font-size:13px;color:#71717a">选中一行看这一单的全貌</div>
-      <div style="font-size:12px;color:#a1a1aa;line-height:1.7;max-width:280px">上游下发的收货信息、采购回来的单号与费用、物流、以及从认领到终态的每一步</div>
-    </div>
-  </aside>
+  </div>
   </sc-if>
 </div>
 </x-dc>
@@ -386,108 +414,114 @@ class Component extends DCLogic {
   constructor(props) {
     super(props);
     this.state = {
-      filter: "manual",      // 状态桶
-      env: "all",            // 买家号
-      range: "7d",           // 时间范围
-      dateMode: "created",   // 按创建时间 / 按采购时间
-      batchOpen: false,      // 批量单号面板展开
-      batchOn: false,        // 批量单号已生效
-      envOpen: false,
-      confirm: false,
-      sel: "UP-20841"
+      filter: "manual", env: "all", range: "7d", dateMode: "created",
+      batchOpen: false, batchOn: false, envOpen: false, confirm: false,
+      sel: ""            // 详情默认不开:点行才弹
     };
   }
 
-  // 批量单号:运营手里的表两种号混排是常态
   batchList() { return ["UP-20841", "UP-20836", "111-4820193-7736441", "111-4820193-7799999"]; }
+
+  // 买家号 → 亚马逊客户号 / 当前实例。厂商面板把这三样平铺在订单行上
+  envMeta() {
+    return {
+      "env-172": { customerId: "A2K9X1QW7MPLZ3", instance: "inst-7f31a9c2" },
+      "env-183": { customerId: "A1Z8D4YC8EOU9J", instance: "inst-3b90e14d" },
+      "env-190": { customerId: "A3TFV0LQ2NB8HD", instance: "inst-c5427ab8" }
+    };
+  }
 
   data() {
     return [
-      { upstream:"UP-20841", asin:"B0FB3VS68J", qty:1, env:"env-172", cap:"12.50", capDays:"08-28 前", paid:"—",
-        status:"manual", note:"ORDER_NO_AMBIGUOUS", day:0, createdAt:"08-21 09:12", purchasedAt:"",
-        shipName:"Garcia Isabel", shipPhone:"+1 714-***-2081", shipLine:"2510 S Shelton St, Santa Ana, CA 92707, US",
-        notBoughtWhy:"下单可能已经成了,但拿不准是哪一张。订单历史第一张卡的 ASIN 是 B0DIFFERENT,与本单不符 —— 没写单号,先转人工。",
-        blockDetail:"回填前会拿订单卡上的 ASIN 跟本单比一次。不符就不写库:写错的单号会把别人的订单挂到这条任务上,后面对账、物流、退款全跟着错。",
+      { upstream:"UP-20841", lineKey:"a3f1c9e0b742…", asin:"B0FB3VS68J", qty:1, env:"env-172", cap:"12.50", capDays:"08-28 前",
+        paid:"—", status:"manual", code:"ORDER_NO_AMBIGUOUS", day:0, createdAt:"08-21 09:12", purchasedAt:"",
+        shipName:"Garcia Isabel", shipPhone:"+1 714-***-2081", shipLine1:"2510 S Shelton St", shipCityState:"Santa Ana, CA", shipZip:"92707",
+        assert:"failed", assertText:"ASIN 断言不通过 · 订单卡是 B0DIFFERENT", amz:"未写入",
+        notBoughtWhy:"下单可能已经成了,但拿不准是哪一张 —— 没写单号,先转人工。",
+        blockDetail:"回填前会拿订单卡上的 ASIN 跟本单比一次。不符就不写库:写错的单号会把别人的订单挂到这条任务上,后面对账、物流、退款全跟着错。厂商那边是先写进去再在界面上打个红叉,我们是不确定就不写。",
         act:"danger", actLabel:"强制回填单号",
         events:[["claimed","认领 · env-172","09:12:03"],["step","清空购物车","09:12:06"],["step","加购 B0FB3VS68J","09:12:19"],
-                ["step","护栏放行 · 实付 10.79 / 交期 08-27","09:12:41"],["assert","订单卡 ASIN 不符 · 期望 B0FB3VS68J,实际 B0DIFFERENT","09:13:02"],
-                ["err","ORDER_NO_AMBIGUOUS · 转人工","09:13:02"]] },
+                ["step","护栏放行 · 实付 10.79","09:12:41"],["assert","订单卡 ASIN 不符","09:13:02"],["err","转人工","09:13:02"]] },
 
-      { upstream:"UP-20839", asin:"B0CHXNPXVX", qty:1, env:"env-172", cap:"24.00", capDays:"08-28 前", paid:"31.80",
-        status:"manual", note:"PRICE_CAP_EXCEEDED", day:0, createdAt:"08-21 09:04", purchasedAt:"",
-        shipName:"Chen Wei", shipPhone:"+1 808-***-4417", shipLine:"1180 Bishop St, Honolulu, HI 96813, US",
-        notBoughtWhy:"结算页读到实付 31.80,高于上游限价 24.00。护栏在下单前停住,购物车已清空 —— 没有产生订单,也就没有费用和单号。",
-        blockDetail:"这不是可重试的失败:同样的价再跑一遍还是这个结果。要么等降价,要么让上游改限价,要么放弃这一单。",
+      { upstream:"UP-20839", lineKey:"7c04ba51de93…", asin:"B0CHXNPXVX", qty:1, env:"env-172", cap:"24.00", capDays:"08-28 前",
+        paid:"31.80", status:"manual", code:"PRICE_CAP_EXCEEDED", day:0, createdAt:"08-21 09:04", purchasedAt:"",
+        shipName:"Chen Wei", shipPhone:"+1 808-***-4417", shipLine1:"1180 Bishop St", shipCityState:"Honolulu, HI", shipZip:"96813",
+        assert:"na", amz:"—",
+        notBoughtWhy:"结算页读到实付 31.80,高于限价 24.00。护栏在下单前停住,购物车已清空 —— 没有订单,也就没有费用明细。",
+        blockDetail:"这不是可重试的失败:同样的价再跑一遍还是这个结果。要么等降价,要么让上游改限价,要么放弃这一单。厂商面板的 priceCheck 字段前端 0 处引用 —— 护栏字段存在、界面不用,等于没有。",
         act:"primary", actLabel:"重置回队列",
-        events:[["claimed","认领 · env-172","09:04:11"],["step","加购 B0CHXNPXVX","09:04:29"],
-                ["block","PRICE_CAP_EXCEEDED · 实付 31.80 > 限价 24.00","09:04:52"],["step","清空购物车","09:04:55"],["err","转人工","09:04:55"]] },
+        events:[["claimed","认领 · env-172","09:04:11"],["step","加购","09:04:29"],["block","PRICE_CAP_EXCEEDED","09:04:52"],
+                ["step","清空购物车","09:04:55"],["err","转人工","09:04:55"]] },
 
-      { upstream:"UP-20836", asin:"B0D2K9WQ4T", qty:1, env:"env-183", cap:"18.90", capDays:"08-28 前", paid:"—",
-        status:"manual", note:"CLAIM_TIMEOUT", day:0, createdAt:"08-21 08:41", purchasedAt:"",
-        shipName:"Rivera Ana", shipPhone:"+1 760-***-9930", shipLine:"704 W 5th Ave, Escondido, CA 92025, US",
-        notBoughtWhy:"领走 15 分钟没有任何回传。不退回队列 —— 插件那侧可能已经在 Amazon 上真下了单,自动重试就是照着重复下一遍。",
+      { upstream:"UP-20836", lineKey:"11e8f60c7a25…", asin:"B0D2K9WQ4T", qty:1, env:"env-183", cap:"18.90", capDays:"08-28 前",
+        paid:"—", status:"manual", code:"CLAIM_TIMEOUT", day:0, createdAt:"08-21 08:41", purchasedAt:"",
+        shipName:"Rivera Ana", shipPhone:"+1 760-***-9930", shipLine1:"704 W 5th Ave", shipCityState:"Escondido, CA", shipZip:"92025",
+        assert:"na", amz:"—",
+        notBoughtWhy:"领走 15 分钟没有任何回传。不退回队列 —— 插件那侧可能已经真下了单,自动重试就是照着重复下一遍。",
         blockDetail:"先去买家号里翻一眼有没有这一单:有就强制回填单号,没有再重置回队列。这是整套设计里唯一一处宁可卡住也不自动往前走的地方。",
         act:"danger", actLabel:"强制回填单号",
-        events:[["claimed","认领 · env-183","08:41:20"],["step","清空购物车","08:41:24"],["step","加购 B0D2K9WQ4T","08:41:39"],
-                ["dim","(此后无回传)","—"],["err","CLAIM_TIMEOUT · 超时 15 分钟 → 转人工","08:56:20"]] },
+        events:[["claimed","认领 · env-183","08:41:20"],["step","清空购物车","08:41:24"],["step","加购","08:41:39"],
+                ["dim","(此后无回传)","—"],["err","CLAIM_TIMEOUT · 转人工","08:56:20"]] },
 
-      { upstream:"UP-20833", asin:"B0BX7YQ11N", qty:1, env:"env-183", cap:"9.99", capDays:"08-28 前", paid:"—",
-        status:"exception", note:"OUT_OF_STOCK", day:0, createdAt:"08-21 08:22", purchasedAt:"",
-        shipName:"Nguyen Minh", shipPhone:"+1 510-***-3388", shipLine:"88 Grand Ave, Oakland, CA 94612, US",
-        notBoughtWhy:"商品页显示 Currently unavailable,没有加购。购物车已清空。",
-        blockDetail:"", act:"primary", actLabel:"重置回队列",
-        events:[["claimed","认领 · env-183","08:22:04"],["step","打开商品页","08:22:09"],["err","OUT_OF_STOCK · Currently unavailable","08:22:12"],["step","清空购物车","08:22:14"]] },
+      { upstream:"UP-20833", lineKey:"5da2074fbc18…", asin:"B0BX7YQ11N", qty:1, env:"env-183", cap:"9.99", capDays:"08-28 前",
+        paid:"—", status:"exception", code:"OUT_OF_STOCK", day:0, createdAt:"08-21 08:22", purchasedAt:"",
+        shipName:"Nguyen Minh", shipPhone:"+1 510-***-3388", shipLine1:"88 Grand Ave", shipCityState:"Oakland, CA", shipZip:"94612",
+        assert:"na", amz:"—", notBoughtWhy:"商品页显示 Currently unavailable,没有加购。购物车已清空。", blockDetail:"",
+        act:"primary", actLabel:"重置回队列",
+        events:[["claimed","认领 · env-183","08:22:04"],["step","打开商品页","08:22:09"],["err","OUT_OF_STOCK","08:22:12"],["step","清空购物车","08:22:14"]] },
 
-      { upstream:"UP-20830", asin:"B0F8NB1T8Y", qty:1, env:"env-172", cap:"15.00", capDays:"08-28 前", paid:"—",
-        status:"exception", note:"NOT_FBA", day:0, createdAt:"08-21 08:15", purchasedAt:"",
-        shipName:"Park Jisoo", shipPhone:"+1 305-***-7742", shipLine:"3300 NE 2nd Ave, Miami, FL 33137, US",
-        notBoughtWhy:"加购成功,但结算页配送方不是 Amazon 自营。按规则不下单,购物车已清空。",
-        blockDetail:"", act:"primary", actLabel:"重置回队列",
-        events:[["claimed","认领 · env-172","08:15:41"],["step","加购成功","08:15:58"],["err","NOT_FBA · 配送方非 Amazon 自营","08:16:22"],["step","清空购物车","08:16:25"]] },
+      { upstream:"UP-20830", lineKey:"92bc3e01d5f7…", asin:"B0F8NB1T8Y", qty:1, env:"env-172", cap:"15.00", capDays:"08-28 前",
+        paid:"—", status:"exception", code:"NOT_FBA", day:0, createdAt:"08-21 08:15", purchasedAt:"",
+        shipName:"Park Jisoo", shipPhone:"+1 305-***-7742", shipLine1:"3300 NE 2nd Ave", shipCityState:"Miami, FL", shipZip:"33137",
+        assert:"na", amz:"—", notBoughtWhy:"加购成功,但结算页配送方不是 Amazon 自营。按规则不下单,购物车已清空。", blockDetail:"",
+        act:"primary", actLabel:"重置回队列",
+        events:[["claimed","认领 · env-172","08:15:41"],["step","加购成功","08:15:58"],["err","NOT_FBA","08:16:22"],["step","清空购物车","08:16:25"]] },
 
-      { upstream:"UP-20845", asin:"B0C1J4KZ2P", qty:1, env:"env-172", cap:"11.20", capDays:"08-28 前", paid:"—",
-        status:"claimed", note:"执行中 · 已加购,等结算页", day:0, createdAt:"08-21 09:18", purchasedAt:"",
-        shipName:"Silva Marco", shipPhone:"+1 503-***-1164", shipLine:"921 SW 3rd St, Portland, OR 97204, US",
-        notBoughtWhy:"插件正在跑,还没到下单那一步。等它回传。",
-        blockDetail:"", act:"ghost", actLabel:"等待回传",
-        events:[["claimed","认领 · env-172","09:18:50"],["step","清空购物车","09:18:53"],["step","加购 B0C1J4KZ2P","09:19:07"]] },
+      { upstream:"UP-20845", lineKey:"c7481ab0e396…", asin:"B0C1J4KZ2P", qty:1, env:"env-172", cap:"11.20", capDays:"08-28 前",
+        paid:"—", status:"claimed", code:"", day:0, createdAt:"08-21 09:18", purchasedAt:"",
+        shipName:"Silva Marco", shipPhone:"+1 503-***-1164", shipLine1:"921 SW 3rd St", shipCityState:"Portland, OR", shipZip:"97204",
+        assert:"na", amz:"—", notBoughtWhy:"插件正在跑,还没到下单那一步。", blockDetail:"",
+        act:"ghost", actLabel:"等待回传",
+        events:[["claimed","认领 · env-172","09:18:50"],["step","清空购物车","09:18:53"],["step","加购","09:19:07"]] },
 
-      { upstream:"UP-20846", asin:"B0G7T3RM8K", qty:1, env:"env-183", cap:"22.40", capDays:"08-28 前", paid:"—",
-        status:"ready", note:"", day:0, createdAt:"08-21 09:20", purchasedAt:"",
-        shipName:"Alvarez Rosa", shipPhone:"+1 208-***-5520", shipLine:"45 Elm St, Boise, ID 83702, US",
-        notBoughtWhy:"已放行,等 env-183 的插件来认领。",
-        blockDetail:"", act:"ghost", actLabel:"等待认领",
-        events:[["dim","已放行,等待插件认领","09:20:11"]] },
+      { upstream:"UP-20846", lineKey:"e05f92c14b8a…", asin:"B0G7T3RM8K", qty:1, env:"env-183", cap:"22.40", capDays:"08-28 前",
+        paid:"—", status:"ready", code:"", day:0, createdAt:"08-21 09:20", purchasedAt:"",
+        shipName:"Alvarez Rosa", shipPhone:"+1 208-***-5520", shipLine1:"45 Elm St", shipCityState:"Boise, ID", shipZip:"83702",
+        assert:"na", amz:"—", notBoughtWhy:"已放行,等 env-183 的插件来认领。", blockDetail:"",
+        act:"ghost", actLabel:"等待认领",
+        events:[["dim","已放行,等待认领","09:20:11"]] },
 
-      { upstream:"UP-20828", asin:"B0FB3VS68J", qty:1, env:"env-172", cap:"12.50", capDays:"08-28 前", paid:"10.79",
-        status:"purchased", note:"111-4820193-7736514", day:0, createdAt:"08-21 07:58", purchasedAt:"08-21 07:59",
-        shipName:"Thompson Kyle", shipPhone:"+1 206-***-6603", shipLine:"12 Harbor Rd, Seattle, WA 98101, US",
-        amz:"111-4820193-7736514", last4:"•••• 4417", unit:"9.99", shipping:"0.00", tax:"0.80", total:"10.79",
+      { upstream:"UP-20828", lineKey:"46d0c8ba9317…", asin:"B0FB3VS68J", qty:1, env:"env-172", cap:"12.50", capDays:"08-28 前",
+        paid:"10.79", status:"purchased", code:"", day:0, createdAt:"08-21 07:58", purchasedAt:"08-21 07:59",
+        shipName:"Thompson Kyle", shipPhone:"+1 206-***-6603", shipLine1:"12 Harbor Rd", shipCityState:"Seattle, WA", shipZip:"98101",
+        assert:"ok", amz:"111-4820193-7736514", last4:"•••• 4417",
+        unit:"9.99", shipping:"0.00", tax:"0.80", total:"10.79",
         deliveryDate:"08-27", deliveryRaw:"Wednesday, August 27",
-        carrier:"AMZL US", tracking:"TBA305271884221", shipStatus:"in_transit", shipWhen:"· 更新于 08-21 06:10",
+        carrier:"AMZL US", tracking:"TBA305271884221", shipStatus:"in_transit", shipWhen:" · 轨迹更新于 08-21 06:10",
         blockDetail:"", act:"ghost", actLabel:"已完成",
-        events:[["claimed","认领 · env-172","07:58:02"],["step","加购 · 购物车核对通过","07:58:31"],
-                ["step","护栏放行 · 实付 10.79 / 交期 08-27","07:59:04"],["step","下单 · thankyou 页确认","07:59:22"],
-                ["ok","回填 111-4820193-7736514 · ASIN 断言通过","07:59:40"]] },
+        events:[["claimed","认领 · env-172","07:58:02"],["step","购物车核对通过","07:58:31"],["step","护栏放行 · 10.79","07:59:04"],
+                ["step","下单 · thankyou 页","07:59:22"],["ok","回填单号 · 断言通过","07:59:40"]] },
 
-      { upstream:"UP-20824", asin:"B0CHXNPXVX", qty:1, env:"env-183", cap:"24.00", capDays:"08-27 前", paid:"21.35",
-        status:"purchased", note:"111-4820193-7736498", day:1, createdAt:"08-20 07:41", purchasedAt:"08-20 07:42",
-        shipName:"Wu Lin", shipPhone:"+1 312-***-2270", shipLine:"600 N Michigan Ave, Chicago, IL 60611, US",
-        amz:"111-4820193-7736498", last4:"•••• 8802", unit:"19.60", shipping:"0.00", tax:"1.75", total:"21.35",
+      { upstream:"UP-20824", lineKey:"b8137e5ac024…", asin:"B0CHXNPXVX", qty:1, env:"env-183", cap:"24.00", capDays:"08-27 前",
+        paid:"21.35", status:"purchased", code:"", day:1, createdAt:"08-20 07:41", purchasedAt:"08-20 07:42",
+        shipName:"Wu Lin", shipPhone:"+1 312-***-2270", shipLine1:"600 N Michigan Ave", shipCityState:"Chicago, IL", shipZip:"60611",
+        assert:"ok", amz:"111-4820193-7736498", last4:"•••• 8802",
+        unit:"19.60", shipping:"0.00", tax:"1.75", total:"21.35",
         deliveryDate:"08-26", deliveryRaw:"Tuesday, August 26",
-        carrier:"UPS", tracking:"1Z999AA10123456784", shipStatus:"delivered", shipWhen:"· 08-25 14:22 签收",
+        carrier:"UPS", tracking:"1Z999AA10123456784", shipStatus:"delivered", shipWhen:" · 08-25 14:22 签收",
         blockDetail:"", act:"ghost", actLabel:"已完成",
-        events:[["claimed","认领 · env-183","07:41:12"],["step","护栏放行 · 实付 21.35","07:42:30"],["ok","回填 111-4820193-7736498","07:42:55"]] },
+        events:[["claimed","认领 · env-183","07:41:12"],["step","护栏放行 · 21.35","07:42:30"],["ok","回填单号 · 断言通过","07:42:55"]] },
 
-      { upstream:"UP-20817", asin:"B09MNRTVQ2", qty:2, env:"env-190", cap:"19.00", capDays:"08-26 前", paid:"17.81",
-        status:"purchased", note:"111-4820193-7736441", day:2, createdAt:"08-19 16:30", purchasedAt:"08-19 16:31",
-        shipName:"Okafor Ada", shipPhone:"+1 617-***-9018", shipLine:"77 Summer St, Boston, MA 02110, US",
-        amz:"111-4820193-7736441", last4:"•••• 4417", unit:"6.25", shipping:"3.99", tax:"1.32", total:"17.81",
+      { upstream:"UP-20817", lineKey:"3fa6e2790cd5…", asin:"B09MNRTVQ2", qty:2, env:"env-190", cap:"19.00", capDays:"08-26 前",
+        paid:"17.81", status:"purchased", code:"", day:2, createdAt:"08-19 16:30", purchasedAt:"08-19 16:31",
+        shipName:"Okafor Ada", shipPhone:"+1 617-***-9018", shipLine1:"77 Summer St", shipCityState:"Boston, MA", shipZip:"02110",
+        assert:"ok", amz:"111-4820193-7736441", last4:"•••• 4417",
+        unit:"6.25", shipping:"3.99", tax:"1.32", total:"17.81",
         deliveryDate:"08-24", deliveryRaw:"Sunday, August 24",
-        carrier:"USPS", tracking:"9400111899223197428431", shipStatus:"delivered", shipWhen:"· 08-23 11:05 签收",
+        carrier:"USPS", tracking:"9400111899223197428431", shipStatus:"delivered", shipWhen:" · 08-23 11:05 签收",
         blockDetail:"", act:"ghost", actLabel:"已完成",
-        events:[["claimed","认领 · env-190","16:30:14"],["step","加购 2 件 · 购物车核对通过","16:30:41"],
-                ["step","护栏放行 · 实付 17.81 ≤ 限价 19.00","16:31:02"],["ok","回填 111-4820193-7736441","16:31:28"]] }
+        events:[["claimed","认领 · env-190","16:30:14"],["step","加购 2 件 · 核对通过","16:30:41"],["step","护栏放行 · 17.81","16:31:02"],
+                ["ok","回填单号 · 断言通过","16:31:28"]] }
     ];
   }
 
@@ -504,6 +538,7 @@ class Component extends DCLogic {
     return m[s] || m.pending;
   }
 
+  // 在途是天蓝,不是红。厂商面板把「运输中」渲染成红标签 —— 在途和坏了混成一个颜色
   shipTagOf(s) {
     const m = {
       not_shipped: ["tag tagdash","background:#fff;color:#52525b;border-color:#d4d4d8","未发货"],
@@ -530,19 +565,80 @@ class Component extends DCLogic {
     return m[k] || m.step;
   }
 
-  // 时间范围 + 买家号 = 当前作用域;状态桶的计数在这个作用域里算
   scopeOf(all) {
     const days = { today: 0, "7d": 7, "30d": 30 }[this.state.range];
     return all.filter(r => {
       if (this.state.env !== "all" && r.env !== this.state.env) return false;
-      // 按采购时间筛选时,没下过单的行本来就不在这个维度上
       if (this.state.dateMode === "purchased" && !r.purchasedAt) return false;
       return r.day <= days;
     });
   }
 
-  matchesBatch(r, list) {
-    return list.some(n => n === r.upstream || n === r.amz);
+  matchesBatch(r, list) { return list.some(n => n === r.upstream || n === r.amz); }
+
+  detailOf(s) {
+    const meta = this.envMeta()[s.env] || { customerId: "—", instance: "—" };
+    const [tagCls, tagStyle] = this.tagOf(s.status);
+    const bought = s.status === "purchased";
+    const actMap = { danger:["btn sm bdanger",""], primary:["btn sm bp",""], ghost:["btn sm bghost","color:#a1a1aa"] };
+    const [actCls, actStyle] = actMap[s.act] || actMap.ghost;
+
+    // 费用:补上厂商没有的「商品小计」。税前总额 = 小计 + 运费 = 总计 − 税费
+    let fees = [];
+    if (bought) {
+      const sub = Number(s.unit) * s.qty;
+      const beforeTax = sub + Number(s.shipping);
+      const mk = (label, val, strong) => ({
+        label, val, labelColor: strong ? "#18181b" : "#71717a",
+        valStyle: strong ? "color:#18181b;font-weight:600" : "color:#27272a",
+        rowStyle: strong ? "border-top:1px solid #f4f4f5;margin-top:2px;padding-top:2px" : ""
+      });
+      fees = [
+        mk("商品小计 " + s.unit + " × " + s.qty, sub.toFixed(2), false),
+        mk("运费", s.shipping, false),
+        mk("税前总额", beforeTax.toFixed(2), false),
+        mk("税费", s.tax, false),
+        mk("总计", s.total, true)
+      ];
+    }
+
+    const assertMap = {
+      ok:     ["dot", "background:#10b981", "#047857", "ASIN 断言通过,才写的单号"],
+      failed: ["dothollow", "", "#b45309", s.assertText || "ASIN 断言不通过"],
+      na:     ["dot", "background:#e4e4e7", "#a1a1aa", "还没到回填这一步"]
+    };
+    const [assertDotCls, assertDotStyle, assertColor, assertText] = assertMap[s.assert] || assertMap.na;
+
+    const [shipTagCls, shipTagStyle, shipLabel] = this.shipTagOf(s.shipStatus);
+    const codeStyled = s.code
+      ? (s.status === "manual"
+          ? ["tag mono", "background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe"]
+          : ["tag mono", "background:#fef2f2;color:#b91c1c;border-color:#fecaca"])
+      : ["", "color:#a1a1aa;font-size:12px"];
+
+    return {
+      upstream: s.upstream, lineKey: s.lineKey, status: s.status, tagCls, tagStyle,
+      shipName: s.shipName, shipPhone: s.shipPhone, shipLine1: s.shipLine1,
+      shipCityState: s.shipCityState, shipZip: s.shipZip,
+      asin: s.asin, qty: s.qty, cap: s.cap,
+      unit: bought ? s.unit : "—",
+      unitStyle: bought ? "color:#18181b" : "color:#a1a1aa",
+      amz: s.amz || "—",
+      amzStyle: bought ? "color:#18181b" : (s.assert === "failed" ? "color:#b45309" : "color:#a1a1aa"),
+      purchasedAt: s.purchasedAt || "—", createdAt: s.createdAt,
+      assertDotCls, assertDotStyle, assertColor, assertText,
+      bought, notBought: !bought, notBoughtWhy: s.notBoughtWhy, fees,
+      capVerdict: bought ? ("总计 " + s.total + " ≤ 限价 " + s.cap + " · 护栏放行") : "",
+      hasShip: !!s.tracking, noShip: !s.tracking,
+      carrier: s.carrier, tracking: s.tracking, shipTagCls, shipTagStyle, shipStatus: shipLabel,
+      deliveryDate: s.deliveryDate, deliveryRaw: s.deliveryRaw, shipWhen: s.shipWhen,
+      env: s.env, customerId: meta.customerId, instance: s.status === "ready" ? "—" : meta.instance,
+      last4: s.last4 || "—",
+      code: s.code || "—", codeCls: codeStyled[0], codeStyle: codeStyled[1],
+      showBlock: !!s.blockDetail, blockDetail: s.blockDetail,
+      actCls, actStyle, actLabel: s.actLabel,
+      actClick: s.act === "danger" ? () => this.setState({ confirm: true }) : () => {}
+    };
   }
 
   renderVals() {
@@ -550,7 +646,6 @@ class Component extends DCLogic {
     const st = this.state;
     const batch = this.batchList();
 
-    // ── 筛选 ──
     const scope = this.scopeOf(all);
     let shown, listTitle, footNote;
     if (st.batchOn) {
@@ -568,7 +663,6 @@ class Component extends DCLogic {
                + ({ today:"今天", "7d":"近 7 天", "30d":"近 30 天" }[st.range]);
     }
 
-    // ── 状态桶 ──
     const counts = { all: scope.length };
     for (const r of scope) counts[r.status] = (counts[r.status] || 0) + 1;
     const chips = [["manual","待人工"],["exception","异常"],["claimed","执行中"],
@@ -584,64 +678,27 @@ class Component extends DCLogic {
       };
     });
 
-    // ── 时间范围 ──
     const ranges = [["today","今天"],["7d","近 7 天"],["30d","近 30 天"]].map(([k,label]) => ({
       label, cls: "fld" + (st.range === k ? " on" : ""),
       pick: () => this.setState({ range: k, batchOn: false })
     }));
     const rangeText = { today:"08-21 — 08-21", "7d":"08-15 — 08-21", "30d":"07-23 — 08-21" }[st.range];
 
-    // ── 买家号 ──
     const envCount = code => all.filter(r => code === "all" || r.env === code).length;
     const envOpts = [["all","全部",""],["env-172","env-172","background:#10b981"],
                      ["env-183","env-183","background:#10b981"],["env-190","env-190","background:#a1a1aa"]]
       .map(([k,label,dotStyle]) => ({
-        label, count: envCount(k),
-        dotStyle: dotStyle || "background:#e4e4e7",
+        label, count: envCount(k), dotStyle: dotStyle || "background:#e4e4e7",
         cls: "fld" + (st.env === k ? " on" : ""),
         pick: () => this.setState({ env: k, envOpen: false, batchOn: false })
       }));
 
-    // ── 选中行 ──
     const s = all.find(r => r.upstream === st.sel) || null;
-    let sel = null, events = [];
-    if (s) {
-      const [tagCls, tagStyle] = this.tagOf(s.status);
-      const bought = s.status === "purchased";
-      const actMap = { danger:["btn sm bdanger",""], primary:["btn sm bp",""], ghost:["btn sm bghost","color:#a1a1aa"] };
-      const [actCls, actStyle] = actMap[s.act] || actMap.ghost;
-
-      const fees = bought ? [
-        { label: "商品 " + s.unit + " × " + s.qty, val: (Number(s.unit) * s.qty).toFixed(2), labelColor: "#71717a", valStyle: "color:#27272a", rowStyle: "" },
-        { label: "运费", val: s.shipping, labelColor: "#71717a", valStyle: "color:#27272a", rowStyle: "" },
-        { label: "税", val: s.tax, labelColor: "#71717a", valStyle: "color:#27272a", rowStyle: "" },
-        { label: "合计", val: s.total, labelColor: "#18181b", valStyle: "color:#18181b;font-weight:600", rowStyle: "border-top:1px solid #f4f4f5;background:#fafafa" }
-      ] : [];
-
-      const [shipTagCls, shipTagStyle, shipLabel] = this.shipTagOf(s.shipStatus);
-
-      sel = {
-        upstream: s.upstream, status: s.status, tagCls, tagStyle,
-        asin: s.asin, qtyText: "× " + s.qty, cap: s.cap, capDays: s.capDays, env: s.env,
-        shipName: s.shipName, shipPhone: s.shipPhone, shipLine: s.shipLine,
-        bought, notBought: !bought, notBoughtWhy: s.notBoughtWhy,
-        buyDotCls: "dot", buyDotStyle: "background:" + (bought ? "#10b981" : "#e4e4e7"),
-        amz: s.amz, purchasedAt: s.purchasedAt, last4: s.last4, fees,
-        capDotCls: "dot", capDotStyle: "background:#10b981",
-        capVerdict: bought ? ("合计 " + s.total + " ≤ 限价 " + s.cap + " · 护栏放行") : "",
-        deliveryDate: s.deliveryDate, deliveryRaw: s.deliveryRaw,
-        hasShip: !!s.tracking, carrier: s.carrier, tracking: s.tracking,
-        shipDotStyle: "background:" + (s.shipStatus === "delivered" ? "#10b981" : "#0ea5e9"),
-        shipTagCls, shipTagStyle, shipStatus: shipLabel, shipWhen: s.shipWhen,
-        showBlock: !!s.blockDetail, note: s.note, blockDetail: s.blockDetail,
-        actCls, actStyle, actLabel: s.actLabel,
-        actClick: s.act === "danger" ? () => this.setState({ confirm: true }) : () => {}
-      };
-      events = s.events.map(([k,text,at]) => {
-        const [dotCls, dotStyle] = this.evOf(k);
-        return { dotCls, dotStyle, text, at };
-      });
-    }
+    const sel = s ? this.detailOf(s) : null;
+    const events = s ? s.events.map(([k,text,at]) => {
+      const [dotCls, dotStyle] = this.evOf(k);
+      return { dotCls, dotStyle, text, at };
+    }) : [];
 
     const rows = shown.map(r => {
       const [tagCls, tagStyle] = this.tagOf(r.status);
@@ -649,10 +706,12 @@ class Component extends DCLogic {
       const on = st.sel === r.upstream;
       return {
         upstream: r.upstream, asin: r.asin, qtyText: "× " + r.qty, env: r.env,
-        cap: r.cap, paid: r.paid, status: r.status, note: r.note || "—",
+        shipShort: r.shipName + " · " + r.shipCityState,
+        cap: r.cap, paid: r.paid, status: r.status,
+        note: r.status === "purchased" ? r.amz : (r.code || "—"),
         tagCls, tagStyle, noteCls, noteStyle,
         timeText: st.dateMode === "created" ? r.createdAt : (r.purchasedAt || "—"),
-        paidStyle: r.note === "PRICE_CAP_EXCEEDED" ? "color:#b91c1c;font-weight:600" : "",
+        paidStyle: r.code === "PRICE_CAP_EXCEEDED" ? "color:#b91c1c;font-weight:600" : "",
         rowStyle: on ? "background:#fafafa;box-shadow:inset 2px 0 0 #18181b" : "",
         pick: () => this.setState({ sel: r.upstream, confirm: false })
       };
@@ -662,26 +721,23 @@ class Component extends DCLogic {
 
     return {
       chips, ranges, rangeText, rows, sel, events,
-      hasSel: !!sel, noSel: !sel, listTitle, footNote,
+      hasSel: !!sel, listTitle, footNote,
       timeCol: st.dateMode === "created" ? "创建时间" : "采购时间",
       dmCreated: st.dateMode === "created" ? "on" : "",
       dmPurchased: st.dateMode === "purchased" ? "on" : "",
       pickCreated: () => this.setState({ dateMode: "created", batchOn: false }),
       pickPurchased: () => this.setState({ dateMode: "purchased", batchOn: false }),
-
       envLabel: st.env === "all" ? "全部买家号" : st.env,
       envFldCls: "fld" + (st.env !== "all" || st.envOpen ? " on" : ""),
       toggleEnv: () => this.setState({ envOpen: !st.envOpen, batchOpen: false }),
       envOpen: st.envOpen, envOpts,
-
-      batchLabel: st.batchOn ? (batch.length + " 个单号") : "批量单号",
+      batchLabel: st.batchOn ? "4 个单号" : "批量单号",
       batchFldCls: "fld" + (st.batchOn || st.batchOpen ? " on" : ""),
       toggleBatch: () => this.setState({ batchOpen: !st.batchOpen, envOpen: false }),
       batchOpen: st.batchOpen, batchOn: st.batchOn,
       batchHit: hit, batchMiss: (batch.length - hit) + " 个没找到",
       applyBatch: () => this.setState({ batchOn: true, batchOpen: false }),
       clearBatch: () => this.setState({ batchOn: false, batchOpen: false }),
-
       reset: () => this.setState({ filter: "manual", env: "all", range: "7d", dateMode: "created",
                                    batchOn: false, batchOpen: false, envOpen: false }),
       closeSel: () => this.setState({ sel: "", confirm: false }),
