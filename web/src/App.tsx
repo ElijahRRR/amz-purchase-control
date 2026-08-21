@@ -1,6 +1,7 @@
 import { lazy, Suspense, useEffect, useState } from "react";
 import { Clock, LayoutGrid, LineChart, UserRound } from "lucide-react";
 import { api } from "@/lib/api";
+import { getOperator, setOperator } from "@/lib/operator";
 import { useRoute, type Page } from "@/lib/route";
 import { cn } from "@/lib/utils";
 import type { InstanceRow, Summary } from "@/types";
@@ -50,7 +51,7 @@ function InstanceStrip() {
   };
 
   return (
-    <div className="mt-auto px-4 py-3 border-t border-zinc-100 flex flex-col gap-1.5">
+    <div className="px-4 py-3 border-t border-zinc-100 flex flex-col gap-1.5">
       <div className="text-2xs font-medium uppercase tracking-wider text-zinc-400">插件实例</div>
       {down && <div className="text-xs+ text-amber-600">读不到实例状态</div>}
       {!down && rows?.length === 0 && <div className="text-xs+ text-zinc-400">还没有实例连上来</div>}
@@ -65,6 +66,33 @@ function InstanceStrip() {
           </span>
         </div>
       ))}
+    </div>
+  );
+}
+
+/** 侧栏底部的「操作人」。
+ *
+ * 这**不是登录**,是自己填的一个名字。这套东西不做鉴权(所有者定稿),
+ * 所以没有可信身份可用;但人工动作会写进事件流,事件流存在的意义正是事后回答
+ * 「这个地址是谁改的」—— 一律记 null 的话那句话永远答不上来。
+ *
+ * 界面上必须写清「不是登录、拦不住任何人」,否则迟早有人把它当成权限。
+ */
+function OperatorBox() {
+  const [name, setName] = useState(getOperator() ?? "");
+  return (
+    <div className="px-4 py-3 border-t border-zinc-100 flex flex-col gap-1.5">
+      <div className="text-2xs font-medium uppercase tracking-wider text-zinc-400">操作人</div>
+      <input
+        value={name}
+        onChange={(e) => { setName(e.target.value); setOperator(e.target.value); }}
+        placeholder="填个名字"
+        className="h-7 px-2 rounded-md border border-zinc-200 bg-white text-xs text-zinc-800
+                   placeholder:text-zinc-400 focus-visible:outline-none focus-visible:border-zinc-900"
+      />
+      <div className="text-2xs text-zinc-400 leading-relaxed">
+        只用来在人工动作上留个名。不是登录,拦不住任何人
+      </div>
     </div>
   );
 }
@@ -123,6 +151,8 @@ export default function App() {
           </div>
         ))}
 
+        <span className="mt-auto" />
+        <OperatorBox />
         <InstanceStrip />
       </nav>
 

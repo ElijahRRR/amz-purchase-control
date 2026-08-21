@@ -202,10 +202,20 @@ def detail(conn, task_id: int) -> dict[str, Any] | None:
         (e["instance_uid"] for e in reversed(out["events"])
          if e["kind"] == "claimed" and e["instance_uid"]), None)
     ship = conn.execute(
-        "SELECT carrier, tracking_no, tracking_url, status, delivered_at "
+        "SELECT id, carrier, tracking_no, tracking_url, status, delivered_at "
         "  FROM logistics.shipments WHERE task_id = %(task_id)s ORDER BY id DESC LIMIT 1",
         {"task_id": task_id}).fetchone()
     out["shipment"] = dict(ship) if ship else None
+    if out["shipment"]:
+        # 轨迹明细。logistics.shipment_events 之前也是只写不读的 ——
+        # 插件每次同步都把整条轨迹存下来,然后没有任何地方拿它给人看。
+        # 「货到哪了」正是运营被问得最多的那句话,答案一直在库里躺着。
+        # seq 0 = 最新,照原样给前端,不在这里翻转。
+        out["shipment"]["events"] = [dict(r) for r in conn.execute(
+            """SELECT happened_at, raw_day, raw_time, description, city, state_code, seq
+                 FROM logistics.shipment_events
+                WHERE shipment_id = %(sid)s ORDER BY seq""",
+            {"sid": out["shipment"]["id"]}).fetchall()]
     return out
 
 

@@ -5,6 +5,7 @@
  * 是完全不同的两句话,混成一句会让人去上游翻一个其实好好的单子。
  */
 
+import { getOperator } from "@/lib/operator";
 import type {
   Envelope, ErrorStats, InstanceRow, Meta, RunsOut, SearchOut, SearchReq, Summary,
   TaskDetail,
@@ -58,6 +59,12 @@ const qs = (o: Record<string, unknown>) =>
 const post = <T>(path: string, body: unknown) =>
   call<T>(path, { method: "POST", body: JSON.stringify(body) });
 
+/** 人工动作统一带上操作人,不靠每个调用点自己记得传 ——
+ *  漏传的那一次正好是以后要查的那一次。
+ *  调用点显式传了就用它的(目前没有这种调用点,留着是为了不堵死)。 */
+const act = <T>(path: string, body: Record<string, unknown> = {}) =>
+  post<T>(path, { operator: getOperator(), ...body });
+
 export const api = {
   searchTasks: (req: SearchReq) => post<SearchOut>("/v1/admin/tasks/search", req),
   taskDetail: (id: number) => call<TaskDetail>(`/v1/admin/tasks/${id}`),
@@ -70,14 +77,13 @@ export const api = {
   runs: () => call<RunsOut>("/v1/admin/runs"),
   instances: () => call<{ stale_seconds: number; items: InstanceRow[] }>("/v1/admin/instances"),
 
-  releaseTask: (id: number) => post<{ status: string }>(`/v1/admin/tasks/${id}/release`, {}),
-  resetTask: (id: number, acknowledged: boolean, operator?: string) =>
-    post<{ status: string }>(`/v1/admin/tasks/${id}/reset`, { acknowledged, operator }),
-  forceBackfill: (id: number, amazon_order_no: string, note: string, operator?: string) =>
-    post<{ status: string }>(`/v1/admin/tasks/${id}/force-backfill`,
-                             { amazon_order_no, note, operator }),
-  updateAddress: (id: number, fields: Record<string, string>, operator?: string) =>
-    post<{ changed: string[] }>(`/v1/admin/tasks/${id}/address`, { ...fields, operator }),
-  updateAsin: (id: number, old_asin: string, new_asin: string, operator?: string) =>
-    post<{ asin: string }>(`/v1/admin/tasks/${id}/asin`, { old_asin, new_asin, operator }),
+  releaseTask: (id: number) => act<{ status: string }>(`/v1/admin/tasks/${id}/release`),
+  resetTask: (id: number, acknowledged: boolean) =>
+    act<{ status: string }>(`/v1/admin/tasks/${id}/reset`, { acknowledged }),
+  forceBackfill: (id: number, amazon_order_no: string, note: string) =>
+    act<{ status: string }>(`/v1/admin/tasks/${id}/force-backfill`, { amazon_order_no, note }),
+  updateAddress: (id: number, fields: Record<string, string>) =>
+    act<{ changed: string[] }>(`/v1/admin/tasks/${id}/address`, fields),
+  updateAsin: (id: number, old_asin: string, new_asin: string) =>
+    act<{ asin: string }>(`/v1/admin/tasks/${id}/asin`, { old_asin, new_asin }),
 };

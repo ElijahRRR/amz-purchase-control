@@ -70,6 +70,22 @@ function eventText(e: { kind: string; code: string | null; payload: Record<strin
   return [head, ...rest].filter(Boolean).join(" · ");
 }
 
+/** 可改的收货字段。与 services/task_admin._ADDRESS_FIELDS 一一对应 ——
+ *  多一个服务端会以 BAD_FIELD 拒掉,少一个是界面自己把能力藏了。 */
+const ADDRESS_FIELDS: [string, string][] = [
+  ["ship_name", "姓名"], ["ship_phone", "电话"], ["ship_line1", "地址"],
+  ["ship_city", "城市"], ["ship_state", "州"], ["ship_postcode", "邮编"],
+];
+
+/** 真改动过的字段。原值与草稿相同的不算 —— 整份地址原样回传的话,
+ *  事件流里那条 before/after 会记成「六个字段全改了」,
+ *  以后查「谁把州改错了」就查不出来了。 */
+function changedAddress(t: TD, draft: Record<string, string>): string[] {
+  return ADDRESS_FIELDS
+    .map(([k]) => k)
+    .filter((k) => draft[k] !== undefined && draft[k] !== String(t[k as keyof TD] ?? ""));
+}
+
 const Hint = ({ children }: { children: React.ReactNode }) => (
   <div className="mt-0.5 text-xs+ text-zinc-400 leading-relaxed">{children}</div>
 );
@@ -92,6 +108,10 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
   const [confirm, setConfirm] = useState<null | "force" | "reset">(null);
   const [forceNo, setForceNo] = useState("");
   const [note, setNote] = useState("");
+  /** 正在改哪一样。改地址/改 ASIN 的接口早就有、也有测试,只是一直没有入口 ——
+   *  接口存在而界面到不了,对用这套东西的人来说等于这个功能不存在。 */
+  const [editing, setEditing] = useState<null | "address" | "asin">(null);
+  const [draft, setDraft] = useState<Record<string, string>>({});
 
   const load = () => {
     setErr(null);
@@ -108,11 +128,12 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
       // 一个键既能取消危险动作又能关窗,手一抖就分不清刚才取消的是哪一个。
       if (e.key !== "Escape") return;
       if (confirm) { setConfirm(null); return; }
+      if (editing) { setEditing(null); return; }
       onClose();
     };
     window.addEventListener("keydown", on);
     return () => window.removeEventListener("keydown", on);
-  }, [confirm, onClose]);
+  }, [confirm, editing, onClose]);
 
   const run = async (p: Promise<ApiResult<unknown>>) => {
     setBusy(true);
@@ -124,6 +145,7 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
     }
     setErr(null);
     setConfirm(null);
+    setEditing(null);
     load();
     onMutate();
     return true;
@@ -272,6 +294,34 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
                 </KV>
                 <KV k="预计送达">{t.delivery_date ?? "—"}</KV>
                 {t.delivery_raw && <Hint>Amazon 原文「{t.delivery_raw}」</Hint>}
+                {/* 轨迹明细。seq 0 = 最新,所以从上往下就是倒序,跟快递页面一致。
+                    解析不出时间的用 Amazon 原文兜底 —— 解析规则会变,原文不会。 */}
+                {!!t.shipment.events?.length && (
+                  <div className="mt-1 flex flex-col gap-1 border-t border-zinc-100 pt-1.5">
+                    {t.shipment.events.slice(0, 4).map((e, i) => (
+                      <div key={i} className="flex items-baseline gap-1.5 text-xs leading-snug">
+                        <span className={cn("mt-1 shrink-0 w-1.5 h-1.5 rounded-full",
+                                            i === 0 ? "bg-sky-500" : "bg-zinc-300")} />
+                        <span className="text-zinc-700 min-w-0">
+                          {e.description ?? "—"}
+                          {(e.city || e.state_code) && (
+                            <span className="text-zinc-400"> · {[e.city, e.state_code]
+                              .filter(Boolean).join(", ")}</span>
+                          )}
+                        </span>
+                        <span className="id text-2xs text-zinc-400 ml-auto shrink-0">
+                          {e.happened_at ? shortTime(e.happened_at)
+                                         : [e.raw_day, e.raw_time].filter(Boolean).join(" ")}
+                        </span>
+                      </div>
+                    ))}
+                    {t.shipment.events.length > 4 && (
+                      <div className="text-2xs text-zinc-400">
+                        另有 {t.shipment.events.length - 4} 条更早的轨迹
+                      </div>
+                    )}
+                  </div>
+                )}
               </>
             ) : (
               <div className="text-sm- text-zinc-400 leading-relaxed">
@@ -363,6 +413,79 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
         </div>
       </div>
 
+      {editing === "address" && (
+        <div className="border-t border-zinc-200 bg-zinc-50 px-[18px] py-3 flex flex-col gap-2">
+          <div className="text-2xs font-medium uppercase tracking-wider text-zinc-400">
+            改收货地址
+            <span className="ml-1.5 normal-case tracking-normal text-zinc-500">
+              · 只改我们库里的值。已下单的单子服务端会拒 —— 货在路上了,
+              改库里的地址只会让库和现实对不上
+            </span>
+          </div>
+          <div className="grid grid-cols-3 gap-2">
+            {ADDRESS_FIELDS.map(([key, label]) => (
+              <label key={key} className="flex items-center gap-1.5">
+                <span className="w-[52px] shrink-0 text-xs text-zinc-500">{label}</span>
+                <Input className="flex-1 min-w-0"
+                       value={draft[key] ?? String(t[key as keyof TD] ?? "")}
+                       onChange={(e) => setDraft((d) => ({ ...d, [key]: e.target.value }))} />
+              </label>
+            ))}
+          </div>
+          <div className="flex items-center gap-2">
+            {/* 只把**真改动过**的字段发出去。整份地址原样回传的话,
+                事件流里那条 before/after 会记成「六个字段全改了」,
+                以后查「谁把州改错了」就查不出来了。 */}
+            <span className="text-xs+ text-zinc-400">
+              {changedAddress(t, draft).length
+                ? `将改 ${changedAddress(t, draft).length} 个字段`
+                : "还没有改动"}
+            </span>
+            <span className="ml-auto" />
+            <Button size="sm" onClick={() => { setEditing(null); setDraft({}); }}>取消</Button>
+            <Button size="sm" variant="primary"
+                    disabled={busy || changedAddress(t, draft).length === 0}
+                    onClick={() => {
+                      const fields = Object.fromEntries(
+                        changedAddress(t, draft).map((k) => [k, draft[k]]));
+                      void run(api.updateAddress(t.id, fields));
+                    }}>
+              保存
+            </Button>
+          </div>
+        </div>
+      )}
+
+      {editing === "asin" && (
+        <div className="border-t border-zinc-200 bg-zinc-50 px-[18px] py-3 flex flex-col gap-2">
+          <div className="text-2xs font-medium uppercase tracking-wider text-zinc-400">
+            改 ASIN
+            <span className="ml-1.5 normal-case tracking-normal text-zinc-500">
+              · 行唯一键<b className="font-medium text-zinc-700">不重算</b>:
+              它是导入期的去重键,不是内容摘要。改了会在事件流里留痕
+            </span>
+          </div>
+          {(t.products ?? []).map((prod, i) => (
+            <div key={i} className="flex items-center gap-2">
+              <span className="id text-xs text-zinc-500 w-[104px] shrink-0">{prod.asin}</span>
+              <span className="text-xs text-zinc-400">→</span>
+              <Input className="w-[140px] font-mono" placeholder="新 ASIN"
+                     value={draft[prod.asin] ?? ""}
+                     onChange={(e) => setDraft((d) => ({ ...d, [prod.asin]: e.target.value.trim() }))} />
+              <Button size="sm" variant="primary"
+                      disabled={busy || !draft[prod.asin] || draft[prod.asin] === prod.asin}
+                      onClick={() => void run(api.updateAsin(t.id, prod.asin, draft[prod.asin]))}>
+                替换
+              </Button>
+            </div>
+          ))}
+          <div className="flex">
+            <span className="ml-auto" />
+            <Button size="sm" onClick={() => { setEditing(null); setDraft({}); }}>关闭</Button>
+          </div>
+        </div>
+      )}
+
       {err && (
         <div className="px-[18px] py-2 border-t border-red-200 bg-red-50 text-sm- text-red-700">
           {err}
@@ -415,6 +538,15 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
                       flex items-center gap-2 px-[18px] py-2 flex-wrap">
         <CopyBlock value={addressBlock} label="复制收货地址"
                    className="h-7 px-2 border border-zinc-300 rounded-md bg-white text-xs" />
+
+        {/* 已下单/已取消的不给改:服务端会拒(BAD_STATUS),按钮也就不该亮着 ——
+            一个点下去必然被拒的按钮,是在让人以为自己做错了什么。 */}
+        {!["purchased", "cancelled"].includes(t.status) && (
+          <>
+            <Button size="sm" onClick={() => { setDraft({}); setEditing("address"); }}>改地址</Button>
+            <Button size="sm" onClick={() => { setDraft({}); setEditing("asin"); }}>改 ASIN</Button>
+          </>
+        )}
 
         {t.status === "pending" && (
           <Button size="sm" variant="primary" disabled={busy}

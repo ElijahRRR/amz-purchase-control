@@ -132,3 +132,33 @@ def test_delivered_on_first_sync_still_gets_delivered_at(client, conn, seed):
                        (tasks[0],)).fetchone()
     assert row["status"] == "delivered"
     assert row["delivered_at"] is not None
+
+
+def test_detail_carries_the_tracking_trail(conn, seed):
+    """轨迹明细要能读出来。
+
+    logistics.shipment_events 之前是只写不读的:插件每次同步都把整条轨迹存下来,
+    然后没有任何地方拿它给人看。「货到哪了」正是运营被问得最多的那句话,
+    答案一直在库里躺着。
+    """
+    from services import shipment, task_query
+
+    _env, _inst, tasks = seed
+    shipment.sync(conn, task_id=tasks[0], carrier="UPS", tracking_no="1Z-A",
+                  tracking_url=None, status="in_transit", events=[
+                      {"happened_at": None, "raw_day": "August 20, 2026", "raw_time": "9:41 AM",
+                       "description": "Out for delivery", "city": "Santa Ana",
+                       "state_code": "CA", "seq": 0},
+                      {"happened_at": None, "raw_day": "August 19, 2026", "raw_time": "2:04 PM",
+                       "description": "Arrived at facility", "city": "Ontario",
+                       "state_code": "CA", "seq": 1},
+                  ])
+    conn.commit()
+
+    got = task_query.detail(conn, tasks[0])
+    trail = got["shipment"]["events"]
+    assert [e["seq"] for e in trail] == [0, 1], "seq 0 = 最新,照原样给前端,不在服务端翻转"
+    assert trail[0]["description"] == "Out for delivery"
+    assert trail[0]["city"] == "Santa Ana"
+    # 解析不出时间时保留 Amazon 原文,不丢
+    assert trail[1]["raw_day"] == "August 19, 2026"

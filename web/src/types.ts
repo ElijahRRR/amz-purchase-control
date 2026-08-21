@@ -67,12 +67,25 @@ export interface TaskEvent {
   instance_uid: string | null;
 }
 
+export interface ShipmentEvent {
+  happened_at: string | null;
+  /** 解析不出时间时的兜底:Amazon 原文。**不丢** —— 解析规则会变,原文不会。 */
+  raw_day: string | null;
+  raw_time: string | null;
+  description: string | null;
+  city: string | null;
+  state_code: string | null;
+  /** 0 = 最新。服务端照原样给,不在那边翻转。 */
+  seq: number;
+}
+
 export interface Shipment {
   carrier: string | null;
   tracking_no: string | null;
   tracking_url: string | null;
   status: "not_shipped" | "in_transit" | "delivered" | "cancelled" | null;
   delivered_at: string | null;
+  events?: ShipmentEvent[];
 }
 
 export interface TaskDetail extends TaskRow {
