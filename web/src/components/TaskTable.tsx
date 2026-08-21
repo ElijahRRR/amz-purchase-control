@@ -9,7 +9,7 @@
  * 原生 table 的行是排不动的。这是 TanStack Virtual 官方那条路子。
  */
 
-import { useRef } from "react";
+import { useEffect, useRef } from "react";
 import {
   flexRender, getCoreRowModel, useReactTable, type ColumnDef,
 } from "@tanstack/react-table";
@@ -340,6 +340,20 @@ export function TaskTable({
     estimateSize: () => ROW_H[density],
     overscan: 8,
   });
+
+  // 游标跟着 J/K 走,列表得跟着游标滚。
+  //
+  // 不滚的话:按 J 越过可视区,虚拟滚动就不再渲染那一行 —— 游标从界面上消失,
+  // 而 ⏎ 照样会打开它。**打开一张看不见的单**比没有快捷键更坏,
+  // 何况页脚还写着「按 J / K 移动 · ⏎ 打开」,等于界面在承诺一件它做不到的事。
+  //
+  // align:"auto" = 已经在视野里就不动,越界了才滚最小的距离 ——
+  // 每按一次都把行拽到中间,会让人失去「我在列表的哪个位置」这个感觉。
+  useEffect(() => {
+    if (rows.length) virt.scrollToIndex(cursor, { align: "auto" });
+    // virt 每次渲染都是新对象,不进依赖 —— 进了会变成每帧滚一次
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [cursor, rows.length, density]);
 
   const template = table.getVisibleLeafColumns()
     .map((c, i, all) => (i === all.length - 1 ? "minmax(0,1fr)" : `${c.getSize()}px`))
