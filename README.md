@@ -16,6 +16,15 @@ python cli.py db_init
 # 2. 跑测试
 export AMZ_TEST_ADMIN_DSN="dbname=postgres"
 python -m pytest -q
+
+# 3. 起服务
+python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
+
+# 4. 用模拟插件跑闭环(不碰 Amazon)
+python tools/mock_plugin.py --scenario happy
+python tools/mock_plugin.py --scenario over_cap    # 超限价被拦
+python tools/mock_plugin.py --scenario oos         # 缺货上报
+python tools/mock_plugin.py --scenario wrong_asin  # 订单卡 ASIN 不符,转人工
 ```
 
 ## 配置
@@ -40,7 +49,7 @@ python -m pytest -q
 | 阶段 | 内容 | 状态 |
 |---|---|---|
 | P0 | registry + schema.sql + cli.py + services/task_queue | ✅ |
-| P1 | server/ 全部端点 + mock 插件 | 待办 |
+| P1 | server/ 全部端点 + mock 插件 | ✅ |
 | P2 | 插件骨架 | 待办 |
 | P3 | 拍单主流程 + 单号回填 | 待办 |
 | P4 | 护栏 + erp_sync + task_sweep 接线 | 待办 |

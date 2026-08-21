@@ -43,6 +43,12 @@
   (厂商插件有 30+ 条只写日志的失败路径,且多数不清车,一次失败连带废掉下一单。)
 - **`ORDER_CONFIRM_TIMEOUT` 一律转 manual,不自动重试。** 这种失败意味着
   「可能已经在 Amazon 上真下了单」,重试就是重复下单。
+- **路由里只要已经写过库,就不许再 `raise HTTPException`。**
+  `registry/db.py` 的 `pg_conn` 遇异常会 rollback,那次写会被一起吞掉。
+  要返回错误状态码就 `return JSONResponse(status_code=..., content=...)`。
+  (2026-08-21 实跑发现:`complete` 的 ASIN 断言失败路径先写「转 manual」再 raise,
+  结果任务卡死在 `claimed`。pytest 当时是**假通过** —— 测试夹具直接给裸连接、
+  不复刻 rollback 语义。夹具已修成与 `pg_conn` 一致。)
 - **缺省即真跑,空跑加 `--dry-run`。** 改完代码第一次必须先 `--dry-run`,
   人眼确认输出再跑真的。
 

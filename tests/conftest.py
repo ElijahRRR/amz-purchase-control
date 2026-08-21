@@ -85,3 +85,34 @@ def seed(conn):
         task_ids.append(t["id"])
     conn.commit()
     return env["id"], inst["id"], task_ids
+
+
+@pytest.fixture()
+def client(conn, monkeypatch):
+    """输入:conn → 输出:FastAPI TestClient,复用测试库连接。
+
+    覆盖 server.deps.conn_ctx,让路由用同一条测试连接(否则路由会另开连接连到
+    默认库,测试之间互相污染)。
+    """
+    fastapi = pytest.importorskip("fastapi")
+    from fastapi.testclient import TestClient
+
+    from server import app as app_module
+    from server import deps
+
+    def _override():
+        # 必须复刻 registry.db.pg_conn 的事务语义:正常提交、异常回滚。
+        # 否则「路由里写完库再 raise」这类 bug 在测试里会假通过 ——
+        # 真实环境下那次写会被 pg_conn 的 rollback 吞掉(2026-08-21 实跑发现)。
+        try:
+            yield conn
+            conn.commit()
+        except BaseException:
+            conn.rollback()
+            raise
+
+    app_module.app.dependency_overrides[deps.conn_ctx] = _override
+    try:
+        yield TestClient(app_module.app)
+    finally:
+        app_module.app.dependency_overrides.clear()

@@ -26,6 +26,44 @@ python -m pytest -q                         # 17 passed
 
 ---
 
+## P1 实测（2026-08-21）
+
+起真实 uvicorn + PostgreSQL 17，用 `tools/mock_plugin.py` 跑四个场景（全程不碰 Amazon）：
+
+| 场景 | 终态 | error_code | 单号 |
+|---|---|---|---|
+| happy | `purchased` | — | `111-0000001-0000001` |
+| over_cap（实付 99.00 > 限价 12.50） | `manual` | `PRICE_CAP_EXCEEDED` | — |
+| oos（缺货） | `exception` | `OUT_OF_STOCK` | — |
+| wrong_asin（订单卡 ASIN 不符） | `manual` | `ORDER_NO_AMBIGUOUS` | **未写入** |
+
+pytest：**74 passed**。
+
+### 实跑抓到一个 pytest 假通过的 bug
+
+第一轮实跑时，`wrong_asin` 场景的任务**卡死在 `claimed`**，本该是 `manual`。
+
+根因：`complete` 路由的 ASIN 断言失败路径先调 `task_queue.fail()` 写「转 manual」，
+再 `raise HTTPException(409)`。而 `registry/db.py` 的 `pg_conn` 遇异常会 rollback ——
+刚写的状态被一起回滚了。
+
+**pytest 当时是通过的**，因为测试夹具把裸连接直接交给路由，没有复刻 `pg_conn`
+的「正常提交、异常回滚」语义。夹具给了假象。
+
+两处都修了：
+
+1. 路由改成 `return JSONResponse(status_code=409, ...)`，不再 raise
+2. `tests/conftest.py` 的 `client` 夹具改为复刻 `pg_conn` 事务语义，
+   这类 bug 以后在测试里就能暴露
+
+由此立的铁律（已写进 `CLAUDE.md`）：**路由里只要已经写过库，就不许再
+`raise HTTPException`**。
+
+> 这条和本文档下面那条历史结论是同一类问题：**测试/护栏「看起来覆盖了」比没覆盖更危险**。
+> 一个是 `NOT EXISTS` 让人以为防住了并发，一个是夹具让人以为测过了回滚路径。
+
+---
+
 ## 历史结论：一句 `NOT EXISTS` 挡不住并发（v0.2 → v0.3 已移除该需求，结论保留）
 
 设计 v0.2 曾把租约简化成「`status='claimed'` + 认领 SQL 里一句 `NOT EXISTS` 检查该环境

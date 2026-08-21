@@ -5,6 +5,8 @@
 """
 
 import json
+from datetime import date, datetime
+from decimal import Decimal
 from typing import Any
 
 INSERT_SQL = """
@@ -44,7 +46,20 @@ def record(
             "instance_id": instance_id,
             "kind": kind,
             "code": code,
-            "payload": json.dumps(payload or {}, ensure_ascii=False),
+            "payload": json.dumps(payload or {}, ensure_ascii=False, default=_jsonable),
         },
     ).fetchone()
     return row["id"]
+
+
+def _jsonable(value: Any) -> str:
+    """输入:json 不认识的对象 → 输出:字符串表示。
+
+    事件载荷是任意 JSON,而业务里到处是 Decimal(金额)和 date(交期)。
+    不在这里兜住,调用方就得在每个 record() 前手动 str() 一遍 —— 那种约定迟早漏。
+    """
+    if isinstance(value, Decimal):
+        return str(value)
+    if isinstance(value, (date, datetime)):
+        return value.isoformat()
+    return str(value)
