@@ -80,6 +80,32 @@ node tools/smoke.mjs --scenario happy --ship in_transit
 
 插件默认是 `off` 档(只注册与心跳,不认领),就是为了不让人不小心跑起来。
 
+## 运维:有一条必须挂上定时
+
+`task_sweep` 是**唯一**一条必须被定时调起来的链。整套设计里 `CLAIM_TIMEOUT` 那条路
+全靠它:插件领走一单之后崩了/被关了/机器睡了,任务会一直停在 `claimed`,
+既不会自己回队列,也不会出现在任何一个人会去看的桶里 —— 它就那么**隐身**了。
+
+```cron
+*/5 * * * *  cd /path/to/amz-purchase-control && python cli.py task_sweep >> /var/log/amz/sweep.log 2>&1
+```
+
+跑之前先空跑一次看看会动到谁:
+
+```bash
+python cli.py task_sweep --dry-run
+#   dry-run:1 条任务超过 15 分钟未回传,将转 manual
+python cli.py task_sweep
+#   清扫完成:1 条超时任务转 manual (id: [30])
+```
+
+超时的单转 **manual 而不是 ready** —— 插件那侧可能已经在 Amazon 上真下了单,
+退回队列就是让下一个实例把同一单再买一遍。
+
+每次 `cli.py` 调起的 workflow 都会:加 flock 单实例锁 → 往 `ops.runs` 写一行
+(工作流名、参数、起止时间、状态、摘要)→ 执行 → 按退出码收尾。
+所以「上一次清扫是什么时候、扫到了什么」在库里查得到,不用翻日志文件。
+
 ## 配置
 
 | 环境变量 | 默认 | 说明 |
