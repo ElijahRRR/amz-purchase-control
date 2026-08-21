@@ -1,0 +1,381 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Inter','Noto Sans SC',system-ui,sans-serif; -webkit-font-smoothing: antialiased;
+       background: #fafafa; color: #18181b; }
+a { color: #0369a1; text-decoration: none; } a:hover { color: #075985; }
+.mono { font-family: 'JetBrains Mono',ui-monospace,monospace; }
+.card { background: #fff; border: 1px solid #e4e4e7; border-radius: 8px; }
+.chead { display: flex; align-items: center; justify-content: space-between; padding: 0 16px; height: 44px; border-bottom: 1px solid #f4f4f5; }
+.ctitle { font-size: 13px; font-weight: 500; color: #18181b; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 99px; flex: none; }
+.dothollow { display: inline-block; width: 9px; height: 9px; border-radius: 99px; background: #fff; border: 2px solid #f59e0b; flex: none; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #27272a; white-space: nowrap; }
+.tag { display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; height: 20px; border-radius: 4px; font-size: 11px; font-weight: 500; border: 1px solid; white-space: nowrap; }
+.tagdash { border-style: dashed; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; border-radius: 6px;
+       font-weight: 500; font-size: 14px; height: 36px; padding: 0 12px; border: 1px solid transparent; cursor: default; }
+.btn.sm { height: 28px; padding: 0 8px; font-size: 12px; }
+.bp { background: #18181b; color: #fff; }
+.bs { background: #fff; color: #18181b; border-color: #d4d4d8; }
+.bghost { background: transparent; color: #3f3f46; }
+.bdanger { background: #dc2626; color: #fff; }
+table { border-collapse: separate; border-spacing: 0; width: 100%; }
+.th { background: #fafafa; text-align: left; padding: 0 12px; height: 36px; font-size: 11px; font-weight: 500; color: #71717a;
+      text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid #e4e4e7; white-space: nowrap; }
+.td { padding: 0 12px; font-size: 13px; color: #27272a; border-bottom: 1px solid #f4f4f5; vertical-align: middle; }
+.rz .td { height: 40px; } .rc .td { height: 32px; }
+.num { text-align: right; font-family: 'JetBrains Mono',ui-monospace,monospace; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.id { font-family: 'JetBrains Mono',ui-monospace,monospace; font-size: 12.5px; letter-spacing: -0.01em; color: #3f3f46; }
+.kbd { font-family: 'JetBrains Mono',monospace; font-size: 10px; padding: 1px 5px; border: 1px solid #e4e4e7;
+       border-bottom-width: 2px; border-radius: 4px; background: #fafafa; color: #52525b; }
+.grouptitle { padding: 0 16px; margin: 12px 0 4px; font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: .05em; color: #a1a1aa; }
+.navitem { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 16px; font-size: 13px; color: #3f3f46; }
+.navitem.on { background: #18181b; color: #fff; }
+.navbadge { font-family: 'JetBrains Mono',monospace; font-variant-numeric: tabular-nums; font-size: 10px; padding: 0 6px; height: 16px;
+            display: inline-flex; align-items: center; border-radius: 4px; background: #f4f4f5; color: #3f3f46; margin-left: auto; }
+.navbadge.violet { background: #f5f3ff; color: #6d28d9; }
+.kpilabel { font-size: 12px; color: #71717a; }
+.kpival { font-size: 24px; font-weight: 600; font-family: 'JetBrains Mono',ui-monospace,monospace; font-variant-numeric: tabular-nums; color: #18181b; }
+.log { font-family: 'JetBrains Mono',ui-monospace,monospace; font-size: 12px; line-height: 1.7; color: #d4d4d8;
+       background: #18181b; border-radius: 6px; padding: 14px 16px; white-space: pre; overflow: hidden; }
+.log .ok { color: #34d399; } .log .warn { color: #fbbf24; } .log .err { color: #f87171; } .log .dim { color: #71717a; }
+  </style>
+</helmet>
+<div style="width:1280px;height:900px;background:#fafafa;display:flex;flex-direction:column;overflow:hidden">
+
+  <!-- 原型状态条 -->
+  <div style="height:44px;flex:none;background:#fff;border-bottom:1px solid #e4e4e7;display:flex;align-items:center;gap:8px;padding:0 16px">
+    <span style="font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.05em;color:#a1a1aa;margin-right:4px">原型状态</span>
+    <sc-for list="{{steps}}" as="s" hint-placeholder-count="6">
+      <span class="pill" style="{{s.style}}" onClick="{{s.pick}}">{{s.label}}</span>
+    </sc-for>
+    <span style="margin-left:auto;font-size:12px;color:#a1a1aa">插件面板 380px · 注入在亚马逊页面右侧,不遮结算区</span>
+  </div>
+
+  <div style="flex:1;display:flex;min-height:0">
+
+    <!-- 亚马逊页面(背景,示意) -->
+    <div style="flex:1;min-width:0;display:flex;flex-direction:column;background:#fff;border-right:1px solid #e4e4e7">
+      <div style="height:36px;flex:none;background:#f4f4f5;border-bottom:1px solid #e4e4e7;display:flex;align-items:center;gap:8px;padding:0 12px">
+        <span style="width:9px;height:9px;border-radius:99px;background:#e4e4e7"></span>
+        <span style="width:9px;height:9px;border-radius:99px;background:#e4e4e7"></span>
+        <span style="width:9px;height:9px;border-radius:99px;background:#e4e4e7"></span>
+        <span class="id" style="margin-left:8px;color:#a1a1aa;font-size:11px">{{url}}</span>
+      </div>
+      <div style="flex:1;padding:24px 28px;display:flex;flex-direction:column;gap:18px;overflow:hidden">
+        <div style="display:flex;gap:24px">
+          <div style="width:260px;height:260px;flex:none;background:#f4f4f5;border-radius:6px"></div>
+          <div style="flex:1;display:flex;flex-direction:column;gap:10px;min-width:0">
+            <div style="height:14px;width:88%;background:#f4f4f5;border-radius:3px"></div>
+            <div style="height:14px;width:64%;background:#f4f4f5;border-radius:3px"></div>
+            <div style="height:10px;width:34%;background:#f4f4f5;border-radius:3px;margin-top:4px"></div>
+            <div style="margin-top:10px;font-size:22px;font-weight:600;color:#d4d4d8" class="mono">{{pagePrice}}</div>
+            <div style="height:10px;width:46%;background:#f4f4f5;border-radius:3px"></div>
+            <div style="height:10px;width:52%;background:#f4f4f5;border-radius:3px"></div>
+            <div style="margin-top:14px;width:200px;height:34px;border-radius:99px;background:#f4f4f5"></div>
+            <div style="width:200px;height:34px;border-radius:99px;background:#f4f4f5"></div>
+          </div>
+        </div>
+        <div style="height:1px;background:#f4f4f5"></div>
+        <div style="display:flex;flex-direction:column;gap:9px">
+          <div style="height:10px;width:72%;background:#f4f4f5;border-radius:3px"></div>
+          <div style="height:10px;width:81%;background:#f4f4f5;border-radius:3px"></div>
+          <div style="height:10px;width:58%;background:#f4f4f5;border-radius:3px"></div>
+          <div style="height:10px;width:66%;background:#f4f4f5;border-radius:3px"></div>
+        </div>
+        <div style="margin-top:auto;font-size:11px;color:#d4d4d8">背景为亚马逊页面示意 · 插件不改动页面内容,只在同源 DOM 上读值与点按</div>
+      </div>
+    </div>
+
+    <!-- 插件面板 -->
+    <aside style="width:380px;flex:none;background:#fff;display:flex;flex-direction:column;overflow:hidden;box-shadow:-1px 0 0 #e4e4e7">
+
+      <div style="height:48px;flex:none;border-bottom:1px solid #f4f4f5;display:flex;align-items:center;gap:8px;padding:0 14px">
+        <span style="width:20px;height:20px;border-radius:5px;background:#18181b;display:inline-flex;align-items:center;justify-content:center;flex:none">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+        </span>
+        <span style="font-size:13px;font-weight:600">AMZ 采购助手</span>
+        <span style="margin-left:auto;display:inline-flex;align-items:center;gap:5px">
+          <span class="dot" style="background:#10b981"></span>
+          <span class="id" style="font-size:11px;color:#71717a">env-172</span>
+        </span>
+      </div>
+
+      <!-- 当前相位 -->
+      <div style="flex:none;padding:12px 14px;border-bottom:1px solid #f4f4f5;display:flex;align-items:center;gap:8px">
+        <span class="{{phaseTagCls}}" style="{{phaseTagStyle}}">{{phaseTag}}</span>
+        <span style="font-size:12px;color:#71717a">{{phaseNote}}</span>
+        <span class="id" style="margin-left:auto;font-size:11px;color:#a1a1aa">{{heartbeat}}</span>
+      </div>
+
+      <!-- 待命空态 -->
+      <sc-if value="{{isIdle}}" hint-placeholder-val="{{false}}">
+        <div style="flex:1;display:flex;flex-direction:column;align-items:center;justify-content:center;gap:10px;padding:28px;text-align:center">
+          <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="26" height="26" fill="none" stroke="#d4d4d8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3v3"/><path d="M12 18v3"/><circle cx="12" cy="12" r="4"/><path d="M3 12h3"/><path d="M18 12h3"/></svg>
+          <div style="font-size:13px;color:#71717a">已注册,等待服务端派单</div>
+          <div style="font-size:12px;color:#a1a1aa;line-height:1.7;max-width:260px">面板只认 <span class="id">env-172</span> 这一个买家号。服务端按买家号派单,插件不会领到别人的单。</div>
+        </div>
+      </sc-if>
+
+      <!-- 任务卡 -->
+      <sc-if value="{{hasTask}}" hint-placeholder-val="{{true}}">
+      <div style="flex:1;min-height:0;display:flex;flex-direction:column;overflow:hidden">
+
+        <div style="flex:none;padding:12px 14px;border-bottom:1px solid #f4f4f5;display:flex;flex-direction:column;gap:9px">
+          <div style="display:flex;align-items:center;gap:8px">
+            <span class="id" style="font-size:13px;color:#18181b">UP-20841</span>
+            <span class="tag tagdash" style="background:#fff;color:#0369a1;border-color:#bae6fd">US</span>
+            <span style="margin-left:auto;font-size:11px;color:#a1a1aa">上游单号</span>
+          </div>
+          <div style="display:flex;gap:12px">
+            <div style="flex:1"><div class="kpilabel">ASIN</div><div class="id" style="font-size:12.5px;color:#18181b">B0FB3VS68J</div></div>
+            <div style="flex:1"><div class="kpilabel">限价(上游下发)</div><div class="id" style="font-size:12.5px;color:#18181b">12.50</div></div>
+            <div style="flex:1"><div class="kpilabel">结算页实付</div><div class="id" style="font-size:12.5px;{{paidStyle}}">{{paid}}</div></div>
+          </div>
+          <div><div class="kpilabel">收货</div><div style="font-size:12.5px;color:#27272a;line-height:1.6">Garcia Isabel · 2510 S Shelton St, Santa Ana CA 92707</div></div>
+        </div>
+
+        <!-- 执行步骤 -->
+        <div style="flex:1;min-height:0;overflow:hidden;display:flex;flex-direction:column">
+          <div style="padding:11px 14px 4px;font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.05em;color:#a1a1aa">执行步骤</div>
+          <div style="padding:0 14px">
+            <table>
+              <sc-for list="{{flow}}" as="f" hint-placeholder-count="7">
+                <tr class="rc">
+                  <td class="td" style="width:24px;padding:0 0 0 2px;border-bottom-color:#fff"><span class="{{f.dotCls}}" style="{{f.dotStyle}}"></span></td>
+                  <td class="td" style="border-bottom-color:#fff;font-size:12.5px;{{f.textStyle}}">{{f.label}}</td>
+                  <td class="td id" style="width:58px;text-align:right;font-size:11px;color:#a1a1aa;border-bottom-color:#fff">{{f.at}}</td>
+                </tr>
+              </sc-for>
+            </table>
+          </div>
+
+          <!-- 下单前:破坏面预览 -->
+          <sc-if value="{{isConfirm}}" hint-placeholder-val="{{true}}">
+            <div style="margin:8px 14px 0;border:1px solid #fecaca;background:#fef2f2;border-radius:6px;padding:11px 12px;display:flex;flex-direction:column;gap:7px">
+              <div style="display:flex;align-items:center;gap:6px">
+                <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="13" height="13" fill="none" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg>
+                <span style="font-size:12px;font-weight:500;color:#b91c1c">下单会花真钱,且不可撤销 —— 先看清要发生什么</span>
+              </div>
+              <div style="display:flex;flex-direction:column;gap:4px;font-size:12px;color:#52525b;line-height:1.6">
+                <div>· 在买家号 <span class="id" style="color:#3f3f46">env-172</span> 上提交 <span class="id" style="color:#3f3f46">1</span> 件 <span class="id" style="color:#3f3f46">B0FB3VS68J</span></div>
+                <div>· 实付 <span class="id" style="color:#18181b;font-weight:600">$10.79</span>,在限价 <span class="id" style="color:#3f3f46">12.50</span> 之内</div>
+                <div>· 寄往 Santa Ana CA 92707,预计 08-27 送达</div>
+              </div>
+            </div>
+          </sc-if>
+
+          <!-- 护栏拦截 -->
+          <sc-if value="{{isBlocked}}" hint-placeholder-val="{{false}}">
+            <div style="margin:8px 14px 0;border:1px solid #ddd6fe;background:#f5f3ff;border-radius:6px;padding:11px 12px;display:flex;flex-direction:column;gap:7px">
+              <div style="display:flex;align-items:center;gap:6px">
+                <span class="dot" style="background:#8b5cf6"></span>
+                <span class="tag mono" style="background:#fff;color:#6d28d9;border-color:#ddd6fe">PRICE_CAP_EXCEEDED</span>
+              </div>
+              <div style="font-size:12px;color:#52525b;line-height:1.6">结算页实付 <span class="id" style="color:#b91c1c;font-weight:600">31.80</span> 高于上游限价 <span class="id" style="color:#3f3f46">24.00</span>。已在下单前停住,购物车已清空,<span style="color:#3f3f46">没有产生任何订单</span>。</div>
+              <div style="font-size:12px;color:#52525b;line-height:1.6">这不是可重试的失败:同样的价再跑一遍还是这个结果。任务带错误码回服务端转人工。</div>
+            </div>
+          </sc-if>
+
+          <!-- 完成 -->
+          <sc-if value="{{isDone}}" hint-placeholder-val="{{false}}">
+            <div style="margin:8px 14px 0;border:1px solid #a7f3d0;background:#ecfdf5;border-radius:6px;padding:11px 12px;display:flex;flex-direction:column;gap:6px">
+              <div style="display:flex;align-items:center;gap:6px">
+                <span class="dot" style="background:#10b981"></span>
+                <span style="font-size:12px;font-weight:500;color:#047857">已下单并回填</span>
+              </div>
+              <div style="display:flex;align-items:center;gap:8px">
+                <span class="kpilabel">Amazon 单号</span>
+                <span class="id" style="font-size:12.5px;color:#18181b">111-4820193-7736514</span>
+              </div>
+              <div style="font-size:12px;color:#52525b;line-height:1.6">回填前比对过订单卡上的 ASIN 与本单一致才写库;不一致就不写,交人工。</div>
+            </div>
+          </sc-if>
+
+          <div style="margin:10px 14px 0">
+            <div class="log">
+              <sc-for list="{{logs}}" as="l" hint-placeholder-count="5">
+                <div><span class="dim">{{l.at}}</span> <span class="{{l.cls}}">{{l.text}}</span></div>
+              </sc-for>
+            </div>
+          </div>
+        </div>
+
+        <!-- 动作区 -->
+        <div style="flex:none;border-top:1px solid #f4f4f5;padding:11px 14px;display:flex;align-items:center;gap:8px">
+          <span class="{{secCls}}" style="{{secStyle}}">{{secLabel}}</span>
+          <span style="margin-left:auto"></span>
+          <span class="{{actCls}}" style="{{actStyle}}">{{actIcon}}{{actLabel}}</span>
+        </div>
+      </div>
+      </sc-if>
+    </aside>
+  </div>
+
+  <!-- 规则注脚 -->
+  <div style="height:76px;flex:none;background:#fff;border-top:1px solid #e4e4e7;display:flex;align-items:center;gap:14px;padding:0 16px">
+    <div class="card" style="flex:1;padding:9px 12px;display:flex;flex-direction:column;gap:3px">
+      <div style="display:flex;align-items:center;gap:6px"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg><span style="font-size:12px;font-weight:500;color:#18181b">下单永远有预览步</span></div>
+      <div style="font-size:12px;color:#71717a;line-height:1.6">花钱这一步是红实心 + ⚡,并且前面必须站一屏「要发生什么」。面板上再没有第二个红按钮。</div>
+    </div>
+    <div class="card" style="flex:1;padding:9px 12px;display:flex;flex-direction:column;gap:3px">
+      <div style="display:flex;align-items:center;gap:6px"><span class="dot" style="background:#8b5cf6"></span><span style="font-size:12px;font-weight:500;color:#18181b">护栏拦截不是失败</span></div>
+      <div style="font-size:12px;color:#71717a;line-height:1.6">紫色=需要人来判断,不是红色的「坏了」。拦下后先清购物车再上报,插件不自作主张重试。</div>
+    </div>
+    <div class="card" style="flex:1;padding:9px 12px;display:flex;flex-direction:column;gap:3px">
+      <div style="display:flex;align-items:center;gap:6px"><span class="dothollow"></span><span style="font-size:12px;font-weight:500;color:#18181b">结局不确定用空心</span></div>
+      <div style="font-size:12px;color:#71717a;line-height:1.6">断言没过、超时没回传这类「不知道下没下成」的一步用琥珀空心点,和已经落定的实心点区分开。</div>
+    </div>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview": {"width": 1280, "height": 900}}'>
+class Component extends DCLogic {
+  constructor(props) { super(props); this.state = { step: "confirm" }; }
+
+  // 每个相位:走到第几步、这一步是什么结局
+  //   flow 下标 0..6,cut = 已经走完的步数,mark = 第 cut 步的记号
+  phases() {
+    return {
+      idle: {
+        label: "待命", tag: "待命", tagCls: "tag tagdash", tagStyle: "background:#fff;color:#52525b;border-color:#d4d4d8",
+        note: "已注册,心跳正常", heartbeat: "心跳 3s 前",
+        url: "amazon.com  ·  插件已就绪",
+        pagePrice: "$—", paid: "—", cut: 0, mark: null,
+        logs: [["09:20:02","注册 env-172 · 已通过 chrome.cookies 校验为登录态","ok"],
+               ["09:20:05","心跳 → 服务端 200","dim"],
+               ["09:20:08","队列里没有属于 env-172 的单","dim"]],
+        sec: ["btn sm bghost","color:#a1a1aa","暂停接单"], act: ["btn sm bs","","","手动拉一次"]
+      },
+      claimed: {
+        label: "已认领", tag: "claimed", tagCls: "tag tagdash", tagStyle: "background:#fff;color:#b45309;border-color:#fde68a",
+        note: "领到 1 单,尚未动页面", heartbeat: "认领 4s 前",
+        url: "amazon.com/dp/B0FB3VS68J",
+        pagePrice: "$10.79", paid: "—", cut: 0, mark: null,
+        logs: [["09:12:03","认领 UP-20841 · 服务端按 env-172 派单","ok"],
+               ["09:12:03","限价 12.50 随任务下发,插件不自己算价","dim"]],
+        sec: ["btn sm bs","","退回队列"], act: ["btn sm bp","","","开始执行"]
+      },
+      running: {
+        label: "执行中", tag: "claimed", tagCls: "tag tagdash", tagStyle: "background:#fff;color:#b45309;border-color:#fde68a",
+        note: "第 4 步 · 读结算页", heartbeat: "上报 2s 前",
+        url: "amazon.com/gp/buy/spc/handlers/display.html",
+        pagePrice: "$10.79", paid: "读取中", cut: 3, mark: "cur",
+        logs: [["09:12:06","清空购物车 · 剩余 0 件","dim"],
+               ["09:12:11","商品页:FBA ✓ · 有货 ✓","dim"],
+               ["09:12:19","加购后回读购物车:ASIN 与任务一致","ok"],
+               ["09:12:33","进结算页,等实付与交期渲染","dim"]],
+        sec: ["btn sm bs","","中止并清车"], act: ["btn sm bghost","color:#a1a1aa","","执行中…"]
+      },
+      confirm: {
+        label: "下单确认", tag: "claimed", tagCls: "tag tagdash", tagStyle: "background:#fff;color:#b45309;border-color:#fde68a",
+        note: "护栏已放行,等人按下单", heartbeat: "停留 12s",
+        url: "amazon.com/gp/buy/spc/handlers/display.html",
+        pagePrice: "$10.79", paid: "10.79", cut: 5, mark: "cur",
+        logs: [["09:12:38","结算页实付 10.79 · 交期 08-27","dim"],
+               ["09:12:41","护栏:10.79 ≤ 限价 12.50 → 放行","ok"],
+               ["09:12:41","停在下单前,等确认","warn"]],
+        sec: ["btn sm bs","","取消并清车"], act: ["btn sm bdanger","","⚡ ","确认下单 $10.79"]
+      },
+      blocked: {
+        label: "护栏拦截", tag: "manual", tagCls: "tag", tagStyle: "background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe",
+        note: "已停在下单前,车已清空", heartbeat: "上报 1s 前",
+        url: "amazon.com/gp/buy/spc/handlers/display.html",
+        pagePrice: "$31.80", paid: "31.80", cut: 4, mark: "block",
+        logs: [["09:04:49","结算页实付 31.80 · 交期 08-29","dim"],
+               ["09:04:52","护栏:31.80 > 限价 24.00 → 拦截","err"],
+               ["09:04:55","清空购物车 · 剩余 0 件","dim"],
+               ["09:04:55","上报 PRICE_CAP_EXCEEDED · 任务转 manual","warn"]],
+        sec: ["btn sm bghost","color:#a1a1aa","已上报"], act: ["btn sm bs","","","拉下一单"]
+      },
+      done: {
+        label: "已完成", tag: "purchased", tagCls: "tag", tagStyle: "background:#ecfdf5;color:#047857;border-color:#a7f3d0",
+        note: "单号已回填", heartbeat: "完成 8s 前",
+        url: "amazon.com/gp/buy/thankyou.html",
+        pagePrice: "$10.79", paid: "10.79", cut: 7, mark: null,
+        logs: [["09:12:44","下单 · thankyou 页出现","ok"],
+               ["09:12:52","读订单历史第一张卡:111-4820193-7736514","dim"],
+               ["09:12:52","卡上 ASIN = B0FB3VS68J,与任务一致 → 允许回填","ok"],
+               ["09:12:53","回传服务端 200 · 任务 purchased","ok"]],
+        sec: ["btn sm bs","","查看订单"], act: ["btn sm bp","","","拉下一单"]
+      }
+    };
+  }
+
+  flowDefs() {
+    return [
+      ["清空购物车",              "09:12:06"],
+      ["商品页 · 校验 FBA 与库存", "09:12:11"],
+      ["加购并回读购物车 ASIN",    "09:12:19"],
+      ["读结算页实付与交期",       "09:12:38"],
+      ["护栏 · 实付 ≤ 限价",       "09:12:41"],
+      ["下单 · thankyou 页确认",   "09:12:44"],
+      ["回填单号 · ASIN 断言",     "09:12:52"]
+    ];
+  }
+
+  renderVals() {
+    const P = this.phases();
+    const cur = this.state.step;
+    const p = P[cur];
+
+    const steps = [["idle","待命"],["claimed","已认领"],["running","执行中"],
+                   ["confirm","下单确认"],["blocked","护栏拦截"],["done","已完成"]]
+      .map(([k, label]) => {
+        const on = cur === k;
+        return {
+          label,
+          style: "height:26px;padding:0 9px;border-radius:6px;font-size:12px;border:1px solid "
+               + (on ? "#18181b;background:#18181b;color:#fff" : "#e4e4e7;background:#fff;color:#3f3f46"),
+          pick: () => this.setState({ step: k })
+        };
+      });
+
+    const marks = {
+      done:  ["dot", "background:#10b981", "color:#27272a"],
+      cur:   ["dothollow", "",             "color:#18181b;font-weight:500"],
+      block: ["dot", "background:#8b5cf6", "color:#6d28d9;font-weight:500"],
+      todo:  ["dot", "background:#e4e4e7", "color:#a1a1aa"]
+    };
+
+    const flow = this.flowDefs().map(([label, at], i) => {
+      let kind;
+      if (i < p.cut) kind = "done";
+      else if (i === p.cut && p.mark) kind = p.mark;
+      else kind = "todo";
+      const [dotCls, dotStyle, textStyle] = marks[kind];
+      let text = label, when = at;
+      if (kind === "block") { text = label + " · 拦截"; }
+      if (kind === "todo")  { when = "—"; }
+      if (kind === "cur" && cur === "confirm") { text = label + " · 等确认"; when = "—"; }
+      return { label: text, at: when, dotCls, dotStyle, textStyle };
+    });
+
+    const [secCls, secStyle, secLabel] = p.sec;
+    const [actCls, actStyle, actIcon, actLabel] = p.act;
+
+    return {
+      steps, flow,
+      url: p.url, pagePrice: p.pagePrice,
+      paid: p.paid,
+      paidStyle: cur === "blocked" ? "color:#b91c1c;font-weight:600" : "color:#18181b",
+      phaseTag: p.tag, phaseTagCls: p.tagCls, phaseTagStyle: p.tagStyle,
+      phaseNote: p.note, heartbeat: p.heartbeat,
+      isIdle: cur === "idle", hasTask: cur !== "idle",
+      isConfirm: cur === "confirm", isBlocked: cur === "blocked", isDone: cur === "done",
+      logs: p.logs.map(([at, text, cls]) => ({ at, text, cls })),
+      secCls, secStyle, secLabel, actCls, actStyle, actIcon, actLabel
+    };
+  }
+}
+</script>

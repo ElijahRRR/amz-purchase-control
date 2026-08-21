@@ -1,0 +1,333 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Inter','Noto Sans SC',system-ui,sans-serif; -webkit-font-smoothing: antialiased;
+       background: #fafafa; color: #18181b; }
+a { color: #0369a1; text-decoration: none; } a:hover { color: #075985; }
+.mono { font-family: 'JetBrains Mono',ui-monospace,monospace; }
+.card { background: #fff; border: 1px solid #e4e4e7; border-radius: 8px; }
+.chead { display: flex; align-items: center; justify-content: space-between; padding: 0 16px; height: 44px; border-bottom: 1px solid #f4f4f5; }
+.ctitle { font-size: 13px; font-weight: 500; color: #18181b; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 99px; flex: none; }
+.dothollow { display: inline-block; width: 9px; height: 9px; border-radius: 99px; background: #fff; border: 2px solid #f59e0b; flex: none; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #27272a; white-space: nowrap; }
+.tag { display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; height: 20px; border-radius: 4px; font-size: 11px; font-weight: 500; border: 1px solid; white-space: nowrap; }
+.tagdash { border-style: dashed; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; border-radius: 6px;
+       font-weight: 500; font-size: 14px; height: 36px; padding: 0 12px; border: 1px solid transparent; cursor: default; }
+.btn.sm { height: 28px; padding: 0 8px; font-size: 12px; }
+.bp { background: #18181b; color: #fff; }
+.bs { background: #fff; color: #18181b; border-color: #d4d4d8; }
+.bghost { background: transparent; color: #3f3f46; }
+.bdanger { background: #dc2626; color: #fff; }
+table { border-collapse: separate; border-spacing: 0; width: 100%; }
+.th { background: #fafafa; text-align: left; padding: 0 12px; height: 36px; font-size: 11px; font-weight: 500; color: #71717a;
+      text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid #e4e4e7; white-space: nowrap; }
+.td { padding: 0 12px; font-size: 13px; color: #27272a; border-bottom: 1px solid #f4f4f5; vertical-align: middle; }
+.rz .td { height: 40px; } .rc .td { height: 32px; }
+.num { text-align: right; font-family: 'JetBrains Mono',ui-monospace,monospace; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.id { font-family: 'JetBrains Mono',ui-monospace,monospace; font-size: 12.5px; letter-spacing: -0.01em; color: #3f3f46; }
+.kbd { font-family: 'JetBrains Mono',monospace; font-size: 10px; padding: 1px 5px; border: 1px solid #e4e4e7;
+       border-bottom-width: 2px; border-radius: 4px; background: #fafafa; color: #52525b; }
+.grouptitle { padding: 0 16px; margin: 12px 0 4px; font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: .05em; color: #a1a1aa; }
+.navitem { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 16px; font-size: 13px; color: #3f3f46; }
+.navitem.on { background: #18181b; color: #fff; }
+.navbadge { font-family: 'JetBrains Mono',monospace; font-variant-numeric: tabular-nums; font-size: 10px; padding: 0 6px; height: 16px;
+            display: inline-flex; align-items: center; border-radius: 4px; background: #f4f4f5; color: #3f3f46; margin-left: auto; }
+.navbadge.violet { background: #f5f3ff; color: #6d28d9; }
+.kpilabel { font-size: 12px; color: #71717a; }
+.kpival { font-size: 24px; font-weight: 600; font-family: 'JetBrains Mono',ui-monospace,monospace; font-variant-numeric: tabular-nums; color: #18181b; }
+.log { font-family: 'JetBrains Mono',ui-monospace,monospace; font-size: 12px; line-height: 1.7; color: #d4d4d8;
+       background: #18181b; border-radius: 6px; padding: 14px 16px; white-space: pre; overflow: hidden; }
+.log .ok { color: #34d399; } .log .warn { color: #fbbf24; } .log .err { color: #f87171; } .log .dim { color: #71717a; }
+  </style>
+</helmet>
+<div style="width:1600px;height:1000px;display:flex;background:#fafafa;overflow:hidden">
+
+  <nav style="width:200px;flex:none;background:#fff;border-right:1px solid #e4e4e7;display:flex;flex-direction:column">
+    <div style="height:48px;display:flex;align-items:center;gap:8px;padding:0 16px;border-bottom:1px solid #f4f4f5">
+      <span style="width:20px;height:20px;border-radius:5px;background:#18181b;display:inline-flex;align-items:center;justify-content:center;flex:none">
+        <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#fff" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14"/><path d="m12 5 7 7-7 7"/></svg>
+      </span>
+      <span style="font-size:13px;font-weight:600">AMZ 采购控制台</span>
+    </div>
+    <div class="grouptitle">采购</div>
+    <div class="navitem on"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M3 9h18"/></svg>任务队列<span class="navbadge violet">7</span></div>
+    <div class="navitem"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><circle cx="12" cy="8" r="4"/><path d="M4 21a8 8 0 0 1 16 0"/></svg>买家号<span class="navbadge">6</span></div>
+    <div class="navitem"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M5 18V6a2 2 0 0 1 2-2h7v14"/><path d="M14 8h4l3 3v7h-7"/><circle cx="8" cy="18" r="2"/><circle cx="17" cy="18" r="2"/></svg>物流轨迹</div>
+    <div class="grouptitle">运行</div>
+    <div class="navitem"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><circle cx="12" cy="12" r="9"/><path d="M12 7v5l3 2"/></svg>工作流记录</div>
+    <div class="navitem"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="14" height="14" fill="none" stroke="currentColor" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><path d="M3 3v16a2 2 0 0 0 2 2h16"/><path d="m7 15 4-4 4 4 5-6"/></svg>错误码分布</div>
+    <div style="margin-top:auto;padding:12px 16px;border-top:1px solid #f4f4f5;display:flex;flex-direction:column;gap:6px">
+      <div style="font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.05em;color:#a1a1aa">插件实例</div>
+      <div style="display:flex;align-items:center;gap:6px"><span class="dot" style="background:#10b981"></span><span style="font-size:12px;color:#3f3f46">env-172</span><span class="id" style="margin-left:auto;font-size:11px;color:#a1a1aa">12s</span></div>
+      <div style="display:flex;align-items:center;gap:6px"><span class="dot" style="background:#10b981"></span><span style="font-size:12px;color:#3f3f46">env-183</span><span class="id" style="margin-left:auto;font-size:11px;color:#a1a1aa">4s</span></div>
+      <div style="display:flex;align-items:center;gap:6px"><span class="dot" style="background:#a1a1aa"></span><span style="font-size:12px;color:#a1a1aa">env-190</span><span style="margin-left:auto;font-size:11px;color:#a1a1aa">暂停</span></div>
+    </div>
+  </nav>
+
+  <div style="flex:1;display:flex;flex-direction:column;min-width:0">
+
+    <div style="height:48px;flex:none;background:#fff;border-bottom:1px solid #e4e4e7;display:flex;align-items:center;gap:8px;padding:0 16px">
+      <sc-for list="{{filters}}" as="f" hint-placeholder-count="6">
+        <span class="{{f.cls}}" style="{{f.style}}" onClick="{{f.pick}}">{{f.label}}<span class="{{f.badgeCls}}">{{f.count}}</span></span>
+      </sc-for>
+      <span style="margin-left:auto"></span>
+      <span class="btn sm bs">导出 CSV</span>
+      <span class="btn sm bp">重置回队列</span>
+    </div>
+
+    <div style="flex:none;padding:16px 16px 0;display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px">
+      <div class="card" style="padding:12px 14px"><div class="kpilabel">今日已下单</div><div class="kpival">128</div></div>
+      <div class="card" style="padding:12px 14px"><div class="kpilabel">待人工</div><div class="kpival" style="color:#6d28d9">7</div></div>
+      <div class="card" style="padding:12px 14px"><div class="kpilabel">异常(可重置)</div><div class="kpival" style="color:#b91c1c">3</div></div>
+      <div class="card" style="padding:12px 14px"><div class="kpilabel">队列待拍</div><div class="kpival">41</div></div>
+    </div>
+
+    <div style="flex:1;padding:16px;min-height:0;display:flex">
+      <section class="card" style="flex:1;display:flex;flex-direction:column;min-width:0;overflow:hidden">
+        <header class="chead"><h2 class="ctitle">{{listTitle}}</h2><span style="font-size:12px;color:#a1a1aa">紧凑 32px · 点击行看事件时间线</span></header>
+        <div style="flex:1;overflow:hidden">
+          <table>
+            <tr>
+              <th class="th" style="width:150px">上游单号</th>
+              <th class="th" style="width:112px">ASIN</th>
+              <th class="th" style="width:88px">买家号</th>
+              <th class="th" style="width:76px;text-align:right">限价</th>
+              <th class="th" style="width:76px;text-align:right">实付</th>
+              <th class="th" style="width:104px">状态</th>
+              <th class="th">错误码 / AMZ 单号</th>
+            </tr>
+            <sc-for list="{{rows}}" as="r" hint-placeholder-count="9">
+              <tr class="rc" style="{{r.rowStyle}}" onClick="{{r.pick}}">
+                <td class="td id">{{r.upstream}}</td>
+                <td class="td id">{{r.asin}}</td>
+                <td class="td" style="font-size:12px">{{r.env}}</td>
+                <td class="td num">{{r.cap}}</td>
+                <td class="td num" style="{{r.paidStyle}}">{{r.paid}}</td>
+                <td class="td"><span class="{{r.tagCls}}" style="{{r.tagStyle}}">{{r.status}}</span></td>
+                <td class="td"><span class="{{r.noteCls}}" style="{{r.noteStyle}}">{{r.note}}</span></td>
+              </tr>
+            </sc-for>
+          </table>
+        </div>
+        <div style="height:36px;flex:none;border-top:1px solid #f4f4f5;display:flex;align-items:center;padding:0 12px;gap:10px">
+          <span style="font-size:12px;color:#71717a">{{footNote}}</span>
+          <span style="margin-left:auto;font-size:11px;color:#a1a1aa">按 <span class="kbd">J</span> / <span class="kbd">K</span> 移动 · <span class="kbd">⏎</span> 打开</span>
+        </div>
+      </section>
+    </div>
+  </div>
+
+  <sc-if value="{{hasSel}}" hint-placeholder-val="{{true}}">
+  <aside style="width:420px;flex:none;background:#fff;border-left:1px solid #e4e4e7;display:flex;flex-direction:column;overflow:hidden">
+    <div style="height:48px;flex:none;border-bottom:1px solid #f4f4f5;display:flex;align-items:center;gap:8px;padding:0 16px">
+      <span class="id" style="font-size:13px;color:#18181b">{{sel.upstream}}</span>
+      <span class="{{sel.tagCls}}" style="{{sel.tagStyle}}">{{sel.status}}</span>
+      <span style="margin-left:auto;font-size:11px;color:#a1a1aa" onClick="{{closeSel}}">关闭 <span class="kbd">Esc</span></span>
+    </div>
+
+    <div style="padding:14px 16px;display:flex;flex-direction:column;gap:10px;border-bottom:1px solid #f4f4f5">
+      <div style="display:flex;gap:16px">
+        <div style="flex:1"><div class="kpilabel">限价</div><div class="id" style="font-size:13px;color:#18181b">{{sel.cap}}</div></div>
+        <div style="flex:1"><div class="kpilabel">结算页实付</div><div class="id" style="font-size:13px;{{sel.paidStyle}}">{{sel.paid}}</div></div>
+        <div style="flex:1"><div class="kpilabel">买家号</div><div style="font-size:13px;color:#27272a">{{sel.env}}</div></div>
+      </div>
+      <div><div class="kpilabel">收货</div><div style="font-size:13px;color:#27272a;line-height:1.6">{{sel.ship}}</div></div>
+      <sc-if value="{{sel.showBlock}}" hint-placeholder-val="{{true}}">
+        <div style="background:#f5f3ff;border:1px solid #ddd6fe;border-radius:6px;padding:10px 12px;display:flex;flex-direction:column;gap:5px">
+          <div style="display:flex;align-items:center;gap:6px"><span class="dot" style="background:#8b5cf6"></span><span style="font-size:12px;font-weight:500;color:#6d28d9">{{sel.note}}</span></div>
+          <div style="font-size:12px;color:#52525b;line-height:1.6">{{sel.blockDetail}}</div>
+        </div>
+      </sc-if>
+    </div>
+
+    <div style="flex:1;overflow:hidden;display:flex;flex-direction:column">
+      <div style="padding:12px 16px 6px;font-size:10px;font-weight:500;text-transform:uppercase;letter-spacing:.05em;color:#a1a1aa">事件时间线 · 舒适 40px</div>
+      <div style="flex:1;overflow:hidden;padding:0 16px 12px">
+        <table>
+          <sc-for list="{{events}}" as="e" hint-placeholder-count="6">
+            <tr class="rz">
+              <td class="td" style="width:26px;padding:0 0 0 2px;border-bottom-color:#fafafa"><span class="{{e.dotCls}}" style="{{e.dotStyle}}"></span></td>
+              <td class="td" style="border-bottom-color:#fafafa">
+                <div style="font-size:12.5px;color:#27272a">{{e.text}}</div>
+              </td>
+              <td class="td id" style="width:64px;text-align:right;color:#a1a1aa;font-size:11px;border-bottom-color:#fafafa">{{e.at}}</td>
+            </tr>
+          </sc-for>
+        </table>
+      </div>
+    </div>
+
+    <div style="flex:none;border-top:1px solid #f4f4f5;padding:12px 16px;display:flex;gap:8px;align-items:center">
+      <span class="btn sm bs">查看 Amazon 订单</span>
+      <span style="margin-left:auto"></span>
+      <span class="{{sel.actCls}}" style="{{sel.actStyle}}">{{sel.actLabel}}</span>
+    </div>
+  </aside>
+  </sc-if>
+
+  <sc-if value="{{noSel}}" hint-placeholder-val="{{false}}">
+  <aside style="width:420px;flex:none;background:#fff;border-left:1px solid #e4e4e7;display:flex;align-items:center;justify-content:center;padding:32px">
+    <div style="text-align:center;display:flex;flex-direction:column;gap:8px;align-items:center">
+      <svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="28" height="28" fill="none" stroke="#d4d4d8" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round"><rect width="18" height="18" x="3" y="3" rx="2"/><path d="M9 9h6v6H9z"/></svg>
+      <div style="font-size:13px;color:#71717a">选中一行看它的事件时间线</div>
+      <div style="font-size:12px;color:#a1a1aa;line-height:1.7;max-width:260px">每条任务从认领到终态的每一步都只追加、不覆盖,失败必带机器可读的错误码</div>
+    </div>
+  </aside>
+  </sc-if>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview": {"width": 1600, "height": 1000}}'>
+class Component extends DCLogic {
+  constructor(props) { super(props); this.state = { filter: "manual", sel: "UP-20841" }; }
+
+  data() {
+    return [
+      { upstream:"UP-20841", asin:"B0FB3VS68J", env:"env-172", cap:"12.50", paid:"—",     status:"manual",    note:"ORDER_NO_AMBIGUOUS",
+        ship:"Garcia Isabel · 2510 S Shelton St, Santa Ana CA 92707",
+        blockDetail:"订单历史第一张卡的 ASIN 是 B0DIFFERENT,与本单不符。已拒绝回填单号并转人工——不确认清楚就写库,会把别单的号记到这条任务上。",
+        act:"danger", actLabel:"强制回填单号",
+        events:[["claimed","认领 · env-172",  "09:12:03"],["step","清空购物车","09:12:06"],["step","加购 B0FB3VS68J","09:12:19"],["step","护栏放行 · 实付 10.79 / 交期 08-27","09:12:41"],["assert","订单卡 ASIN 不符 · 期望 B0FB3VS68J,实际 B0DIFFERENT","09:13:02"],["err","ORDER_NO_AMBIGUOUS · 转人工","09:13:02"]] },
+      { upstream:"UP-20839", asin:"B0CHXNPXVX", env:"env-172", cap:"24.00", paid:"31.80", status:"manual",    note:"PRICE_CAP_EXCEEDED",
+        ship:"Chen Wei · 1180 Bishop St, Honolulu HI 96813",
+        blockDetail:"结算页实付 31.80 超过上游下发的限价 24.00。护栏在下单前拦下,购物车已清空,没有产生订单。",
+        act:"primary", actLabel:"重置回队列",
+        events:[["claimed","认领 · env-172","09:04:11"],["step","加购 B0CHXNPXVX","09:04:29"],["block","PRICE_CAP_EXCEEDED · 实付 31.80 > 限价 24.00","09:04:52"],["step","清空购物车","09:04:55"],["err","转人工","09:04:55"]] },
+      { upstream:"UP-20836", asin:"B0D2K9WQ4T", env:"env-183", cap:"18.90", paid:"—",     status:"manual",    note:"CLAIM_TIMEOUT",
+        ship:"Rivera Ana · 704 W 5th Ave, Escondido CA 92025",
+        blockDetail:"领走后 15 分钟没有任何回传。不退回队列——插件可能已经在 Amazon 上真下了单,自动重试就是重复下单。请先去买家号里确认有没有这一单。",
+        act:"danger", actLabel:"强制回填单号",
+        events:[["claimed","认领 · env-183","08:41:20"],["step","清空购物车","08:41:24"],["step","加购 B0D2K9WQ4T","08:41:39"],["dim","(此后无回传)","—"],["err","CLAIM_TIMEOUT · 超时 15 分钟 → 转人工","08:56:20"]] },
+      { upstream:"UP-20833", asin:"B0BX7YQ11N", env:"env-183", cap:"9.99",  paid:"—",     status:"exception", note:"OUT_OF_STOCK",
+        ship:"Nguyen Minh · 88 Grand Ave, Oakland CA 94612",
+        blockDetail:"", act:"primary", actLabel:"重置回队列",
+        events:[["claimed","认领 · env-183","08:22:04"],["step","打开商品页","08:22:09"],["err","OUT_OF_STOCK · Currently unavailable","08:22:12"],["step","清空购物车","08:22:14"]] },
+      { upstream:"UP-20830", asin:"B0F8NB1T8Y", env:"env-172", cap:"15.00", paid:"—",     status:"exception", note:"NOT_FBA",
+        ship:"Park Jisoo · 3300 NE 2nd Ave, Miami FL 33137",
+        blockDetail:"", act:"primary", actLabel:"重置回队列",
+        events:[["claimed","认领 · env-172","08:15:41"],["step","加购成功","08:15:58"],["err","NOT_FBA · 配送方非 Amazon 自营","08:16:22"],["step","清空购物车","08:16:25"]] },
+      { upstream:"UP-20845", asin:"B0C1J4KZ2P", env:"env-172", cap:"11.20", paid:"—",     status:"claimed",   note:"执行中 · 已加购,等结算页",
+        ship:"Silva Marco · 921 SW 3rd St, Portland OR 97204",
+        blockDetail:"", act:"ghost", actLabel:"等待回传",
+        events:[["claimed","认领 · env-172","09:18:50"],["step","清空购物车","09:18:53"],["step","加购 B0C1J4KZ2P","09:19:07"]] },
+      { upstream:"UP-20846", asin:"B0G7T3RM8K", env:"env-183", cap:"22.40", paid:"—",     status:"ready",     note:"",
+        ship:"Alvarez Rosa · 45 Elm St, Boise ID 83702", blockDetail:"", act:"ghost", actLabel:"等待认领",
+        events:[["dim","已放行,等待插件认领","09:20:11"]] },
+      { upstream:"UP-20828", asin:"B0FB3VS68J", env:"env-172", cap:"12.50", paid:"10.79", status:"purchased", note:"111-4820193-7736514",
+        ship:"Thompson Kyle · 12 Harbor Rd, Seattle WA 98101", blockDetail:"", act:"ghost", actLabel:"已完成",
+        events:[["claimed","认领 · env-172","07:58:02"],["step","加购 · 购物车核对通过","07:58:31"],["step","护栏放行 · 实付 10.79 / 交期 08-27","07:59:04"],["step","下单 · thankyou 页确认","07:59:22"],["ok","回填 111-4820193-7736514 · ASIN 断言通过","07:59:40"]] },
+      { upstream:"UP-20824", asin:"B0CHXNPXVX", env:"env-183", cap:"24.00", paid:"21.35", status:"purchased", note:"111-4820193-7736498",
+        ship:"Wu Lin · 600 N Michigan Ave, Chicago IL 60611", blockDetail:"", act:"ghost", actLabel:"已完成",
+        events:[["claimed","认领 · env-183","07:41:12"],["step","护栏放行 · 实付 21.35","07:42:30"],["ok","回填 111-4820193-7736498","07:42:55"]] }
+    ];
+  }
+
+  tagOf(s) {
+    const m = {
+      pending:   ["tag tagdash","background:#fff;color:#52525b;border-color:#d4d4d8"],
+      ready:     ["tag tagdash","background:#fff;color:#0369a1;border-color:#bae6fd"],
+      claimed:   ["tag tagdash","background:#fff;color:#b45309;border-color:#fde68a"],
+      purchased: ["tag","background:#ecfdf5;color:#047857;border-color:#a7f3d0"],
+      exception: ["tag","background:#fef2f2;color:#b91c1c;border-color:#fecaca"],
+      manual:    ["tag","background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe"],
+      cancelled: ["tag","background:#f4f4f5;color:#3f3f46;border-color:#e4e4e7"]
+    };
+    return m[s] || m.pending;
+  }
+
+  noteOf(r) {
+    if (r.status === "purchased") return ["id","color:#3f3f46"];
+    if (r.status === "manual")    return ["tag mono","background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe"];
+    if (r.status === "exception") return ["tag mono","background:#fef2f2;color:#b91c1c;border-color:#fecaca"];
+    return ["", "font-size:12px;color:#a1a1aa"];
+  }
+
+  evOf(k) {
+    const m = {
+      claimed:["dot","background:#0ea5e9"], step:["dot","background:#d4d4d8"],
+      ok:["dot","background:#10b981"], err:["dot","background:#ef4444"],
+      block:["dot","background:#8b5cf6"], assert:["dothollow",""], dim:["dot","background:#e4e4e7"]
+    };
+    return m[k] || m.step;
+  }
+
+  renderVals() {
+    const all = this.data();
+    const cur = this.state.filter;
+    const counts = { all: all.length };
+    for (const r of all) counts[r.status] = (counts[r.status] || 0) + 1;
+
+    const defs = [
+      ["manual","待人工"],["exception","异常"],["claimed","执行中"],
+      ["ready","队列"],["purchased","已下单"],["all","全部"]
+    ];
+    const filters = defs.map(([k,label]) => {
+      const on = cur === k;
+      return {
+        label, count: counts[k] || 0,
+        cls: "pill",
+        badgeCls: on ? "navbadge" : "navbadge",
+        style: "height:28px;padding:0 8px;border-radius:6px;font-size:12px;gap:6px;border:1px solid "
+             + (on ? "#18181b;background:#18181b;color:#fff" : "#e4e4e7;background:#fff;color:#3f3f46"),
+        pick: () => this.setState({ filter: k })
+      };
+    });
+
+    const shown = cur === "all" ? all : all.filter(r => r.status === cur);
+    const rows = shown.map(r => {
+      const [tagCls, tagStyle] = this.tagOf(r.status);
+      const [noteCls, noteStyle] = this.noteOf(r);
+      const on = this.state.sel === r.upstream;
+      return {
+        upstream: r.upstream, asin: r.asin, env: r.env, cap: r.cap, paid: r.paid,
+        status: r.status, note: r.note || "—",
+        tagCls, tagStyle, noteCls, noteStyle,
+        paidStyle: r.status === "manual" && r.note === "PRICE_CAP_EXCEEDED" ? "color:#b91c1c;font-weight:600" : "",
+        rowStyle: on ? "background:#fafafa;box-shadow:inset 2px 0 0 #18181b" : "",
+        pick: () => this.setState({ sel: r.upstream })
+      };
+    });
+
+    const s = all.find(r => r.upstream === this.state.sel) || null;
+    let sel = null, events = [];
+    if (s) {
+      const [tagCls, tagStyle] = this.tagOf(s.status);
+      const actMap = { danger:["btn sm bdanger",""], primary:["btn sm bp",""], ghost:["btn sm bghost","color:#a1a1aa"] };
+      const [actCls, actStyle] = actMap[s.act] || actMap.ghost;
+      sel = {
+        upstream: s.upstream, status: s.status, cap: s.cap, paid: s.paid, env: s.env,
+        ship: s.ship, note: s.note, blockDetail: s.blockDetail,
+        showBlock: !!s.blockDetail, tagCls, tagStyle,
+        paidStyle: s.status === "manual" && s.note === "PRICE_CAP_EXCEEDED" ? "color:#b91c1c" : "color:#18181b",
+        actCls, actStyle, actLabel: s.actLabel
+      };
+      events = s.events.map(([k,text,at]) => {
+        const [dotCls, dotStyle] = this.evOf(k);
+        return { dotCls, dotStyle, text, at };
+      });
+    }
+
+    const titles = { manual:"待人工 · 每天必须清空的桶", exception:"异常 · 可重置回队列",
+                     claimed:"执行中", ready:"队列待拍", purchased:"已下单", all:"全部任务" };
+
+    return {
+      filters, rows, sel, events,
+      hasSel: !!sel, noSel: !sel,
+      listTitle: titles[cur] || "任务",
+      footNote: shown.length + " / " + all.length + " 条" + (cur === "manual" ? " · manual 默认置顶" : "")
+    };
+  }
+}
+</script>
+</body>
+</html>

@@ -1,0 +1,198 @@
+<!doctype html>
+<html>
+<head>
+  <meta charset="utf-8">
+  <script src="./support.js"></script>
+</head>
+<body>
+<x-dc>
+<helmet>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&family=Noto+Sans+SC:wght@400;500;600;700&display=swap" rel="stylesheet">
+  <style>
+* { box-sizing: border-box; margin: 0; padding: 0; }
+body { font-family: 'Inter','Noto Sans SC',system-ui,sans-serif; -webkit-font-smoothing: antialiased;
+       background: #fafafa; color: #18181b; }
+a { color: #0369a1; text-decoration: none; } a:hover { color: #075985; }
+.mono { font-family: 'JetBrains Mono',ui-monospace,monospace; }
+.card { background: #fff; border: 1px solid #e4e4e7; border-radius: 8px; }
+.chead { display: flex; align-items: center; justify-content: space-between; padding: 0 16px; height: 44px; border-bottom: 1px solid #f4f4f5; }
+.ctitle { font-size: 13px; font-weight: 500; color: #18181b; }
+.dot { display: inline-block; width: 8px; height: 8px; border-radius: 99px; flex: none; }
+.dothollow { display: inline-block; width: 9px; height: 9px; border-radius: 99px; background: #fff; border: 2px solid #f59e0b; flex: none; }
+.pill { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: #27272a; white-space: nowrap; }
+.tag { display: inline-flex; align-items: center; gap: 4px; padding: 0 6px; height: 20px; border-radius: 4px; font-size: 11px; font-weight: 500; border: 1px solid; white-space: nowrap; }
+.tagdash { border-style: dashed; }
+.btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; white-space: nowrap; border-radius: 6px;
+       font-weight: 500; font-size: 14px; height: 36px; padding: 0 12px; border: 1px solid transparent; cursor: default; }
+.btn.sm { height: 28px; padding: 0 8px; font-size: 12px; }
+.bp { background: #18181b; color: #fff; }
+.bs { background: #fff; color: #18181b; border-color: #d4d4d8; }
+.bghost { background: transparent; color: #3f3f46; }
+.bdanger { background: #dc2626; color: #fff; }
+table { border-collapse: separate; border-spacing: 0; width: 100%; }
+.th { background: #fafafa; text-align: left; padding: 0 12px; height: 36px; font-size: 11px; font-weight: 500; color: #71717a;
+      text-transform: uppercase; letter-spacing: .05em; border-bottom: 1px solid #e4e4e7; white-space: nowrap; }
+.td { padding: 0 12px; font-size: 13px; color: #27272a; border-bottom: 1px solid #f4f4f5; vertical-align: middle; }
+.rz .td { height: 40px; } .rc .td { height: 32px; }
+.num { text-align: right; font-family: 'JetBrains Mono',ui-monospace,monospace; font-size: 12.5px; font-variant-numeric: tabular-nums; }
+.id { font-family: 'JetBrains Mono',ui-monospace,monospace; font-size: 12.5px; letter-spacing: -0.01em; color: #3f3f46; }
+.kbd { font-family: 'JetBrains Mono',monospace; font-size: 10px; padding: 1px 5px; border: 1px solid #e4e4e7;
+       border-bottom-width: 2px; border-radius: 4px; background: #fafafa; color: #52525b; }
+.grouptitle { padding: 0 16px; margin: 12px 0 4px; font-size: 10px; font-weight: 500; text-transform: uppercase; letter-spacing: .05em; color: #a1a1aa; }
+.navitem { display: flex; align-items: center; gap: 8px; height: 32px; padding: 0 16px; font-size: 13px; color: #3f3f46; }
+.navitem.on { background: #18181b; color: #fff; }
+.navbadge { font-family: 'JetBrains Mono',monospace; font-variant-numeric: tabular-nums; font-size: 10px; padding: 0 6px; height: 16px;
+            display: inline-flex; align-items: center; border-radius: 4px; background: #f4f4f5; color: #3f3f46; margin-left: auto; }
+.navbadge.violet { background: #f5f3ff; color: #6d28d9; }
+.kpilabel { font-size: 12px; color: #71717a; }
+.kpival { font-size: 24px; font-weight: 600; font-family: 'JetBrains Mono',ui-monospace,monospace; font-variant-numeric: tabular-nums; color: #18181b; }
+.log { font-family: 'JetBrains Mono',ui-monospace,monospace; font-size: 12px; line-height: 1.7; color: #d4d4d8;
+       background: #18181b; border-radius: 6px; padding: 14px 16px; white-space: pre; overflow: hidden; }
+.log .ok { color: #34d399; } .log .warn { color: #fbbf24; } .log .err { color: #f87171; } .log .dim { color: #71717a; }
+  </style>
+</helmet>
+<div style="width:1440px;height:1120px;background:#fafafa;padding:32px;display:flex;flex-direction:column;gap:16px;overflow:hidden">
+
+  <div style="display:flex;align-items:baseline;gap:16px">
+    <h1 style="font-size:20px;font-weight:600">状态语言 · AMZ 采购控制台</h1>
+    <span style="font-size:12px;color:#71717a">沿用 WalmartAPI 运营台的词汇与色板(zinc + emerald/amber/red/sky/violet)。本页只定义本系统新增的两件事:<b>7 个任务状态</b>与 <b>18 个错误码</b>怎么呈现。</span>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1fr 1fr;gap:16px">
+
+    <section class="card"><header class="chead"><h2 class="ctitle">任务状态 · 7 个,映射到既有的中间态/终态规则</h2></header>
+    <div style="padding:16px;display:flex;flex-direction:column;gap:14px">
+      <div style="display:flex;align-items:center;gap:16px">
+        <span style="font-size:12px;color:#a1a1aa;width:76px;flex:none">中间态(虚线)</span>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <span class="tag tagdash" style="background:#fff;color:#52525b;border-color:#d4d4d8">pending</span>
+          <span class="tag tagdash" style="background:#fff;color:#0369a1;border-color:#bae6fd">ready</span>
+          <span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">claimed</span>
+        </div>
+      </div>
+      <div style="display:flex;align-items:center;gap:16px">
+        <span style="font-size:12px;color:#a1a1aa;width:76px;flex:none">终态(实心)</span>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <span class="tag" style="background:#ecfdf5;color:#047857;border-color:#a7f3d0">purchased</span>
+          <span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">exception</span>
+          <span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">manual</span>
+          <span class="tag" style="background:#f4f4f5;color:#3f3f46;border-color:#e4e4e7">cancelled</span>
+        </div>
+      </div>
+      <div style="height:1px;background:#f4f4f5"></div>
+      <div style="font-size:12px;color:#71717a;line-height:1.8">
+        <b>claimed 用琥珀虚线,不用灰。</b>灰是既有系统里「忙 · 上一轮还在跑」的颜色,那是<i>被别人占着</i>;
+        claimed 是<i>这一单正在被执行</i>,属于 executing 家族。<br>
+        <b>manual 用紫色实心,是本系统唯一要人动手的状态。</b>紫色在既有色板里是「特例」。它不是失败(单子可能已经成了),
+        也不是成功,而是<b>系统主动停下来等人裁决</b>——例如下单后没见到确认页、订单卡 ASIN 与本单不符、认领超时。
+        列表默认按 manual 置顶,这是运营每天唯一必须清空的桶。
+      </div>
+    </div></section>
+
+    <section class="card"><header class="chead"><h2 class="ctitle">状态机 · 唯一入口是认领,唯一出口是四个终态</h2></header>
+    <div style="padding:16px 16px 18px;display:flex;flex-direction:column;gap:10px">
+      <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap;font-size:12px;color:#3f3f46">
+        <span class="tag tagdash" style="background:#fff;color:#52525b;border-color:#d4d4d8">pending</span>
+        <span style="color:#a1a1aa">— 放行 →</span>
+        <span class="tag tagdash" style="background:#fff;color:#0369a1;border-color:#bae6fd">ready</span>
+        <span style="color:#a1a1aa">— 插件认领 →</span>
+        <span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">claimed</span>
+      </div>
+      <div style="padding-left:24px;border-left:2px solid #f4f4f5;margin-left:8px;display:flex;flex-direction:column;gap:7px;font-size:12px;color:#3f3f46">
+        <div style="display:flex;align-items:center;gap:8px"><span style="color:#a1a1aa;width:96px;flex:none">下单成功</span><span class="tag" style="background:#ecfdf5;color:#047857;border-color:#a7f3d0">purchased</span><span style="color:#a1a1aa">回填 AMZ 单号</span></div>
+        <div style="display:flex;align-items:center;gap:8px"><span style="color:#a1a1aa;width:96px;flex:none">结构化失败</span><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">exception</span><span style="color:#a1a1aa">带错误码,可重置回 ready</span></div>
+        <div style="display:flex;align-items:center;gap:8px"><span style="color:#a1a1aa;width:96px;flex:none">可能已下单</span><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">manual</span><span style="color:#a1a1aa">禁止自动重试</span></div>
+        <div style="display:flex;align-items:center;gap:8px"><span style="color:#a1a1aa;width:96px;flex:none">插件主动放弃</span><span class="tag tagdash" style="background:#fff;color:#0369a1;border-color:#bae6fd">ready</span><span style="color:#a1a1aa">退回队列</span></div>
+        <div style="display:flex;align-items:center;gap:8px"><span style="color:#a1a1aa;width:96px;flex:none">认领超时</span><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">manual</span><span style="color:#a1a1aa">不退回 ready</span></div>
+      </div>
+      <div style="font-size:12px;color:#71717a;line-height:1.8;margin-top:2px">
+        <b>超时不退回 ready,这条要在界面上写死。</b>插件可能已经在 Amazon 上真下了单只是没回传,
+        自动重试就是重复下单。所以超时走 manual,人确认过才决定放回还是回填。
+      </div>
+    </div></section>
+  </div>
+
+  <div style="display:grid;grid-template-columns:1.35fr 1fr;gap:16px">
+
+    <section class="card"><header class="chead"><h2 class="ctitle">错误码 · 18 个,按「能不能自动重试」分两组</h2></header>
+    <div style="padding:16px;display:flex;flex-direction:column;gap:12px">
+      <div>
+        <div style="font-size:12px;color:#71717a;margin-bottom:7px">可重试(虚线)——重置回 ready 即可,通常是页面慢或结构没等到</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <span class="tag tagdash mono" style="background:#fff;color:#b45309;border-color:#fde68a">ADD_TO_CART_FAILED</span>
+          <span class="tag tagdash mono" style="background:#fff;color:#b45309;border-color:#fde68a">CART_MISMATCH</span>
+          <span class="tag tagdash mono" style="background:#fff;color:#b45309;border-color:#fde68a">ADDRESS_FORM_TIMEOUT</span>
+          <span class="tag tagdash mono" style="background:#fff;color:#b45309;border-color:#fde68a">CHECKOUT_TIMEOUT</span>
+          <span class="tag tagdash mono" style="background:#fff;color:#b45309;border-color:#fde68a">PLUGIN_INTERNAL</span>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:12px;color:#71717a;margin-bottom:7px">不可重试(实心)——数据或商品本身的问题,重试多少次都一样</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <span class="tag mono" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">OUT_OF_STOCK</span>
+          <span class="tag mono" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">QTY_UNAVAILABLE</span>
+          <span class="tag mono" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">NOT_FBA</span>
+          <span class="tag mono" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">BUNDLE_PRODUCT</span>
+          <span class="tag mono" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">ADDRESS_STATE_UNMATCHED</span>
+          <span class="tag mono" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">ADDRESS_SUGGESTION_BLOCKED</span>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:12px;color:#71717a;margin-bottom:7px">护栏拦截(紫)——不是故障,是系统按规则拒绝下单,需要人裁决</div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <span class="tag mono" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">PRICE_CAP_EXCEEDED</span>
+          <span class="tag mono" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">DELIVERY_TOO_LATE</span>
+          <span class="tag mono" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">DELIVERY_UNPARSEABLE</span>
+        </div>
+      </div>
+      <div>
+        <div style="font-size:12px;color:#71717a;margin-bottom:7px">必须人工确认(紫)——这三个的共同点是<b>可能已经产生了真实订单</b></div>
+        <div style="display:flex;gap:6px;flex-wrap:wrap">
+          <span class="tag mono" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">ORDER_CONFIRM_TIMEOUT</span>
+          <span class="tag mono" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">ORDER_NO_AMBIGUOUS</span>
+          <span class="tag mono" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">CLAIM_TIMEOUT</span>
+          <span class="tag mono" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">CAPTCHA_ENCOUNTERED</span>
+        </div>
+      </div>
+      <div style="font-size:12px;color:#71717a;line-height:1.8;border-top:1px solid #f4f4f5;padding-top:11px">
+        错误码是<b>封闭集</b>,服务端 <span class="id">task_event</span> 会拒收表外的值。界面上不允许出现自由文本作为失败原因——
+        旧厂商系统 18 处失败全写成同一个 status=99 加一句中文,结果没法按原因统计,也没法建处置 SOP。
+      </div>
+    </div></section>
+
+    <section class="card"><header class="chead"><h2 class="ctitle">危险动作 · 沿用「先预览再执行」</h2></header>
+    <div style="padding:16px;display:flex;flex-direction:column;gap:13px">
+      <div style="display:flex;align-items:center;gap:10px;flex-wrap:wrap">
+        <span class="btn sm bghost">筛选</span>
+        <span class="btn sm bs">导出 CSV</span>
+        <span class="btn sm bp">重置回队列</span>
+        <span class="btn sm bdanger"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#fff" stroke-width="1.75" stroke-linecap="round" stroke-linejoin="round" style="flex:none"><polygon points="13 2 3 14 12 14 11 22 21 10 12 10 13 2"/></svg>强制回填单号</span>
+      </div>
+      <div style="font-size:12px;color:#71717a;line-height:1.8">
+        只读动作用幽灵,常规写入用黑实心,<b>会造成真实资金后果的用红实心 + ⚡,且永远先出现预览那一步</b>。
+        本系统里够格用红的只有两个:<b>强制回填单号</b>(把一个人工找到的 AMZ 单号写进任务)和
+        <b>批量重置 manual 回队列</b>(等于允许重新下单)。
+      </div>
+      <div style="height:1px;background:#f4f4f5"></div>
+      <div style="font-size:12px;color:#71717a;line-height:1.8">
+        <b>表格密度沿用两档:</b>任务列表用紧凑 32px(单日几千行),
+        事件时间线与任务详情内嵌表用舒适 40px。
+      </div>
+      <div style="display:flex;gap:10px;align-items:center;margin-top:2px">
+        <span class="pill"><span class="dot" style="background:#10b981"></span>成功</span>
+        <span class="pill"><span class="dot" style="background:#ef4444"></span>失败</span>
+        <span class="pill"><span class="dot" style="background:#a1a1aa"></span>环境暂停</span>
+        <span class="pill"><span class="dothollow"></span>结局待确认</span>
+        <span class="pill"><span class="dot" style="background:#8b5cf6"></span>待人工</span>
+      </div>
+    </div></section>
+  </div>
+</div>
+</x-dc>
+<script data-dc-script data-props='{"$preview": {"width": 1440, "height": 1120}}'>
+class Component extends DCLogic {
+  renderVals() { return {}; }
+}
+</script>
+</body>
+</html>
