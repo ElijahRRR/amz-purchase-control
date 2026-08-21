@@ -136,6 +136,7 @@ def complete(task_id: int, req: schemas.CompleteReq,
             "delivery_date": delivery_date,
             "delivery_raw": req.delivery_raw,
         },
+        line_items=[i.model_dump() for i in req.line_items],
     )
     if not ok:
         raise HTTPException(409, detail={"code": "TASK_NOT_HELD",

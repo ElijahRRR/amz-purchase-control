@@ -81,16 +81,18 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
       delivery_texts: reading.deliveryTexts,
     });
 
+    // 单价来自结算页实测,数量来自任务 —— 购物车那一步已经核对过车里就是这些。
+    const lineItems = reading.unitPrices.map((u) => ({
+      ...u,
+      quantity: task.products.find((p) => p.asin === u.asin)?.quantity ?? 1,
+    }));
+
     // 护栏:插件只报数,服务端裁决。
     const verdict = await client.guardCheck(task.task_id, {
       actual_total: reading.actualTotal,
       actual_shipping: reading.actualShipping,
       actual_tax: reading.actualTax,
-      // 单价来自结算页实测,数量来自任务 —— 购物车那一步已经核对过车里就是这些。
-      line_items: reading.unitPrices.map((u) => ({
-        ...u,
-        quantity: task.products.find((p) => p.asin === u.asin)?.quantity ?? 1,
-      })),
+      line_items: lineItems,
       delivery_raws: reading.deliveryTexts,
       is_fba: reading.isFba,
     });
@@ -138,6 +140,9 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
       payment_last4: reading.paymentLast4,
       delivery_raw: deliveryUsed,
       observed_asins: card.observedAsins,
+      // 同一份实测单价,护栏那一步报过一次,落库要在这一步 ——
+      // 被护栏拦下的单没有"实付单价"可言,不该往库里写
+      line_items: lineItems,
     });
 
     if (done.ok) {

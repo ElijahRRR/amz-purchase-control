@@ -126,6 +126,9 @@ class CompleteReq(BaseModel):
     # 订单历史卡片上解析出的 ASIN。插件本来就要解析商品链接,顺手带上做断言,
     # 不多一次页面加载。与本单 ASIN 不符则拒绝回填并转人工。
     observed_asins: list[str] = Field(default_factory=list)
+    # 结算页读到的实测单价。落进 task_products.actual_unit_price ——
+    # 「上游给的限价」与「实际每件多少钱」是两个数,后者才是对账要看的。
+    line_items: list[LineItemIn] = Field(default_factory=list)
 
 
 class FailReq(BaseModel):

@@ -241,3 +241,52 @@ def test_shipment_sync_replaces_events(client, conn, seed):
     client.post("/v1/shipments/sync", json=body)
     n = conn.execute("SELECT count(*) AS n FROM logistics.shipment_events").fetchone()["n"]
     assert n == 2
+
+
+def test_complete_writes_actual_unit_price(client, conn, seed):
+    """task_products.actual_unit_price 之前被读了两处、写了零处。
+
+    列在库里、文档写着「结算页实测,回传后填」、设计画布上还显示着「实付单价」——
+    但从来没人填。这类「看起来有、其实是空的」字段最坏:
+    对账的人拿它跟限价比,比出来永远是空,而他会以为是数据还没同步。
+    """
+    _env, _inst, tasks = seed
+    r = client.post("/v1/tasks/claim", json={"instance_uid": "inst-A"})
+    tid = r.json()["data"]["task_id"]
+
+    client.post(f"/v1/tasks/{tid}/complete", json={
+        "instance_uid": "inst-A",
+        "amazon_order_no": "111-0000021-0000021",
+        "actual_total": "10.79",
+        "observed_asins": ["B0FB3VS68J"],
+        "line_items": [{"asin": "B0FB3VS68J", "unit_price": "9.99", "quantity": 1}],
+    })
+
+    row = conn.execute(
+        "SELECT actual_unit_price FROM procure.task_products WHERE task_id = %s", (tid,)
+    ).fetchone()
+    assert str(row["actual_unit_price"]) == "9.99"
+
+
+def test_complete_ignores_unit_prices_for_asins_not_in_the_task(client, conn, seed):
+    """结算页多出一行商品意味着买错了东西。
+
+    那种情况应该在购物车回读那一步就被 CART_MISMATCH 拦住,轮不到这里补救 ——
+    所以这里只更新已存在的商品行,不新增。悄悄补一行进去,
+    等于让一个本该失败的单看起来正常。
+    """
+    _env, _inst, tasks = seed
+    r = client.post("/v1/tasks/claim", json={"instance_uid": "inst-A"})
+    tid = r.json()["data"]["task_id"]
+
+    client.post(f"/v1/tasks/{tid}/complete", json={
+        "instance_uid": "inst-A",
+        "amazon_order_no": "111-0000022-0000022",
+        "observed_asins": ["B0FB3VS68J"],
+        "line_items": [{"asin": "B0FB3VS68J", "unit_price": "9.99", "quantity": 1},
+                       {"asin": "B0NOTOURS1", "unit_price": "1.00", "quantity": 1}],
+    })
+
+    rows = conn.execute(
+        "SELECT asin FROM procure.task_products WHERE task_id = %s", (tid,)).fetchall()
+    assert [x["asin"] for x in rows] == ["B0FB3VS68J"]

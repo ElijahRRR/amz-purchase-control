@@ -63,6 +63,8 @@ export class Client {
     payment_last4?: string;
     delivery_raw?: string;
     observed_asins: string[];
+    /** 结算页读到的实测单价。「上游给的限价」与「实际每件多少钱」是两个数。 */
+    line_items?: LineItem[];
   }): Promise<ApiResult<{ task_id: number; status: string }>> {
     return post("/v1/tasks/" + taskId + "/complete", {
       instance_uid: this.instanceUid,

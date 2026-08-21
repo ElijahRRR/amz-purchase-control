@@ -113,6 +113,22 @@ def fail(
     return True
 
 
+def _write_unit_prices(conn, task_id: int, line_items) -> None:
+    """输入:任务 id + 结算页实测的行 → 输出:无。按 ASIN 回填 actual_unit_price。
+
+    只更新已存在的商品行,不新增 —— 结算页多出一行商品意味着买错了东西,
+    那种情况应该在购物车回读那一步就被 CART_MISMATCH 拦住,轮不到这里补救。
+    """
+    for item in line_items or []:
+        asin = item["asin"] if isinstance(item, dict) else item.asin
+        price = item["unit_price"] if isinstance(item, dict) else item.unit_price
+        conn.execute(
+            """UPDATE procure.task_products SET actual_unit_price = %s
+                WHERE task_id = %s AND asin = %s""",
+            (price, task_id, asin),
+        )
+
+
 def complete(
     conn,
     task_id: int,
@@ -120,11 +136,14 @@ def complete(
     amazon_order_no: str,
     instance_id: int | None = None,
     totals: dict[str, Any] | None = None,
+    line_items: list[Any] | None = None,
 ) -> bool:
-    """输入:连接 + 任务 id + Amazon 订单号(+金额/交期)→ 输出:是否写入成功。
+    """输入:连接 + 任务 id + Amazon 订单号(+金额/交期/实测单价)→ 输出:是否写入成功。
 
     totals 可含 actual_total / actual_shipping / actual_tax / payment_last4 /
     delivery_date / delivery_raw。
+    line_items 是结算页读到的每行单价,落进 task_products.actual_unit_price ——
+    「上游给的限价」与「实际每件多少钱」是两个数,后者才是对账要看的。
     """
     t = totals or {}
     row = conn.execute(
@@ -156,6 +175,7 @@ def complete(
     ).fetchone()
     if row is None:
         return False
+    _write_unit_prices(conn, task_id, line_items)
     task_event.record(
         conn, task_id, "purchased", instance_id=instance_id,
         payload={"amazon_order_no": amazon_order_no, **t},
