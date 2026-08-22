@@ -98,6 +98,8 @@ export class Client {
     tracking_no?: string;
     tracking_url?: string;
     status?: "not_shipped" | "in_transit" | "delivered" | "cancelled";
+    /** Amazon 明说这会儿给不了轨迹。与「我们没解析出来」分开记。 */
+    tracking_unavailable?: boolean;
     events: Array<Record<string, unknown>>;
   }): Promise<ApiResult<{ shipment_id: number; events: number; status: string | null }>> {
     return post("/v1/shipments/sync", { instance_uid: this.instanceUid, ...body }, this.opts);

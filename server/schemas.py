@@ -181,6 +181,13 @@ class ShipmentSyncReq(BaseModel):
     tracking_no: str | None = None
     tracking_url: str | None = None
     status: Literal["not_shipped", "in_transit", "delivered", "cancelled"] | None = None
+    #: Amazon 明说「这会儿给不了轨迹」(跟踪页那句 unable to get the tracking
+    #: information)。**与「我们没解析出来」是两回事**:前者等下一轮就好,
+    #: 后者是选择器坏了要人去看。都记成「0 条轨迹」的话,选择器真坏了会被当成
+    #: 「这批单都还没发货」,一直到有人发现整整一周没有任何轨迹为止。
+    #: 状态照样落 not_shipped(那是事实),但这一位会写进事件流,
+    #: 让运营台上分得出是哪一种。
+    tracking_unavailable: bool = False
     events: list[ShipmentEventIn] = Field(default_factory=list)
 
 

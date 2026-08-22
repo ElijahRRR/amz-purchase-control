@@ -1,0 +1,129 @@
+<!doctype html>
+<!--
+  ============================================================================
+  夹具：结算页 —— Amazon 换了单价类名的那一版
+  ============================================================================
+
+  为什么要有这个夹具
+  ------------------
+  我们的 checkout.html 是照 v2.4.1 那份逆向报告造的，单价一律挂
+  `span.lineitem-price-text.a-text-bold`。厂商 v2.5.1 在原选择器上补了一个
+  兜底 `span.apex-price-to-pay-value` —— 他们在真实 Amazon 上以万单规模跑，
+  这是我们能拿到的最强的线上 DOM 信号：**Amazon 已经在部分结算页换了这一格**。
+
+  只有旧夹具的话，我们那 68 条断言会一路绿灯，而线上一个单价都读不到：
+  `readCheckoutPanels` 每个面板的 unitPrice 都是 undefined，
+  `readCheckout` 里那句 `.filter(p => p.asin && p.unitPrice)` 把它们全滤掉，
+  unitPrices 静默变成空数组 —— 没有任何地方报错，运营台「实付单价」整列悄悄变空。
+
+  这个夹具就是用来让那种情况变红的。
+
+  与 checkout.html 的关系
+  ----------------------
+  只换单价那一格的类名，其余结构、干扰项一概不重复（那些 checkout.html 已经盖了）。
+  两个面板：
+    · 面板 1  B0FB3VS68J   $12.50   FBA（Ships from Amazon.com）
+    · 面板 2  B0CHXNPXVX   $249.50  非 FBA（Ships from ThirdParty Seller）
+
+  干扰项
+  ------
+  A. 面板 2 的价格列里另有一个 `apex-price-to-pay-value`，但它在
+     `.a-price[data-a-strike]` 里（划线原价 $299.99）。取值不带作用域/不判划线，
+     就会把原价当实付单价 —— 与 checkout.html 里 List price 那个陷阱同源。
+  B. 页面底部有一个不在任何面板里的 apex 价（推荐位），作用域写松会混进来。
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Checkout</title></head>
+<body>
+
+  <div id="deliver-to-address-text">Chen Wei, 884 Oakridge Ave, Fremont, CA 94538</div>
+  <div id="payment-option-text-default">Visa ending in 4412</div>
+
+  <!-- ── 面板 1：FBA，单价 $12.50 ─────────────────────────────────────── -->
+  <div data-csa-c-slot-id="checkout-itemBlockPanel">
+    <div class="lineitem-container">
+      <div class="a-fixed-left-grid">
+        <div class="a-fixed-left-grid-col a-col-right">
+          <div id="col-item-block-description">
+            <span class="aok-hidden">B0FB3VS68J</span>
+            <span class="a-size-base a-color-base a-text-bold">Echo Dot (5th Gen)</span>
+          </div>
+          <div class="a-row a-size-small a-color-secondary">Qty: 1</div>
+          <p class="a-spacing-none">
+            <span class="a-size-small a-color-secondary">Ships from Amazon.com</span>
+          </p>
+          <p class="a-spacing-none">
+            <span class="a-size-small a-color-secondary">Sold by Amazon.com</span>
+          </p>
+          <h2 class="a-size-base-plus a-color-success">Tomorrow, August 22</h2>
+        </div>
+
+        <div class="a-fixed-left-grid-col a-col-far-right a-text-right">
+          <!-- ✅ 新类名：单价正主 -->
+          <span class="a-price"><span class="apex-price-to-pay-value">$12.50</span></span>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 面板 2：非 FBA，单价 $249.50，另有划线原价 ─────────────────────── -->
+  <div data-csa-c-slot-id="checkout-itemBlockPanel">
+    <div class="lineitem-container">
+      <div class="a-fixed-left-grid">
+        <div class="a-fixed-left-grid-col a-col-right">
+          <div id="col-item-block-description">
+            <span class="aok-hidden">B0CHXNPXVX</span>
+            <span class="a-size-base a-color-base a-text-bold">Amazon Basics 48-Pack AA Batteries</span>
+          </div>
+          <div class="a-row a-size-small a-color-secondary">Qty: 3</div>
+          <p class="a-spacing-none">
+            <span class="a-size-small a-color-secondary">Ships from ThirdParty Seller</span>
+          </p>
+          <p class="a-spacing-none">
+            <span class="a-size-small a-color-secondary">Sold by ThirdParty Seller</span>
+          </p>
+          <div class="a-row a-size-small a-color-secondary">
+            Amazon's A-to-z Guarantee applies to this third-party order
+          </div>
+          <h2 class="a-size-base-plus a-color-success">Thursday, August 28</h2>
+        </div>
+
+        <div class="a-fixed-left-grid-col a-col-far-right a-text-right">
+          <!-- ── 干扰项 A：划线原价,也挂 apex-price-to-pay-value ──
+               真实 Amazon 的划线价在 .a-price[data-a-strike] 里。
+               它排在实付价**前面** —— 谁先取到谁赢,所以顺序是有意的。 -->
+          <span class="a-price" data-a-strike="true">
+            <span class="apex-price-to-pay-value">$299.99</span>
+          </span>
+          <!-- ✅ 实付单价正主 -->
+          <span class="a-price"><span class="apex-price-to-pay-value">$249.50</span></span>
+          <div class="a-row a-size-mini a-color-secondary">$748.50 total</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 干扰项 B：不在任何面板里的 apex 价(推荐位) ────────────────────── -->
+  <div id="rhf-container">
+    <span class="a-price"><span class="apex-price-to-pay-value">$9.99</span></span>
+  </div>
+
+  <div id="checkout-pyo-button-block">
+    <div class="a-column a-span12 grand-total-cell">$761.00</div>
+  </div>
+
+  <div id="subtotals-marketplace-table">
+    <li><span class="a-color-base">Items:</span><span class="a-color-base">$761.00</span></li>
+    <li><span class="a-color-base">Shipping &amp; handling:</span><span class="a-color-base">$0.00</span></li>
+    <li><span class="a-color-base">Estimated tax to be collected:</span><span class="a-color-base">$62.78</span></li>
+  </div>
+
+  <div id="submitOrderButtonId">
+    <span class="a-button-inner">
+      <input type="hidden" name="anti-csrftoken-a2z" value="hZm...">
+      <input type="submit" class="a-button-input" value="Place your order">
+    </span>
+  </div>
+
+</body>
+</html>

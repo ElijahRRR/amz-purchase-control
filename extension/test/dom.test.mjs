@@ -166,6 +166,25 @@ await withFixture("checkout-thirdparty.html", async (run) => {
 });
 
 // ── 结算中间页 ──────────────────────────────────────────────────────
+// Amazon 在部分结算页把单价那一格换成了 apex-price-to-pay-value。
+// 依据是厂商 v2.5.1 在原选择器上补了同一个兜底 —— 他们跑在真实 Amazon 上。
+// 我们的 checkout.html 只有旧类名,所以这几条**要是没有,68 条断言会一路绿灯,
+// 而线上一个单价都读不到**。
+await withFixture("checkout-apex-price.html", async (run) => {
+  const panels = await run("amzdom.readCheckoutPanels(document)");
+  eq("apex 面板数 2", panels.length, 2);
+  eq("apex 单价 1(新类名)", panels[0].unitPrice, "12.50");
+  // 划线原价也挂 apex-price-to-pay-value,而且排在实付价**前面** ——
+  // 不排除 .a-price[data-a-strike] 就会读到 299.99,比实付还高
+  eq("apex 单价 2 不是划线原价", panels[1].unitPrice, "249.50");
+  eq("apex FBA 判定仍然分得开", [panels[0].isFba, panels[1].isFba], [true, false]);
+  // 面板外的推荐位价格(9.99)不能混进来
+  check("apex 推荐位价格没混进单价",
+     !panels.some((p) => p.unitPrice === "9.99"),
+     JSON.stringify(panels.map((p) => p.unitPrice)));
+  eq("apex 总价照常", await run("amzdom.readGrandTotal(document)"), "761.00");
+});
+
 await withFixture("checkout-interstitial.html", async (run) => {
   // 隐藏的同选择器副本排在真按钮前面:取第一个就会点在 display:none 的元素上,
   // 不报错也不跳转,然后 45 秒超时,一单白跑
@@ -222,6 +241,41 @@ await withFixture("order-details.html", async (run) => {
 
   check("order-details 找到跟踪链接",
         (await run("amzdom.findTrackingLink(document)") || "").includes("/ship-track?"));
+});
+
+// 跟踪按钮的外壳 class 换了,href 形状没变。
+// 原先拿 class 当入口闸门 —— class 一变就返回 null,而 shipment.ts 把
+// 「没有跟踪链接」当成 not_shipped:一批在路上的包裹会被整批记成未发货,
+// 没有任何地方报错。
+await withFixture("order-details-newbutton.html", async (run) => {
+  const link = await run("amzdom.findTrackingLink(document)");
+  check("新外壳 class 也能按 href 找到跟踪链接", !!link, String(link));
+  check("找到的是真单号那条,不是隐藏模板里的占位符",
+     String(link).includes("111-4820193-7736441"), String(link));
+  check("没把「查看发票」当成跟踪链接",
+     !String(link).includes("invoice"), String(link));
+});
+
+// 更坏的一种:href 形状也变了,两条 hint 全落空,只剩 class 兜底。
+// 而 class 兜底那几个外壳里,「Cancel items」和「Track package」是邻居 ——
+// 兜底要是「只要 href 非空就拿」,一次例行的物流同步会变成一次取消订单。
+await withFixture("order-details-cancel-neighbor.html", async (run) => {
+  const link = String(await run("amzdom.findTrackingLink(document)"));
+  check("class 兜底没把「取消订单」当成跟踪链接", !link.includes("cancel"), link);
+  check("class 兜底也没抓到「退货」", !link.includes("returns"), link);
+  check("认出了文案写着 Track package 的那条", link.includes("/shipment-status/v2/"), link);
+});
+
+// Amazon 明说「这会儿给不了轨迹」。
+// 认出它有两个作用:省掉 30 秒干等,以及把它与「我们没解析出来」分开 ——
+// 都记成 0 条轨迹的话,选择器坏了会被当成「这批单都还没发货」。
+await withFixture("tracking-unavailable.html", async (run) => {
+  eq("认出 Amazon 的「暂时给不了轨迹」",
+     await run("amzdom.isTrackingUnavailable(document)"), true);
+});
+await withFixture("tracking.html", async (run) => {
+  eq("正常跟踪页不会被误判成「给不了轨迹」",
+     await run("amzdom.isTrackingUnavailable(document)"), false);
 });
 
 await withFixture("order-details-cancelled.html", async (run) => {

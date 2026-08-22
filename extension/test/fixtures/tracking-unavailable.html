@@ -1,0 +1,52 @@
+<!doctype html>
+<!--
+  ============================================================================
+  夹具：包裹跟踪页 —— Amazon 说「这会儿给不了轨迹」
+  ============================================================================
+
+  真实形态：订单详情页上跟踪按钮是有的，点进去 Amazon 回一句
+  "Sorry, we are unable to get the tracking information right now."
+  —— 这是它那边的临时状况，不是我们解析错了。
+
+  为什么要单独造这个夹具
+  ----------------------
+  不认这句话的话，两件事会长得一模一样：
+    · Amazon 暂时给不了     → 等下一轮就好
+    · 我们的选择器坏了       → 要人去看
+  都记成「0 条轨迹」，于是选择器真坏了会被当成「这批单都还没发货」，
+  一直到有人发现整整一周没有任何轨迹为止。
+
+  顺带还有 30 秒：页面上 .pt-delivery-card-trackingId / #primaryStatus /
+  #tracking-events-container 一个都没有，不认这句话就只能干等满超时。
+  一批 20 单全是这种，就是白等 10 分钟。
+
+  干扰项
+  ------
+  A. 页面上仍有 #primaryStatus 的**近似**元素（class 而非 id），
+     用 querySelector("#primaryStatus") 才不会误判成「就绪」。
+  B. 侧栏帮助文案里也含 "tracking information" 字样，但不含完整那句 ——
+     判据必须是完整短语，不能只找 "tracking"。
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Track Package</title></head>
+<body>
+
+  <div id="pt-page-container">
+    <div class="pt-error-container">
+      <h4 class="a-alert-heading">
+        Sorry, we are unable to get the tracking information right now.
+      </h4>
+      <p class="a-size-base">Please check back later.</p>
+    </div>
+
+    <!-- 干扰项 A：像 #primaryStatus 但不是它 -->
+    <div class="primaryStatus a-color-secondary">Not yet shipped</div>
+  </div>
+
+  <!-- 干扰项 B：含 "tracking information" 但不是那句话 -->
+  <div id="rhf-container">
+    <p>For more about tracking information, visit our Help pages.</p>
+  </div>
+
+</body>
+</html>

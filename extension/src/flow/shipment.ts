@@ -17,6 +17,9 @@ export interface TrackingRead {
   carrier: string | null;
   status: "not_shipped" | "in_transit" | "delivered" | "cancelled" | null;
   promise: string | null;
+  /** Amazon 明说「这会儿给不了轨迹」。与「我们没解析出来」分开 ——
+   *  两者都是 0 条轨迹,但前者等下一轮就好,后者是选择器坏了要人去看。 */
+  unavailable?: boolean;
   events: Array<{
     raw_day: string | null;
     raw_time: string | null;
@@ -40,6 +43,9 @@ export interface SyncSummary {
   synced: number;
   cancelled: number;
   notFound: number;
+  /** Amazon 明说这会儿给不了轨迹。**不算 failed** —— 那是它那边的事,
+   *  混进 failed 会让「我们坏了」的数字长期不为零,然后没人再看它。 */
+  unavailable: number;
   failed: number;
 }
 
@@ -49,7 +55,8 @@ export async function syncShipments(
   log: Log,
   limit?: number,
 ): Promise<SyncSummary> {
-  const summary: SyncSummary = { attempted: 0, synced: 0, cancelled: 0, notFound: 0, failed: 0 };
+  const summary: SyncSummary = { attempted: 0, synced: 0, cancelled: 0, notFound: 0,
+                                 unavailable: 0, failed: 0 };
 
   const pending = await client.shipmentPending(limit);
   if (!pending.ok) {
@@ -94,6 +101,20 @@ export async function syncShipments(
         }
 
         const t = await reader.readTracking(url);
+
+        if (t.unavailable) {
+          // 不当成一次有内容的同步。记成「还没有轨迹」并说明原因 ——
+          // 下一轮重来就是了,而运营看日志能分清这不是我们坏了。
+          await client.shipmentSync({
+            task_id: item.task_id, order_state: "ok",
+            status: "not_shipped", tracking_url: url,
+            tracking_unavailable: true, events: [],
+          });
+          log.warn(`${item.upstream_order_no} · Amazon 暂时给不出轨迹,下一轮再试`);
+          summary.unavailable += 1;
+          continue;
+        }
+
         const res = await client.shipmentSync({
           task_id: item.task_id,
           order_state: "ok",

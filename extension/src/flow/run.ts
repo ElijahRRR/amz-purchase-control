@@ -81,6 +81,18 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
       delivery_texts: reading.deliveryTexts,
     });
 
+    // 结算页有商品、却一个单价都没读到 —— 那是选择器坏了,不是「这单没单价」。
+    // 不拦下单(限价护栏比的是 actual_total,走另一个选择器,仍然有效),
+    // 但必须在事件流里留下痕迹:静默的话,运营台上「实付单价」整列悄悄变空,
+    // 没有任何地方报错,等有人觉得不对已经是几百单之后。
+    if (reading.unitPriceSelectorBroken) {
+      await step("结算页单价读不到", {
+        note: "有商品面板但一个单价都没解析出来,多半是 Amazon 换了类名;" +
+              "限价护栏不受影响(它比的是整单实付),但实付单价这一列会是空的",
+      });
+      log.warn("结算页一个单价都没读到 —— 选择器可能失效了,单子照下但实付单价缺失");
+    }
+
     // 单价来自结算页实测,数量来自任务 —— 购物车那一步已经核对过车里就是这些。
     const lineItems = reading.unitPrices.map((u) => ({
       ...u,

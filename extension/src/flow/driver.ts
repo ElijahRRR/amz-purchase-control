@@ -44,6 +44,9 @@ export interface CheckoutReading {
   /** 结算页读到的单价。**没有数量** —— 结算页上的数量没读,不编。
    *  上报给服务端时由 runTask 拿任务里的数量来配对(购物车已经核对过一致)。 */
   unitPrices: Array<{ asin: string; unit_price: string }>;
+  /** 结算页上有商品面板,却一个单价都没读到 —— 选择器坏了,不是「这单没单价」。
+   *  不中断下单(限价护栏不依赖它),但要在事件流里留痕。 */
+  unitPriceSelectorBroken?: boolean;
   paymentLast4?: string;
 }
 

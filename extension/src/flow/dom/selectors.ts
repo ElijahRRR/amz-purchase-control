@@ -49,7 +49,23 @@ export const SEL = {
     itemPanel: '[data-csa-c-slot-id="checkout-itemBlockPanel"]',
     lineItemContainer: ".lineitem-container",
     panelAsin: '[id="col-item-block-description"] > .aok-hidden',
-    panelUnitPrice: "span.lineitem-price-text.a-text-bold",
+    /** 结算页每个商品面板上的单价。
+     *
+     * **两个都要试。** Amazon 已经在部分结算页把这一格换成了
+     * `apex-price-to-pay-value` —— 依据不是猜的:厂商 v2.5.1 在原选择器上
+     * 补了同一个兜底,而他们是在真实 Amazon 上以万单规模跑的,
+     * 这是我们能拿到的最强的线上 DOM 信号。
+     *
+     * 我们的夹具是照 v2.4.1 那份报告造的,只有旧类名 ——
+     * 所以这条要是不补,68 条断言会一路绿灯,而线上一个单价都读不到。 */
+    panelUnitPrice: [
+      // 旧版:靠 a-text-bold 甩掉划线原价(List price 那个不带 bold)
+      "span.lineitem-price-text.a-text-bold",
+      // 新版:划线原价也挂同一个类名,判据在**祖先**上 —— .a-price[data-a-strike]。
+      // 不排它的话会读到划线原价:那个数比实付高,写进「实付单价」是反的,
+      // 而且它排在实付价前面,谁先取到谁赢。
+      ".a-price:not([data-a-strike]) .apex-price-to-pay-value",
+    ],
     panelShipper: "p.a-spacing-none span.a-size-small",
     panelDelivery: "h2",
     grandTotal: "#checkout-pyo-button-block .grand-total-cell",
@@ -90,6 +106,15 @@ export const SEL = {
     subtotalRow: "#od-subtotals .a-row.od-line-item-row",
     productLinks: ".a-fixed-left-grid-col.a-col-right .a-row .a-link-normal",
     paymentDetails: ".pmts-payments-instrument-details",
+    /** 跟踪链接的**兜底** class 选择器。
+     *
+     * 正常路径是直接按 href 找(见 parse.findTrackingLink)——
+     * 按钮外壳的 class 是 Amazon 改得最勤的东西,而 `/ship-track?`、
+     * `/progress-tracker/package/` 这两个 URL 形状多年没动。
+     * 拿 class 当入口闸门,class 一变就找不到,哪怕那个 <a> 就在页面上。
+     *
+     * 留着这几个只是为了兜住「href 判据没命中但按钮确实在」的情况,
+     * 不再是主路径。厂商 v2.5.1 也做了同样的翻转。 */
     trackLinks: [
       ".a-button-stack.a-spacing-mini a",
       ".a-button.a-button-primary.track-package-button a",
@@ -99,6 +124,17 @@ export const SEL = {
 
   // ── 包裹跟踪页 (报告 §4.3 extractTrackingInfo / extractTrackingEvents) ──
   tracking: {
+    /** Amazon 说「这会儿给不了轨迹」时页面上的原话。
+     *
+     * 认出它是为了**分开两件长得一样的事**:
+     *   · Amazon 暂时给不了 —— 等下一轮就好,不是我们的问题
+     *   · 我们没解析出来   —— 选择器坏了,要人去看
+     * 都表现为「0 条轨迹」的话,选择器坏了会被当成「这批单都还没发货」,
+     * 一直到有人发现整整一周没有任何轨迹为止。
+     *
+     * 顺带省掉 30 秒:不认它的话,三个就绪选择器一个都等不到,
+     * 只能干等满超时。一批 20 单就是白等 10 分钟。 */
+    unavailableText: "unable to get the tracking information",
     trackingId: ".pt-delivery-card-trackingId",
     trackingIdFallback: "#carrierRelatedInfo-container > div h4",
     cardWrapper: ".pt-delivery-card-wrapper",

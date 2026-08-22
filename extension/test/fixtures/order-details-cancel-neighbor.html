@@ -1,0 +1,55 @@
+<!doctype html>
+<!--
+  ============================================================================
+  夹具：订单详情页 —— URL 形状也变了，只剩 class 兜底可用
+  ============================================================================
+
+  order-details-newbutton.html 管的是「class 变了、href 没变」。
+  这一份管更坏的一种：**href 形状也变了**，两条 hint
+  （/ship-track?、/progress-tracker/package/）全部落空，
+  只能退回到 class 兜底 —— 而 class 兜底恰恰是最危险的一条路。
+
+  `.a-button-stack.a-spacing-mini a` 是订单卡片右侧那一摞按钮的外壳，
+  「Track package」在里面，「Cancel items」「Return items」也在里面，
+  而且**排在前面**。兜底要是「只要 href 非空就拿」，
+  这一页会返回取消订单的链接，syncShipments 随后把 frame 导航过去 ——
+  一次例行的物流同步变成一次取消订单。
+
+  所以兜底还要看按钮上的字：命中 "track" 才算。宁可返回 null。
+
+  干扰项
+  ------
+  A. 「Cancel items」排在跟踪按钮**前面**，href 和文案都不含 track。
+  B. 「Return items」同样在这摞按钮里。
+  C. 真正的跟踪按钮 href 是一个我们没见过的形状
+     （/shipment-status/v2/...），只有按钮文案还写着 Track package。
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Order Details</title></head>
+<body>
+
+  <div id="orderDetails">
+    <div id="shipment-top-row">
+      <span class="a-color-success">Arriving tomorrow</span>
+    </div>
+
+    <div class="a-button-stack a-spacing-mini">
+      <!-- 干扰项 A：取消订单，排在最前面 -->
+      <span class="a-button a-button-base">
+        <a href="/gp/css/order-history/cancel/ref=ppx_od_dt_b_cancel?orderId=111-4820193-7736441">
+          Cancel items
+        </a>
+      </span>
+      <!-- 干扰项 B：退货 -->
+      <span class="a-button a-button-base">
+        <a href="/spr/returns/cart?orderId=111-4820193-7736441">Return items</a>
+      </span>
+      <!-- ✅ 真正的跟踪按钮：href 形状是新的，只有文案还认得出来 -->
+      <span class="a-button a-button-primary">
+        <a href="/shipment-status/v2/111-4820193-7736441?packageIndex=0">Track package</a>
+      </span>
+    </div>
+  </div>
+
+</body>
+</html>

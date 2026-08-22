@@ -87,7 +87,11 @@ export class SimulatedDriver implements PageDriver {
 
 /** 物流同步的模拟读取器。场景与 SimulatedDriver 分开给,
  *  因为这条流跑在 purchased 之后,和拍单场景不是同一批。 */
-export type ShipScenario = "in_transit" | "delivered" | "not_shipped" | "cancelled" | "not_found";
+export type ShipScenario =
+  | "in_transit" | "delivered" | "not_shipped" | "cancelled" | "not_found"
+  /** Amazon 跟踪页明说「这会儿给不了轨迹」—— 与「我们没解析出来」是两回事,
+   *  这一条把那条分支也跑进闭环里(服务端要认 tracking_unavailable)。 */
+  | "unavailable";
 
 export class SimulatedShipmentReader implements ShipmentReader {
   readonly name = "simulated";
@@ -111,6 +115,10 @@ export class SimulatedShipmentReader implements ShipmentReader {
 
   async readTracking(_url: string): Promise<TrackingRead> {
     this.calls.push("readTracking");
+    if (this.scenario === "unavailable") {
+      return { trackingNo: null, carrier: null, status: null, promise: null,
+               events: [], unavailable: true };
+    }
     const delivered = this.scenario === "delivered";
     return {
       trackingNo: "TBA305271884221",

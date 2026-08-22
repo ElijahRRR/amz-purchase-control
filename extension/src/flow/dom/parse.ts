@@ -156,7 +156,7 @@ export function readCheckoutPanels(doc: Document): CheckoutPanel[] {
 
       return {
         asin,
-        unitPrice: parseMoney(text(panel.querySelector(SEL.checkout.panelUnitPrice))),
+        unitPrice: parseMoney(firstText(panel, SEL.checkout.panelUnitPrice)),
         shipper,
         isFba,
         deliveryText: text(panel.querySelector(SEL.checkout.panelDelivery)) || null,
@@ -325,17 +325,58 @@ export function readOrderPaymentLast4(doc: Document): string | undefined {
   return last4FromText(text(doc.querySelector(SEL.orderDetails.paymentDetails)));
 }
 
+/** 一组选择器里第一个取到非空文本的。
+ *  Amazon 同一样东西在不同页面版本上挂不同 class,一个个试比赌一个稳。 */
+function firstText(root: ParentNode, sels: readonly string[]): string {
+  for (const sel of sels) {
+    const t = text(root.querySelector(sel));
+    if (t) return t;
+  }
+  return "";
+}
+
 /** 报告 §4.3 第 1 步:优先用服务端下发的 platformTrackUrl,否则从页面找。
  *  两条路径都要,去重后取第一条。 */
 export function findTrackingLink(doc: Document): string | null {
+  // **先按 href 找,不管它挂在什么 class 上。**
+  //
+  // 按钮外壳的 class 是 Amazon 改得最勤的东西;而 /ship-track?、
+  // /progress-tracker/package/ 这两个 URL 形状多年没动。
+  // 原先拿 class 当入口闸门,class 一变就返回 null —— 而表现是
+  // 「这一单还没发货」(shipment.ts 把没有链接当成 not_shipped),
+  // 于是一批已经在路上的包裹会被记成未发货,没有任何地方报错。
+  // 厂商 v2.5.1 也做了同一个翻转。
+  for (const a of Array.from(doc.querySelectorAll("a[href]"))) {
+    if (isHidden(a)) continue;
+    const href = a.getAttribute("href") ?? "";
+    if (URLS.trackHrefHints.some((h) => href.includes(h))) return href;
+  }
+  // 兜底:href 判据没命中,但按钮确实在那几个已知外壳里。
+  //
+  // **这里必须再看一眼按钮上的字。** trackLinks 里的
+  // `.a-button-stack.a-spacing-mini a` 就是订单卡片右侧那一摞按钮 ——
+  // 「Track package」和「Cancel items」「Return items」是邻居。
+  // 只要 href 非空就拿,等于允许在 Amazon 改了 URL 形状的那天
+  // 把跟踪同步变成一次**取消订单**的跳转。宁可返回 null。
   for (const sel of SEL.orderDetails.trackLinks) {
     for (const a of Array.from(doc.querySelectorAll(sel))) {
       if (isHidden(a)) continue;
       const href = a.getAttribute("href") ?? "";
-      if (URLS.trackHrefHints.some((h) => href.includes(h))) return href;
+      if (!href) continue;
+      const label = (a.textContent ?? "").toLowerCase();
+      if (label.includes("track") || href.toLowerCase().includes("track")) return href;
     }
   }
   return null;
+}
+
+/** 跟踪页是不是「Amazon 这会儿给不了轨迹」。
+ *
+ *  与「我们没解析出来」分开 —— 都表现为 0 条轨迹的话,选择器坏了会被当成
+ *  「这批单都还没发货」,一直到有人发现整整一周没有任何轨迹为止。 */
+export function isTrackingUnavailable(doc: Document): boolean {
+  const body = doc.body?.textContent ?? "";
+  return body.toLowerCase().includes(SEL.tracking.unavailableText);
 }
 
 // ── 包裹跟踪页 ───────────────────────────────────────────────────────

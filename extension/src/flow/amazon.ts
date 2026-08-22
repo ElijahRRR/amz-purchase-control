@@ -20,6 +20,7 @@ import {
   cartMatches, findInterstitialButton, findQuantityOption, findSubmitOrderButton, findTrackingLink,
   pickQuantitySelect, readCarrier, readCartLines, readCheckoutPanels,
   readDeliveryPromise, readGrandTotal, readInStock, readOrderCards, readOrderState,
+  isTrackingUnavailable,
   readOrderSummary, readPaymentLast4, readProductShipper, readTrackingEvents,
   readTrackingNumber, readTrackingStatus,
   type OrderState,
@@ -341,6 +342,8 @@ export class AmazonDriver implements PageDriver {
     const known = panels.map((p) => p.isFba).filter((v): v is boolean => v !== null);
     const isFba = known.length === 0 ? null : known.every(Boolean);
 
+    const priced = panels.filter((p) => p.asin && p.unitPrice);
+
     return {
       actualTotal: total,
       actualShipping: summary.shipping,
@@ -350,9 +353,17 @@ export class AmazonDriver implements PageDriver {
       paymentLast4: readPaymentLast4(f.doc()),
       // 只报**读到的**单价。数量结算页上没读(报告说厂商那道数量校验是死代码,
       // 真正的数量比对在购物车页已经做过),所以不在这里编一个 1 出来。
-      unitPrices: panels
-        .filter((p) => p.asin && p.unitPrice)
-        .map((p) => ({ asin: p.asin!, unit_price: p.unitPrice! })),
+      unitPrices: priced.map((p) => ({ asin: p.asin!, unit_price: p.unitPrice! })),
+      // **一个都没读到 ≠ 这单没有单价**,那是选择器坏了。
+      //
+      // 原先这里只是 .filter 一下就过去了:Amazon 换个类名,unitPrices 静默
+      // 变成空数组,护栏照跑(它比的是 actual_total,走另一个选择器),
+      // 单子照下,只有运营台上「实付单价」那一列悄悄全空 —— 没有任何地方报错,
+      // 等有人觉得不对已经是几百单之后。这和 deliveryTexts 那次是同一类问题。
+      //
+      // 不中断下单:限价护栏不依赖单价,为一个展示字段掀翻一次采购更糟。
+      // 但要让它在事件流里留下痕迹。
+      unitPriceSelectorBroken: panels.length > 0 && priced.length === 0,
     };
   }
 
@@ -442,13 +453,26 @@ export class AmazonShipmentReader implements ShipmentReader {
     return withFrame(url, async (f) => {
       try {
         await waitFor("跟踪页就绪",
-                      () => f.doc().querySelector(SEL.tracking.trackingId) ||
+                      // Amazon 那句「这会儿给不了轨迹」也算就绪 —— 不认它的话
+                      // 三个选择器一个都等不到,只能干等满 30 秒。
+                      // 一批 20 单全是这种,就是白等 10 分钟。
+                      () => isTrackingUnavailable(f.doc()) ||
+                            f.doc().querySelector(SEL.tracking.trackingId) ||
                             f.doc().querySelector(SEL.tracking.primaryStatus) ||
                             f.doc().querySelector(SEL.tracking.eventsContainer),
                       { timeoutMs: 30_000 });
       } catch {
         // 跟踪页打不开不是采购失败,别把它当错误抛给上层的批处理。
-        return { trackingNo: null, carrier: null, status: null, promise: null, events: [] };
+        return { trackingNo: null, carrier: null, status: null, promise: null,
+                 events: [], unavailable: false };
+      }
+
+      // **「Amazon 暂时给不了」与「我们没解析出来」要分开。**
+      // 都记成 0 条轨迹的话,选择器坏了会被当成「这批单都还没发货」,
+      // 一直到有人发现整整一周没有任何轨迹为止。
+      if (isTrackingUnavailable(f.doc())) {
+        return { trackingNo: null, carrier: null, status: null, promise: null,
+                 events: [], unavailable: true };
       }
       const doc = f.doc();
       return {

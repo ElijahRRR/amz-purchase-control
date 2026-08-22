@@ -44,6 +44,9 @@ def sync(req: schemas.ShipmentSyncReq, conn=Depends(conn_ctx)) -> schemas.Envelo
         "order_state": req.order_state, "status": status,
         "carrier": req.carrier, "tracking_no": req.tracking_no,
         "events": len(req.events),
+        # 「Amazon 暂时给不了」与「我们没解析出来」都是 0 条轨迹,
+        # 不记这一位的话事后分不出是哪一种 —— 而处置完全不同。
+        "tracking_unavailable": req.tracking_unavailable,
     })
 
     if req.order_state == "not_found":

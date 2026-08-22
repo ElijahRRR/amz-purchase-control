@@ -1,0 +1,58 @@
+<!doctype html>
+<!--
+  ============================================================================
+  夹具：订单详情页 —— 跟踪按钮换了外壳 class
+  ============================================================================
+
+  Amazon 改按钮外壳 class 的频率远高于改 URL 形状。
+  我们原先拿 class 当入口闸门：
+      .a-button-stack.a-spacing-mini a
+      .a-button.a-button-primary.track-package-button a
+      .a-button.a-button-base.track-package-button a
+  三个都不命中就返回 null —— 而 shipment.ts 把「没有跟踪链接」当成 not_shipped，
+  于是一批已经在路上的包裹会被整批记成未发货，**没有任何地方报错**。
+
+  这个夹具里的跟踪按钮挂的是一组没见过的 class，但 href 还是
+  `/gp/your-account/ship-track?...`。按 href 找就能命中，按 class 找就抓瞎。
+
+  厂商 v2.5.1 也做了同一个翻转（三段 class 选择器 → href 判据）。
+
+  干扰项
+  ------
+  A. 页面上另有一个 `/ship-track` 链接，但它在 `display:none` 的模板里 ——
+     不判可见性就会取到模板里那个（订单号是占位符 111-0000000-0000000）。
+  B. 「查看发票」链接的 href 里也含 "track" 三个字母（`?ref=..._track_invoice`），
+     判据写成 includes("track") 就会取错。
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Order Details</title></head>
+<body>
+
+  <div id="orderDetails">
+    <div id="shipment-top-row">
+      <span class="a-color-success">Arriving tomorrow</span>
+    </div>
+
+    <!-- 干扰项 A：隐藏模板里的跟踪链接 -->
+    <div class="order-card__template" style="display:none">
+      <a href="/gp/your-account/ship-track?orderId=111-0000000-0000000">Track package</a>
+    </div>
+
+    <!-- 干扰项 B：href 里含 "track" 但不是跟踪链接 -->
+    <div class="a-row">
+      <a href="/gp/css/summary/print.html?ref=ppx_od_dt_b_track_invoice">View invoice</a>
+    </div>
+
+    <!-- ✅ 真正的跟踪按钮：外壳 class 是新的,href 形状没变 -->
+    <div class="a-button-group od-action-buttons-2024">
+      <span class="a-declarative">
+        <a class="a-link-normal od-track-cta"
+           href="/gp/your-account/ship-track?orderId=111-4820193-7736441&amp;packageIndex=0">
+          Track package
+        </a>
+      </span>
+    </div>
+  </div>
+
+</body>
+</html>
