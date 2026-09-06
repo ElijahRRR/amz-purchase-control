@@ -124,7 +124,7 @@ export interface PageDriver {
   /** 真花钱的一步。调用之前上层会先把「可能已下单」置位,并上报一条 step 事件。
    *
    *  实现必须是**有界**的:三段分开计时(等确认页 / 等人做发卡行验证 / 验证之后),
-   *  再压一道由 hooks.claimTimeoutMin 反推出来的硬顶。绝不允许「一直等下去」——
+   *  再压一道由 hooks.claimDeadlineMs 反推出来的硬顶。绝不允许「一直等下去」——
    *  在我们的架构里那不是耐心,是一个等不到任何人的死循环:iframe 在屏幕外,
    *  服务端 15 分钟后把这条任务判成 CLAIM_TIMEOUT,而这个标签页的单飞闸永不复位。 */
   placeOrder(hooks?: PlaceOrderHooks): Promise<void>;
