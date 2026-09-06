@@ -201,7 +201,23 @@ SELECT e.id            AS env_id,
          WHERE t.buyer_env_id = e.id AND t.status = 'manual')    AS manual_count,
        (SELECT count(*) FROM procure.tasks t
          WHERE t.buyer_env_id = e.id AND t.status = 'purchased'
-           AND t.purchased_at >= date_trunc('day', now()))       AS purchased_today
+           AND t.purchased_at >= date_trunc('day', now()))       AS purchased_today,
+       -- 最近 24 小时里,这个买家号有几单**试着清车但没清动**。
+       --
+       -- 这一位原先是「只写不读」的:/fail 收到 cart_cleared=false 就往事件流里
+       -- 记一条 warning,全项目没有任何地方读它。而它说的是一件会连累后面每一单
+       -- 的事 —— 清车是每一单的第一步,它失败通常意味着 Amazon 改了购物车页的结构,
+       -- 于是队列里的单会被一单一单打进「拍单异常」桶,而运营台上那台机器
+       -- 是满格绿色的「在线 · 可派」。与登录态那一列同一个道理,也放在同一页上。
+       --
+       -- 只数「试了没清动」:越过下单点之后按规矩不清车的那一路记的是另一个 payload
+       -- (见 server/routes/tasks.fail),不该混进来。
+       (SELECT count(*) FROM procure.task_events ev
+          JOIN procure.tasks t ON t.id = ev.task_id
+         WHERE t.buyer_env_id = e.id
+           AND ev.kind = 'step'
+           AND ev.payload->>'warning' = 'cart_not_cleared'
+           AND ev.created_at >= now() - interval '24 hours')     AS cart_fail_24h
   FROM procure.buyer_envs e
   LEFT JOIN LATERAL (
         SELECT * FROM procure.plugin_instances pi

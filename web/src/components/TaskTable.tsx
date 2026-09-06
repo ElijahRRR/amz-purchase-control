@@ -102,6 +102,22 @@ function selectColumn(
   };
 }
 
+/** 「这一单正卡在发卡行验证页上等人」的徽标。
+ *
+ *  为什么不做成一个自己会走的倒计时:这一页**不自动刷新**,那样的数字看着是活的、
+ *  其实停在上一次请求的那一刻 —— 一个不动的计数器比没有计数器更坏。
+ *  给出「从几点开始等的」,让人自己看表,并且写清超时之后会怎样。 */
+function AwaitingVerify({ since }: { since: string | null }) {
+  return (
+    <span title={
+      (since ? `插件报告:从 ${shortTime(since)} 起` : "插件报告:正") +
+      "在等操作员完成发卡行验证。超时后这一单会转为待人工,而订单可能已经提交。"
+    }>
+      <Tag tone="solid-amber">等人工验证{since ? ` · ${shortTime(since)}` : ""}</Tag>
+    </span>
+  );
+}
+
 function useColumns(density: Density): ColumnDef<TaskRow>[] {
   const meta = useMeta();
   const statusLabel = useLabel("task_status");
@@ -175,8 +191,16 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
         ) },
       { id: "status", header: "状态", size: 104,
         cell: ({ row }) => {
-          const s = statusLabel(row.original.status);
-          return <Tag tone={s.tone}>{s.label}</Tag>;
+          const r = row.original;
+          const s = statusLabel(r.status);
+          // 「拍单中」和「拍单中,但正卡在验证页上等人」必须是两个样子:
+          // 后者要有人去催操作员,前者什么都不用做。
+          return (
+            <span className="flex flex-col items-start gap-0.5">
+              <Tag tone={s.tone}>{s.label}</Tag>
+              {r.awaiting_manual_verification && <AwaitingVerify since={r.awaiting_since} />}
+            </span>
+          );
         } },
       {
         id: "note", header: "错误码 / AMZ 单号", size: 240,
@@ -353,7 +377,10 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
         const s = statusLabel(r.status);
         return (
           <div className="flex flex-col gap-1 min-w-0">
-            <span><Tag tone={s.tone}>{s.label}</Tag></span>
+            <span className="flex items-center gap-1.5 min-w-0">
+              <Tag tone={s.tone}>{s.label}</Tag>
+              {r.awaiting_manual_verification && <AwaitingVerify since={r.awaiting_since} />}
+            </span>
             <span className="flex items-center gap-1.5 min-w-0">{codeTag(r.error_code)}</span>
             <DL k="创建"><span className="id text-xs+ text-zinc-500">{shortTime(r.created_at)}</span></DL>
             <DL k="采购"><span className="id text-xs+ text-zinc-500">{shortTime(r.purchased_at)}</span></DL>

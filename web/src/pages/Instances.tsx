@@ -73,7 +73,7 @@ export default function InstancesPage() {
             <thead>
               <tr className="bg-zinc-50 border-b border-zinc-200">
                 {["买家号", "站点", "实例", "插件版本", "最后心跳", "队列待拍",
-                  "待人工", "今日已拍", "日上限", "状态", "登录态", "可派单"].map((h, i) => (
+                  "待人工", "今日已拍", "日上限", "状态", "登录态", "清车", "可派单"].map((h, i) => (
                   <th key={h} className={cn(
                     "h-th px-3 text-2xs font-medium uppercase tracking-wider text-zinc-500 whitespace-nowrap",
                     // 只有数字列右对齐:数字右对齐是为了让位数对齐着看,
@@ -129,6 +129,20 @@ export default function InstancesPage() {
                         {r.login_checked_at ? shortTime(r.login_checked_at) : "未查过"}
                       </span>
                     </td>
+                    <td className="px-3 whitespace-nowrap">
+                      {/* 清车失败原先是「只写不读」的:/fail 收到 cart_cleared=false
+                          就往事件流里记一条 warning,全项目没有任何地方读它。
+                          而清车是每一单的第一步 —— 它失败通常意味着 Amazon 改了
+                          购物车页的结构,队列里的单会被一单一单打进「拍单异常」桶,
+                          而这一行照旧是满格绿色的「在线 · 可派」。
+                          插件那边也有一道熔断(连续 3 单清不动就暂停认领 10 分钟),
+                          这一格是它在运营台上的那一面。 */}
+                      {r.cart_fail_24h > 0
+                        ? <span title="最近 24 小时里,这个买家号有这么多单试着清车但没清动。清车是每一单的第一步,多半是 Amazon 改了购物车页的结构 —— 请人工去这个买家号的购物车看一眼。">
+                            <Tag tone="solid-red">清不动 {r.cart_fail_24h}</Tag>
+                          </span>
+                        : <span className="text-xs text-zinc-300">—</span>}
+                    </td>
                     <td className="px-3 text-xs">
                       {/* 「已到日上限」这一支以前永远走不到 ——
                           服务端的 dispatchable 只看在线,不看 daily_cap,与真正
@@ -152,12 +166,12 @@ export default function InstancesPage() {
                 );
               })}
               {rows === null && (
-                <tr><td colSpan={13} className="h-20 text-center text-xs text-zinc-400">
+                <tr><td colSpan={14} className="h-20 text-center text-xs text-zinc-400">
                   {err ? "读不到买家号列表" : "读取中…"}
                 </td></tr>
               )}
               {rows?.length === 0 && (
-                <tr><td colSpan={13} className="h-20 text-center text-xs text-zinc-400">
+                <tr><td colSpan={14} className="h-20 text-center text-xs text-zinc-400">
                   还没有买家号 —— 先在库里建 procure.buyer_envs,再让插件连上来
                 </td></tr>
               )}

@@ -47,6 +47,13 @@ export interface TaskRow {
   tracking_no: string | null;
   shipment_status: Shipment["status"];
   products: TaskProduct[] | null;
+  /** 这一单**正卡在发卡行验证页上等人**(插件报的最后一条 step 是「等待人工完成
+   *  支付验证」)。与「拍单中」分开显示 —— 一排 claimed 里,这一条要有人去催
+   *  操作员,其余的什么都不用做,而屏幕上它们原先长得一模一样。 */
+  awaiting_manual_verification: boolean;
+  /** 从什么时候开始等的。**不渲染成一个自己会走的秒表**:这一页不自动刷新,
+   *  那样的数字看着是活的、其实停在上一次请求的那一刻。 */
+  awaiting_since: string | null;
 }
 
 export interface SearchOut {
@@ -160,6 +167,13 @@ export interface InstanceRow {
   login_blocks_dispatch: boolean;
   /** 与 task_queue.CLAIM_SQL 那道真闸算同一件事:在线、没到日上限、且没被登出。 */
   dispatchable: boolean;
+  /** 最近 24 小时里这个买家号有几单**试着清车但没清动**。
+   *
+   *  清车是每一单的第一步,它失败通常意味着 Amazon 改了购物车页的结构 ——
+   *  于是队列里的单会被一单一单打进「拍单异常」桶,而这一行原先是满格绿色的
+   *  「在线 · 可派」。这一位在服务端一直有人写(/fail 的 cart_cleared),
+   *  但在此之前没有任何地方读它。 */
+  cart_fail_24h: number;
 }
 
 export interface SearchReq {
