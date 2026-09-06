@@ -1,7 +1,7 @@
 /** 认领循环。不碰任何 chrome API —— 这样它能在 Node 里被自检脚本直接驱动。 */
 
 import type { Client } from "../core/client.js";
-import type { Config } from "../core/config.js";
+import { DEFAULTS, posOr, type Config } from "../core/config.js";
 import type { Log } from "../core/log.js";
 import type { Phase } from "../core/status.js";
 import type { Task } from "../core/types.js";
@@ -14,6 +14,17 @@ export type TickResult =
   | { kind: "busy" }
   | { kind: "off" }
   | { kind: "driver-not-ready"; driver: string }
+  /** 连着几单都清不动购物车,熔断了。**与 no-task 分开**:队列里可能有一堆单,
+   *  是我们主动不领 —— 领了也只会一单一单打进异常桶。 */
+  | { kind: "cart-blocked"; untilMs: number }
+  /** 一单跑过了硬顶,被看门狗强行收尾。**与 ran 分开**:这一轮没有正常的
+   *  outcome 可言。 */
+  | { kind: "hard-cap"; task: Task }
+  /** 上一单被强行收尾了、但那条 runTask 还没走到 finish(),这一轮不认领。
+   *  **与 busy 分开**:busy 是「这一轮正常在跑」,这一格是「什么都没在跑,
+   *  但有一件事没收住」—— 两者渲染成同一个结果的话,一台从此再也不拍单的机器
+   *  在面板上和一台正忙着的机器长得一样。`since` 是被掐掉的那一刻。 */
+  | { kind: "zombie"; since: number }
   | { kind: "no-task" }
   /** 这个浏览器被登出了,这一轮不认领。**与 no-task 分开**:
    *  「没有单」是正常的,「领不了单」是要人去处理的,长得一样就没人会去处理。 */
@@ -29,6 +40,19 @@ export type TickResult =
  *  (比如上报的那条心跳还没来得及发出去)时,别每 10 秒就开一张页面。 */
 const LOGIN_CACHE_MS = 10 * 60_000;
 
+/** 清车熔断的两个数从**配置**来(core/config.cartFailStreakMax / cartBlockMs)。
+ *
+ *  为什么要有这道熔断:clearCart 是每一单的第一步,它失败的原因通常是
+ *  **Amazon 改了购物车页的结构**(删除控件的类名变了)。那种失败对每一单都成立,
+ *  而 tickOnce 每 10 秒来一次 —— 一个夜里能把队列里几百单一单一单全部打进
+ *  「拍单异常」桶,每一条的错误码还都是 PLUGIN_INTERNAL。
+ *  停一会儿不解决问题,但它把「一次坏一整队」变成「一次坏几单」,
+ *  剩下的留在队列里等人来看。
+ *
+ *  这两个数原先是这里的模块级常量。运营台上那一格(cart_fail_24h)让人看得见
+ *  该不该调它们,而调不了 —— 要调就得重新打包、全员升级插件,
+ *  正是 README 批评厂商的那个毛病。 */
+
 export interface LoopDeps {
   client: Client;
   log: Log;
@@ -37,6 +61,9 @@ export interface LoopDeps {
   /** 物流读取器。与 driver 分开:那条流跑在 purchased 之后,不碰购物车也不下单。 */
   shipmentReader?: () => ShipmentReader;
   onPhase?: (phase: Phase, task: Task | null) => void;
+  /** 「正在等操作员做发卡行验证,到点是 deadlineMs」。面板拿它跑倒计时,
+   *  离开那一格时传 null。相位(onPhase)负责标签,这一条负责那个数字。 */
+  onVerifyWindow?: (deadlineMs: number | null) => void;
   askConfirm?: RunDeps["askConfirm"];
   /** 读到的登录态往上报一次。内容脚本转给 service worker,由它挂在下一次心跳上
    *  —— Loop 自己不碰任何 chrome API(这样它能在 Node 里被自检脚本直接驱动)。 */
@@ -50,6 +77,28 @@ export interface LoopDeps {
 export class Loop {
   private busy = false;
   private warnedDriver = false;
+
+  /** 连续几单清不动购物车,以及熔断到什么时候。 */
+  private cartFailStreak = 0;
+  private cartBlockedUntil = 0;
+
+  /** 被看门狗强行收尾、但**还没真的结束**的那些 runTask(记的是它们的编号)。
+   *
+   *  它们的驱动已经 dispose 了,所以每一步都会立刻抛错、很快自己走到 finish();
+   *  但在那之前不能再认领下一单 —— 两条 runTask 会去动同一个购物车。
+   *  这与「busy 永不复位」不是一回事:busy 在 finally 里照常放掉(相位、
+   *  物流那条流、面板都跟着恢复),这里只挡认领。
+   *
+   *  **但它同样必须有界。** 看门狗存在的理由就是「我们没想到的那件事」,
+   *  而 dispose 未必解得开它(等的不是 iframe,而是一个永不 settle 的 promise)。
+   *  那种情况下这个集合永远不空,tickOnce 从此每轮返回同一个结果、没有任何新日志,
+   *  这个买家号从此一单也不拍 —— 「所有等待都必须有界」这条对它一样成立。
+   *  所以再给它一个 taskHardCapMs,到点就不等了(见 tickOnce)。 */
+  private zombies = new Set<number>();
+  private zombieSeq = 0;
+  /** 最早那条僵尸是什么时候被掐掉的,以及等到什么时候为止。 */
+  private zombieSince = 0;
+  private zombieUntil = 0;
 
   /** 这台机器最后一次判出来的登录态。**初值 unknown,不是 ok** ——
    *  没查过就是没查过,而 unknown 不拦认领(拦了新装的实例永远领不到第一单)。 */
@@ -121,6 +170,10 @@ export class Loop {
     const reader = make();
     if (!reader.ready) return { skipped: "reader-not-ready" };
     if (this.busy) return { skipped: "busy" };
+    // 僵尸 runTask 的 finish() 里还有一次 clearCart 要跑,它和物流同步一样要开
+    // iframe。原先这里只看 busy —— 于是两条流会同时开 iframe 抢焦点,
+    // 而这一节的注释说的正是不许发生这件事。
+    if (this.zombies.size > 0) return { skipped: "zombie" };
 
     this.busy = true;
     try {
@@ -135,9 +188,35 @@ export class Loop {
     if (this.busy) return { kind: "busy" };
     const cfg = this.deps.config();
 
+    // 上一单被看门狗掐了但还没落地。挡的是「两条 runTask 动同一个购物车」。
+    // 等它也有上限:dispose 解不开的那种挂起会让这个集合永远不空,
+    // 而相位落回 idle 的话,面板上是灰色的「待命」、运营台上是「在线 · 可派」,
+    // 这台机器从此一单也不拍,却没有任何地方说过这件事。
+    if (this.zombies.size > 0) {
+      if (Date.now() < this.zombieUntil) {
+        this.phase("stuck");
+        return { kind: "zombie", since: this.zombieSince };
+      }
+      // 到点了还没落地:不再等它。这不是「没事了」——
+      // 它要是后来真走完了,会和新领的一单动同一个购物车,所以要说清楚。
+      this.deps.log.err(
+        `被强制收尾的那一单等了 ${Math.round((Date.now() - this.zombieSince) / 60_000)} 分钟` +
+        `仍没落地 —— 不再等它,恢复认领。它要是稍后才走完,` +
+        `它的收尾清车会和新领的一单撞在同一个购物车上,请人工去这个买家号的购物车看一眼`);
+      this.zombies.clear();
+    }
+
     if (cfg.mode === "off") {
       this.phase("off");
       return { kind: "off" };
+    }
+
+    // 清车熔断:连着几单清不动车的话,再领下一单也只是再废一单。
+    // 相位要报 cart-blocked 而不是 idle:「没单可跑」和「有单也不领」
+    // 渲染成同一个「待命」的话,没人会知道这台机器其实停了。
+    if (Date.now() < this.cartBlockedUntil) {
+      this.phase("cart-blocked");
+      return { kind: "cart-blocked", untilMs: this.cartBlockedUntil };
     }
 
     const driver = this.deps.driver();
@@ -196,19 +275,50 @@ export class Loop {
         return { kind: "no-task" };
       }
 
+      // 服务端从这一刻起数认领超时(task_sweep 只看 claimed_at)。
+      // 比库里那个 claimed_at 晚一个 HTTP 来回,余量兜得住。
+      const sweepAtMs = typeof task.claim_timeout_min === "number" &&
+                        Number.isFinite(task.claim_timeout_min) &&
+                        task.claim_timeout_min > 0
+        ? Date.now() + task.claim_timeout_min * 60_000
+        : null;
+
       this.deps.log.ok(`认领 task_id=${task.task_id} · ${task.products.map((p) => p.asin).join(",")}`);
       this.phase("claimed", task);
 
       this.phase("running", task);
-      const outcome = await runTask(task, {
+      const running = runTask(task, {
         client: this.deps.client,
         driver,
         log: this.deps.log,
         askConfirm: this.deps.askConfirm,
         confirmBeforeOrder: !!this.deps.askConfirm,
         onLoginLost: () => this.markSignedOut(),
+        // 相位由 runTask 说了算的那两格(等人做发卡行验证 / 验证做完了)。
+        // Loop 这一层从 claim 到 return 之间一直是 running,分不出「轮到人了」。
+        onPhase: (p) => this.phase(p, task),
+        onVerifyWindow: (deadlineMs) => this.deps.onVerifyWindow?.(deadlineMs),
+        // 开头那次清车成功了。熔断的连续计数在这里清零,而不是只看终态 ——
+        // 终态里的 cartCleared 只有 failed 才带,purchased / released 这两条路上
+        // 清车明明成功过(它是第一步)。只看终态的话,「失败、失败、成功、失败」
+        // 也会熔断,而它报的原因(「Amazon 改了购物车页的结构」)是假的。
+        onCartCleared: () => { this.cartFailStreak = 0; },
       });
 
+      // ── 看门狗 ──
+      //
+      // 每一步自己都有上界,所以正常情况下永远轮不到它。它防的是那件我们没想到的事:
+      // runTask 因为某个原因不返回,busy 闸永不复位,这个标签页从此安静地什么都不干,
+      // 面板停在「执行中」,而服务端 15 分钟后把这条判成 CLAIM_TIMEOUT。
+      // 厂商的 purchaseBatchInProgress 死法就是这个形状,只是我们的锁叫 busy。
+      const capMs = this.watchdogCapMs(cfg, task);
+      const cap = hardCap(capMs);
+      const outcome = await Promise.race([running, cap.race]).finally(cap.cancel);
+      if (outcome === HARD_CAP) {
+        return await this.giveUp(task, running, driver, capMs, sweepAtMs);
+      }
+
+      this.noteCart(outcome);
       this.phase(outcome.kind === "purchased" ? "done"
                : outcome.kind === "failed" && outcome.toManual ? "blocked"
                : "idle", task);
@@ -217,4 +327,123 @@ export class Loop {
       this.busy = false;
     }
   }
+
+  /** 输入:配置 + 这一单 → 输出:看门狗的硬顶(毫秒)。
+   *
+   *  两个上界取更紧的那个:插件自己的 `cfg.taskHardCapMs`,以及**服务端的认领
+   *  超时**减去留给服务端的余量。后者原先没算进来 —— 默认 20 分钟的硬顶比默认
+   *  15 分钟的认领超时还长,于是看门狗触发的时候任务在服务端**必然已经不是
+   *  claimed 了**,它那条「插件放弃这一单」的 step 事件会被 TASK_NOT_HELD 拒掉,
+   *  事件流里再也没有任何地方说过「是插件这边先放弃的」,而日志还写着
+   *  「任务在服务端仍是拍单中」。
+   *
+   *  **绝不允许算出 0**:那样看门狗会在每一单刚开跑时就触发,而它的表现是
+   *  「这一单跑了超过 0 分钟」—— 一道兜底网变成了绞索。所以:配置里没有这一项
+   *  (旧存档、自检脚本给的桩)或被人填坏了就用默认值;认领窗口本身比余量还小的
+   *  极端配置下,退一步取认领窗口本身(赶在清扫那一刻,不再往前留)。 */
+  private watchdogCapMs(cfg: Config, task: Task): number {
+    const own = posOr(cfg.taskHardCapMs, DEFAULTS.taskHardCapMs);
+    const min = task.claim_timeout_min;
+    if (typeof min !== "number" || !Number.isFinite(min) || min <= 0) return own;
+    const window = min * 60_000;
+    const margin = posOr(cfg.timeouts?.orderServerMargin, DEFAULTS.timeouts.orderServerMargin);
+    const room = window - margin;
+    return Math.min(own, room > 0 ? room : window);
+  }
+
+  /** 一单跑过了硬顶:强行收尾,把这件事说出去,然后**不再等它**。
+   *
+   *  注意这里没有「取消」——JavaScript 的 Promise 取消不了。能做的是把驱动
+   *  dispose 掉(iframe 全部关掉,后面每一步都会立刻抛错),于是那条 runTask
+   *  会很快自己走到 finish() 上报失败。在它真的结束之前,zombies 挡住下一次认领。 */
+  private async giveUp(
+    task: Task,
+    running: Promise<Outcome>,
+    driver: PageDriver,
+    capMs: number,
+    sweepAtMs: number | null,
+  ): Promise<TickResult> {
+    const mins = Math.round(capMs / 60_000);
+    // 「任务在服务端仍是拍单中」不许写死成一句话:硬顶被配得比认领超时还长时
+    // 它就是假的,而那恰恰是最需要看日志的一格。按此刻的钟说话。
+    const stillClaimed = sweepAtMs === null || Date.now() < sweepAtMs;
+    this.deps.log.err(`这一单跑了超过 ${mins} 分钟仍未结束 —— 强制关掉页面收尾。` +
+                      (stillClaimed
+                        ? `任务在服务端还是「拍单中」,交给认领超时清扫转待人工`
+                        : `服务端的认领超时已经过了,这条多半已经被清扫成待人工`));
+    // 编号而不是计数:等超时之后我们会把整个集合清掉,那条 runTask 稍后
+    // 真走完时不该再去减一个已经归零的数(会减成负数,下一轮判断就废了)。
+    const id = ++this.zombieSeq;
+    this.zombies.add(id);
+    this.zombieSince = Date.now();
+    // 再给它一个 taskHardCapMs。到点就不等了 —— 看门狗防的就是「我们没想到的
+    // 那件事」,而 dispose 未必解得开它。
+    this.zombieUntil = this.zombieSince + capMs;
+    void running.finally(() => {
+      if (this.zombies.delete(id)) {
+        this.deps.log.warn("被强制收尾的那一单已经落地,恢复认领");
+      }
+    });
+    try { await driver.dispose(); } catch { /* 关不掉也得往下走 */ }
+    // 事件流里要留下这一条:否则运营台上只看到任务停在「拍单中」然后被清扫,
+    // 没有任何地方说过「是插件这边先放弃的」。
+    const noted = await this.deps.client.events(task.task_id, [{
+      kind: "step",
+      payload: { step: "插件放弃这一单", state: "plugin_hard_cap",
+                 cap_ms: capMs, note: "超过单笔硬顶,已强制关闭页面" },
+    }]);
+    if (!noted.ok) {
+      // 写不进去要说出来。默默吞掉的话,运营台上这一单看起来就是「领走了、
+      // 停在拍单中、被清扫」,而「是插件先放弃的」这件事谁也不知道。
+      this.deps.log.warn(
+        "「插件放弃这一单」这条留痕没写进事件流:" +
+        (noted.kind === "business" ? `${noted.code} ${noted.message}` : noted.message));
+    }
+    // **不是 idle。** 「没单可跑」和「有单也不领」渲染成同一个灰色的「待命」的话,
+    // 没人会知道这台机器其实停了 —— cart-blocked 那一格已经吃过这个亏。
+    this.phase("stuck", null);
+    return { kind: "hard-cap", task };
+  }
+
+  /** 清车熔断的计数。**只数「试了没清动」**(cartCleared === false):
+   *  越过下单点那一路按规矩就不清车(null),把它算进来的话,
+   *  三单「可能已下单」就能让一台购物车好好的机器停止认领。
+   *
+   *  清零走的是另一条路(runTask 的 onCartCleared,开头那次清车一成功就报)——
+   *  只在这里清的话,成功的那一单(purchased,它的终态里根本没有 cartCleared)
+   *  不会清零,于是「失败、失败、成功、失败」也熔断。 */
+  private noteCart(outcome: Outcome): void {
+    if (outcome.kind !== "failed" || outcome.cartCleared === null) return;
+    if (outcome.cartCleared) {
+      this.cartFailStreak = 0;
+      return;
+    }
+    const cfg = this.deps.config();
+    const max = Math.floor(posOr(cfg.cartFailStreakMax, DEFAULTS.cartFailStreakMax));
+    const blockMs = posOr(cfg.cartBlockMs, DEFAULTS.cartBlockMs);
+    this.cartFailStreak += 1;
+    if (this.cartFailStreak >= max) {
+      this.cartBlockedUntil = Date.now() + blockMs;
+      this.cartFailStreak = 0;
+      this.deps.log.err(
+        `连续 ${max} 单清不动购物车 —— 暂停认领 ` +
+        `${Math.round(blockMs / 60_000)} 分钟。多半是 Amazon 改了购物车页的结构,` +
+        `请人工去这个买家号的购物车看一眼`);
+    }
+  }
+}
+
+/** 看门狗用的哨兵。用一个独一无二的对象而不是 null/undefined ——
+ *  runTask 的返回值里没有它,不可能撞上。 */
+const HARD_CAP = Symbol("hard-cap");
+
+/** 定时器要能取消:正常那一路(runTask 先返回)如果不 clearTimeout,
+ *  每一单都会留下一个几十分钟才醒的定时器 —— 在 Node 里它还会吊着进程不退出。
+ *  「所有等待都有上限」的另一半是「所有定时器都收得掉」(见 dom/wait.ts 的 finally)。 */
+function hardCap(ms: number): { race: Promise<typeof HARD_CAP>; cancel: () => void } {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  const race = new Promise<typeof HARD_CAP>((resolve) => {
+    t = setTimeout(() => resolve(HARD_CAP), ms);
+  });
+  return { race, cancel: () => { if (t !== undefined) clearTimeout(t); } };
 }

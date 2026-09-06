@@ -1,4 +1,7 @@
-/** 错误码封闭集,与 docs/01-系统设计.md §4 一字不差。
+/** 错误码封闭集 —— 与 docs/01-系统设计.md §4 一字不差(码名、中文标签、分组)。
+ *
+ * 不在这里写「一共几个」:那个数字每加一个码就会过期一次,而没人会为了
+ * 一句注释去数一遍 —— 真正的数目由 ERROR_CODES 自己说。
  *
  * 写成联合类型而不是 string:拼错的码编译期就炸,不会等到服务端拒收。
  * 厂商那套 18 处失败全写成 status=99 加一句自由中文,没法按原因统计、
@@ -22,6 +25,7 @@ export const ERROR_CODES = [
   "DELIVERY_UNPARSEABLE",
   "CHECKOUT_TIMEOUT",
   "ORDER_CONFIRM_TIMEOUT",
+  "PAYMENT_VERIFICATION_TIMEOUT",
   "ORDER_NO_AMBIGUOUS",
   "CAPTCHA_ENCOUNTERED",
   "CLAIM_TIMEOUT",
@@ -48,6 +52,7 @@ export const ERROR_LABEL: Record<ErrorCode, string> = {
   DELIVERY_UNPARSEABLE: "交期无法解析",
   CHECKOUT_TIMEOUT: "结算页跳转超时",
   ORDER_CONFIRM_TIMEOUT: "下单后未见确认页",
+  PAYMENT_VERIFICATION_TIMEOUT: "发卡行验证未在时限内完成",
   ORDER_NO_AMBIGUOUS: "无法确定哪个单号属于本单",
   CAPTCHA_ENCOUNTERED: "命中验证码/风控",
   CLAIM_TIMEOUT: "认领超时未回传",
@@ -65,11 +70,13 @@ export const RETRYABLE: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
 
 /** 必须转人工,禁止自动重试。
  *
- * 前三个的共同点是**可能已经在 Amazon 上真下了单**,重试就是重复下单;
+ * 前四个的共同点是**可能已经在 Amazon 上真下了单**,重试就是重复下单
+ * (服务端那份叫 POSSIBLY_ORDERED,重置前还有一道人工确认闸);
  * 后四个是护栏拦截与风控,重试多少次结果都一样,要人来裁决。
  */
 export const TO_MANUAL: ReadonlySet<ErrorCode> = new Set<ErrorCode>([
   "ORDER_CONFIRM_TIMEOUT",
+  "PAYMENT_VERIFICATION_TIMEOUT",
   "ORDER_NO_AMBIGUOUS",
   "CLAIM_TIMEOUT",
   "PRICE_CAP_EXCEEDED",

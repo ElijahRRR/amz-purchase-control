@@ -56,6 +56,13 @@ export interface TaskRow {
   tracking_no: string | null;
   shipment_status: Shipment["status"];
   products: TaskProduct[] | null;
+  /** 这一单**正卡在发卡行验证页上等人**(插件报的最后一条 step 是「等待人工完成
+   *  支付验证」)。与「拍单中」分开显示 —— 一排 claimed 里,这一条要有人去催
+   *  操作员,其余的什么都不用做,而屏幕上它们原先长得一模一样。 */
+  awaiting_manual_verification: boolean;
+  /** 从什么时候开始等的。**不渲染成一个自己会走的秒表**:这一页不自动刷新,
+   *  那样的数字看着是活的、其实停在上一次请求的那一刻。 */
+  awaiting_since: string | null;
 }
 
 export interface SearchOut {
@@ -117,8 +124,15 @@ export interface Shipment {
  *  `SELECT t.*`,那三列压根不在 procure.tasks 上,详情里根本没有。
  *  照 TaskRow 继承的话,类型系统会承诺三个运行时是 undefined 的非空字段 ——
  *  哪天有人照着类型写 `t.carrier.toUpperCase()`,编译器一句话不说,线上白屏。
- *  物流在详情里走 `shipment` 那个对象。 */
-export interface TaskDetail extends Omit<TaskRow, "carrier" | "tracking_no" | "shipment_status"> {
+ *  物流在详情里走 `shipment` 那个对象。
+ *
+ *  `awaiting_manual_verification` / `awaiting_since` 同理:那两列也是列表 SQL 的
+ *  LATERAL 拼出来的,详情里没有。**详情里那件事看事件流** —— 抽屉里本来就把
+ *  「等待人工完成支付验证」那条 step 原样铺开了,再复制一份状态出来只会多一处
+ *  可能与事件流说得不一样的地方。 */
+export interface TaskDetail extends Omit<TaskRow,
+  "carrier" | "tracking_no" | "shipment_status" |
+  "awaiting_manual_verification" | "awaiting_since"> {
   ship_country: string;
   max_delivery_days: number;
   delivery_raw: string | null;
@@ -179,6 +193,13 @@ export interface InstanceRow {
   login_blocks_dispatch: boolean;
   /** 与 task_queue.CLAIM_SQL 那道真闸算同一件事:在线、没到日上限、且没被登出。 */
   dispatchable: boolean;
+  /** 最近 24 小时里这个买家号有几单**试着清车但没清动**。
+   *
+   *  清车是每一单的第一步,它失败通常意味着 Amazon 改了购物车页的结构 ——
+   *  于是队列里的单会被一单一单打进「拍单异常」桶,而这一行原先是满格绿色的
+   *  「在线 · 可派」。这一位在服务端一直有人写(/fail 的 cart_cleared),
+   *  但在此之前没有任何地方读它。 */
+  cart_fail_24h: number;
 }
 
 export interface SearchReq {

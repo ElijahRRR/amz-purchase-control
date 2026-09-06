@@ -13,12 +13,19 @@ import type { Client } from "../core/client.js";
 import type { ErrorCode } from "../core/codes.js";
 import { toManual } from "../core/codes.js";
 import type { Log } from "../core/log.js";
+import type { Phase } from "../core/status.js";
 import type { Task } from "../core/types.js";
 import { cartReadOf, DriverError, LoginLostError, type PageDriver } from "./driver.js";
 
 export type Outcome =
   | { kind: "purchased"; amazonOrderNo: string }
-  | { kind: "failed"; code: ErrorCode; toManual: boolean }
+  /** `cartCleared` 三个值都有意思,别归并成布尔:
+   *   true  清干净了
+   *   false **清车失败**(残留商品会污染这个买家号的下一单)
+   *   null  没试过 —— 越过下单点之后按规矩不动购物车,这不是一次失败。
+   *  Loop 的熔断只数 false;把 null 也数进去的话,每一单「可能已下单」
+   *  都会被当成清不动车,三单之后整台机器停止认领,而购物车其实好好的。 */
+  | { kind: "failed"; code: ErrorCode; toManual: boolean; cartCleared: boolean | null }
   | { kind: "released" }
   /** 没跟服务端说上话。任务此刻仍是 claimed,交给服务端的超时清扫去收
    *  —— 它 15 分钟后转待人工,而不是退回队列。 */
@@ -28,7 +35,18 @@ export interface RunDeps {
   client: Client;
   driver: PageDriver;
   log: Log;
-  /** 下单前是否停下来等人按。默认 true —— 花钱这一步永远有预览。 */
+  /** 下单前是否停下来等人按。**只有真的传了 askConfirm 才有意义。**
+   *
+   *  ⚠️ 现状:全仓**没有任何调用点提供 askConfirm**(content/runner.ts 构造 Loop 时
+   *  没传),所以这一步实际不发生,core/status 里的 `confirm` 相位是死代码。
+   *  这条注释原先写着「默认 true —— 花钱这一步永远有预览」,那是一句
+   *  系统不会兑现的承诺,比不写更坏。
+   *
+   *  要接上的话,难的不是弹窗,是**等待必须有界**:人一直不按怎么办?
+   *  超时默认「取消 → 清车 → 退回队列」是个说得通的答案,但它意味着
+   *  「操作员去吃了个饭」和「他看了一眼觉得不对」落成同一个结果,
+   *  而且那个上界还要和服务端的认领超时对齐(与 placeOrder 的硬顶同一条道理)。
+   *  那是一个要单独定的决定,不在这一轮里顺手做。 */
   confirmBeforeOrder?: boolean;
   /** 预览步的应答。返回 false 表示人按了取消。 */
   askConfirm?: (task: Task, reading: { total: string; deliveryRaw?: string }) => Promise<boolean>;
@@ -36,6 +54,21 @@ export interface RunDeps {
    *  这个回调只负责把「这台机器登录态没了」这个事实往上说:
    *  Loop 据此停止认领,服务端据此拦住下一次认领,运营台据此把那个买家号标红。 */
   onLoginLost?: () => void;
+  /** 相位变了(面板拿它换标签、换步骤条)。**只有 runTask 知道**「此刻在等人」
+   *  这件事 —— Loop 那一层从 claim 到 return 之间一直是 running,
+   *  而「正在等操作员做发卡行验证」和「机器正常在跑」必须是两个样子。 */
+  onPhase?: (phase: Phase) => void;
+  /** 进入/离开「等人做发卡行验证」。面板拿 deadlineMs 跑倒计时;
+   *  离开时传 null。与 onPhase 分开:相位是给标签用的,这个是给倒计时用的。 */
+  onVerifyWindow?: (deadlineMs: number | null) => void;
+  /** 这一单**开头那次清车成功了**。Loop 的清车熔断拿它清零连续计数。
+   *
+   *  为什么不能只看终态里的 cartCleared:那一位只有 failed 才带,
+   *  而 purchased / released 这两条路上清车明明成功过(它是第一步)。
+   *  于是「失败、失败、成功、失败」也会熔断 —— 熔断本身没坏,坏的是它报出来的
+   *  原因:面板会说「连着几单清不动购物车,多半是 Amazon 改了购物车页的结构」,
+   *  而这台机器的购物车其实好好的,运营照着这句话去查一个不存在的故障。 */
+  onCartCleared?: () => void;
 }
 
 class Abort extends Error {
@@ -47,6 +80,19 @@ class Abort extends Error {
 export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
   const { client, driver, log } = deps;
 
+  // 服务端会在这个时刻把这条判成认领超时(task_sweep 只看 claimed_at)。
+  // **起点在这里取,不在 placeOrder 里取**:清车/加购/填地址那几步的上界加起来
+  // 就有五六分钟,它们同样记在服务端那本账上。少了这一段的话,插件算出来的
+  // 「还能等多久」永远偏大,最坏的一格是:第 15 分钟服务端把单转成待人工,
+  // 第 16 分钟这边订单下成了、单号也读到了,complete 拿回 409 TASK_NOT_HELD。
+  // 这里比服务端的 claimed_at 晚一个 HTTP 来回(claim 的响应刚回来),
+  // 偏乐观的那点由 orderServerMargin 兜着。
+  const claimMin = task.claim_timeout_min;
+  const claimDeadlineMs =
+    typeof claimMin === "number" && Number.isFinite(claimMin) && claimMin > 0
+      ? Date.now() + claimMin * 60_000
+      : null;
+
   // 点下单那一刻起就是 true。注意置位时机在 placeOrder **之前** ——
   // 如果在点击过程中崩了,我们同样不知道单下没下成。
   let mayHaveOrdered = false;
@@ -56,9 +102,35 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     await client.events(task.task_id, [{ kind: "step", payload: { step: text, ...payload } }]);
   };
 
+  /** 清车,但**清不动不改变这一单的结局**。
+   *
+   *  裸调 clearCart 的两处(护栏没说上话、人按了取消)会让 DriverError 掉进最外层
+   *  catch,于是「人主动按了取消」被渲染成 PLUGIN_INTERNAL 拍单异常 ——
+   *  两件完全不同的事长成一个样子,而本该走的 /release 根本没发出去。
+   *  失败要说出来(事件流 + 日志),但由调用方决定这一单怎么落地。 */
+  const tryClear = async (where: string): Promise<boolean> => {
+    try {
+      await driver.clearCart();
+      return true;
+    } catch (e) {
+      const detail = e instanceof Error ? e.message : String(e);
+      log.err(`${where}:清车失败 —— ${detail}(残留商品会污染这个买家号的下一单)`);
+      // 先写事件流再返回:调用方接着可能会 release,那之后 /events 就会被
+      // TASK_NOT_HELD 拒掉,这条痕迹就永远写不进去了。
+      await client.events(task.task_id, [
+        { kind: "step", payload: { step: "清车失败", state: "cart_not_cleared", where, detail } },
+      ]);
+      return false;
+    }
+  };
+
   try {
     await step("清空购物车");
     await driver.clearCart();
+    // 清成功了就说一声:Loop 的清车熔断据此把连续计数清零。**在这里说,
+    // 不等到终态** —— purchased / released 的终态里没有 cartCleared 这一位,
+    // 而清车在那两条路上明明成功过。
+    deps.onCartCleared?.();
 
     for (const p of task.products) {
       const added = await driver.addProduct(p.asin, p.quantity);
@@ -146,7 +218,7 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
       // 没拿到裁决就绝不下单 —— 宁可这一单不做,也不在没闸门的情况下花钱。
       if (verdict.kind === "transport") {
         log.err("护栏裁决没说上话:" + verdict.message + " —— 不下单,清车");
-        await driver.clearCart();
+        await tryClear("护栏没说上话");
         return { kind: "unreported", message: verdict.message };
       }
       throw new Abort("PLUGIN_INTERNAL", `护栏裁决被拒:${verdict.code} ${verdict.message}`);
@@ -171,14 +243,37 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
       });
       if (!go) {
         log.warn("人按了取消 —— 清车,退回队列");
-        await driver.clearCart();
+        // 清不干净也照样 release:这一单本身没毛病,人只是不想现在买它。
+        // 把它记成 PLUGIN_INTERNAL 拍单异常,等于用「插件崩了」去表达「人按了取消」。
+        await tryClear("人按了取消");
         const rel = await client.release(task.task_id);
         return rel.ok ? { kind: "released" } : { kind: "unreported", message: "release 失败" };
       }
     }
 
     mayHaveOrdered = true;               // ← 从这里开始,退回队列是被禁止的
-    await driver.placeOrder();
+    // **先说,再点。** 这条事件是「走到了下单按钮」与「根本没走到」之间唯一的分界线:
+    // 没有它的话,一条 ORDER_CONFIRM_TIMEOUT 的时间线最后一条是「读到结算页」,
+    // 看的人无从判断该不该去买家号里查一遍(两种情况的处置完全相反)。
+    // 服务端收到 may_have_ordered 会把 tasks.may_have_ordered 置上,
+    // 那道「重置前必须有人确认过」的闸也认这一位。
+    await step("点击下单按钮", { may_have_ordered: true });
+    await driver.placeOrder({
+      // 上界由服务端给,不让插件自己拍。见 flow/amazon.orderHardCapMs。
+      claimDeadlineMs,
+      onManualVerification: async ({ deadlineMs }) => {
+        deps.onPhase?.("verify");
+        deps.onVerifyWindow?.(deadlineMs);
+        log.warn("Amazon 转到了发卡行验证页 —— 请在本页弹出的窗口里完成验证,不要关闭它");
+        await step("等待人工完成支付验证",
+                   { state: "manual_verification", deadline_ms: deadlineMs });
+      },
+      onVerificationDone: async () => {
+        deps.onPhase?.("running");
+        deps.onVerifyWindow?.(null);
+        await step("人工支付验证已完成", { state: "manual_verification_done" });
+      },
+    });
     await step("下单 · 确认页已出现");
 
     const card = await driver.readOrderCard();
@@ -202,7 +297,9 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     if (done.kind === "business") {
       // 断言不过时服务端已经把任务转成待人工了,插件这边不用再报一次。
       log.err(`回填被拒:${done.code} ${done.message}`);
-      return { kind: "failed", code: done.code as ErrorCode, toManual: true };
+      // cartCleared 是 null 而不是 false:这一单已经越过下单点,按规矩就不该动
+      // 购物车 —— 没试过和试了没成是两回事(Loop 的清车熔断只数后者)。
+      return { kind: "failed", code: done.code as ErrorCode, toManual: true, cartCleared: null };
     }
     log.err("回填没说上话:" + done.message + " —— 单可能已经下成,交给服务端超时清扫");
     return { kind: "unreported", message: done.message };
@@ -226,6 +323,8 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     const detail = e instanceof Error ? e.message : String(e);
     return finish(task, code, detail, mayHaveOrdered, deps);
   } finally {
+    // 面板上那条倒计时不能留在屏幕上:这一单已经结束了,而它长得像还在等人。
+    deps.onVerifyWindow?.(null);
     // iframe 一定要收掉,不管这一单是怎么结束的。
     try { await driver.dispose(); } catch { /* 收尾失败不改变这一单的结局 */ }
   }
@@ -283,11 +382,15 @@ async function finish(
 ): Promise<Outcome> {
   const { client, driver, log } = deps;
 
-  let cartCleared = false;
+  // null = 没试过(越过下单点,按规矩不动购物车)。与「试了没成」分开 ——
+  // 合成一个 false 的话,Loop 那道清车熔断会把每一单「可能已下单」都算成
+  // 一次清不动车,三单之后整台机器停止认领,而购物车其实好好的。
+  let cartCleared: boolean | null = null;
   if (mayHaveOrdered) {
     // 单可能已经下成了,这时清车没有意义(车本来就空了),也不该再动页面。
     log.warn("已越过下单点,不再动购物车");
   } else {
+    cartCleared = false;
     try {
       await driver.clearCart();
       cartCleared = true;
@@ -304,11 +407,16 @@ async function finish(
     error_code: code,
     detail,
     to_manual: manual,
-    cart_cleared: cartCleared,
+    cart_cleared: cartCleared === true,
+    // **有没有试过**要与**试的结果**分开报。服务端原先只看 cart_cleared:
+    // 越过下单点那一路(按规矩不清车)与真的清不动车,在事件流里写成同一条
+    // `warning: cart_not_cleared` —— 而前者是规矩被遵守了,后者是这台机器
+    // 清不动购物车、下一单会被残留污染。运营台上那一格数的是后者。
+    cart_clear_attempted: cartCleared !== null,
   });
   if (!res.ok) {
     log.err("上报失败也没说上话:" + (res.kind === "business" ? res.message : res.message));
     return { kind: "unreported", message: detail };
   }
-  return { kind: "failed", code, toManual: manual };
+  return { kind: "failed", code, toManual: manual, cartCleared };
 }

@@ -40,7 +40,7 @@ python cli.py db_init
 
 # 2. 跑测试(需要一个可连的 PostgreSQL 17;连不上会整体 skip)
 export AMZ_TEST_ADMIN_DSN="dbname=postgres"
-python -m pytest -q                       # 269 条
+python -m pytest -q                       # 278 条
 
 # 3. 起服务
 python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
@@ -63,6 +63,8 @@ npm run test:dom                          # 109 条 DOM 解析断言(不需要�
 npm run smoke                             # 用插件自己的 Loop/runTask 跑闭环
 node tools/smoke.mjs --scenario happy --ship in_transit
 node tools/smoke.mjs --scenario login_lost         # 跑到一半被登出:退回队列,不记异常
+node tools/smoke.mjs --scenario manual_verify     # 转到发卡行验证页,人做完了 → 照常回填
+node tools/smoke.mjs --scenario manual_verify_timeout   # 人没做完 → 转待人工
 
 # 7. 运营台
 cd web && npm install
@@ -185,11 +187,12 @@ python cli.py feishu_writeback
 
 | | 状态 |
 |---|---|
-| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 269 条 pytest,跑在真 PostgreSQL 17 上 |
+| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 278 条 pytest,跑在真 PostgreSQL 17 上 |
 | 插件与服务端的时序(认领 → 执行 → 护栏 → 回填 → 失败清车) | ✅ 8 个场景实跑,跑的是插件自己的 `Loop`/`runTask` |
 | 物流同步时序 | ✅ 实跑 |
 | DOM 解析层(选择器是否按报告的语义在读) | ✅ 109 条断言,对着按报告造的夹具跑 |
 | 登录态(被登出 → 拒绝派单 → 重新登录后自愈) | ✅ 心跳落库/认领被拒/恢复/unknown 的 pytest,加一轮 `--scenario login_lost` 实跑 |
+| 下单后的三段等待(发卡行验证 → 露窗口 → 上报 → 有界超时) | ⚠️ **只验到时序那一半**:两条 step 事件、`claim_timeout_min` 下发、列表徽标、新错误码转人工,都有 pytest 与 `--scenario manual_verify / manual_verify_timeout` 实跑;**「iframe 真被导到跨域页之后 `urlState()` 读到什么、`reveal()` 出来的窗口能不能真的输验证码」没验过** —— 那要一个真买家号 |
 | 运营台前端 | ✅ 真库 + 真服务 + 真浏览器跑过四页、详情弹窗、改地址、剪贴板、NEEDS_ACK 流程 |
 | **真实 Amazon 页面** | ❌ **从未跑过**。这里没有可登录的买家号 |
 
@@ -306,6 +309,12 @@ python cli.py task_retry
 | （库里）`buyer_envs.expected_card_last4` | 空 | 这个买家号该刷哪张卡的后四位。**留空 = 不校验**;填了之后结算页读到的尾号不符即 `PAYMENT_METHOD_UNEXPECTED`,在下单**之前**拦下。只校验、不替买家号切卡 —— 改支付配置是人的动作。运营台买家号那一页可就地改 |
 | （库里）`tasks.require_fba` | `true` | 这一单要不要求 Amazon 自营发货。**它现在真的是一列** —— 在此之前是 `GuardsOut` 里一个 `= True` 的默认值,路由不往 `adjudicate` 传,一道号称「可关」的闸恒为真 |
 | `AMZ_SERVER_HOST` / `AMZ_SERVER_PORT` | `127.0.0.1` / `8781` | HTTP 监听 |
+
+**插件那一侧的可调参数不在这张表里**,它们存在浏览器的 `chrome.storage` 里,
+表在 `extension/README.md`。其中一个要与这里对着看:插件「点了下单之后」那段等待的
+硬顶,取的是「插件自己的上限」与「`AMZ_CLAIM_TIMEOUT_MIN` 减去 3 分钟余量」里更紧的那个
+—— 调大插件那边而不动这里,实际生效的还是这里。反过来也一样。
+
 
 ## 接口
 
@@ -430,7 +439,7 @@ python cli.py task_retry
 | | |
 |---|---|
 | `CLAUDE.md` | 项目总纲与铁律,开工前必读 |
-| `docs/01-系统设计.md` | 架构、数据模型、**错误码封闭集**、护栏、插件时序 |
+| `docs/01-系统设计.md` | 架构、数据模型、**错误码封闭集**、护栏、插件时序(含下单后的三段等待) |
 | `docs/db_schema.md` | 表结构唯一事实来源(改表先改它) |
 | `docs/02-schema-验证记录.md` | 建表与认领算法的实测记录 |
 | `docs/03-运营台字段对照.md` | 厂商面板 8 组字段 → 我们的库,逐条取舍 |

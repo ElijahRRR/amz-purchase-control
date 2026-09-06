@@ -4,7 +4,7 @@
  * 这一整套能不能真的跑通。场景与 tools/mock_plugin.py 一致,便于两边对照。
  */
 
-import { DriverError, LoginLostError, type AddResult, type CheckoutReading, type OrderCard, type PageDriver } from "./driver.js";
+import { DriverError, LoginLostError, type AddResult, type CheckoutReading, type OrderCard, type PageDriver, type PlaceOrderHooks } from "./driver.js";
 import type { LoginState } from "./dom/parse.js";
 import type { ShipmentReader, TrackingRead } from "./shipment.js";
 import type { Shipping } from "../core/types.js";
@@ -14,7 +14,14 @@ export type Scenario =
   | "confirm_timeout" | "late_delivery" | "cart_mismatch"
   /** 跑到一半发现买家号被登出。**没到下单点**,所以这一单该退回队列,
    *  而不是记成一次拍单异常 —— 单子本身没毛病,是这台机器的环境坏了。 */
-  | "login_lost";
+  | "login_lost"
+  /** 点了下单 → Amazon 转到发卡行验证页(跨域)→ 操作员做完 → 确认页。
+   *  验的是「等人」这条路真的能走通:两条 step 事件发得出去、面板起得来相位、
+   *  回填照常发生。 */
+  | "manual_verify"
+  /** 同上,但人没在时限内做完。这一格必须落成 PAYMENT_VERIFICATION_TIMEOUT
+   *  且 to_manual —— 订单可能已经提交,退回队列就是重复下单。 */
+  | "manual_verify_timeout";
 
 export class SimulatedDriver implements PageDriver {
   readonly name = "simulated";
@@ -91,11 +98,24 @@ export class SimulatedDriver implements PageDriver {
     };
   }
 
-  async placeOrder(): Promise<void> {
+  async placeOrder(hooks: PlaceOrderHooks = {}): Promise<void> {
     this.mark("placeOrder");
     if (this.scenario === "confirm_timeout") {
       // 已经点下去了,但没见到确认页 —— 最危险的那一格:可能已经下成了。
       throw new DriverError("ORDER_CONFIRM_TIMEOUT", "点了下单但没等到确认页(模拟)");
+    }
+    if (this.scenario === "manual_verify" || this.scenario === "manual_verify_timeout") {
+      // 真驱动这里是「结算 iframe 落进不透明源」;模拟档没有页面,直接把
+      // 两个回调按真实顺序调一遍 —— 验的是 run.ts 那两条 step 事件与相位切换。
+      // deadline 用真驱动同一个形状:epoch 毫秒,面板拿它跑倒计时。
+      this.mark("manualVerification");
+      await hooks.onManualVerification?.({ deadlineMs: Date.now() + 6 * 60_000 });
+      if (this.scenario === "manual_verify_timeout") {
+        throw new DriverError("PAYMENT_VERIFICATION_TIMEOUT",
+                              "点了下单,页面转到发卡行验证页,等了 360 秒仍未完成(模拟)");
+      }
+      this.mark("verificationDone");
+      await hooks.onVerificationDone?.();
     }
   }
 

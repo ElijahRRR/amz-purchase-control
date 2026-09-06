@@ -40,7 +40,16 @@ SELECT t.id, t.line_key, t.upstream_order_no, t.marketplace, t.status,
                                           'image_url', p.image_url,
                                           'actual_unit_price', p.actual_unit_price)
                         ORDER BY p.id)
-          FROM procure.task_products p WHERE p.task_id = t.id) AS products
+          FROM procure.task_products p WHERE p.task_id = t.id) AS products,
+       -- 「这一单正卡在发卡行验证页上等人」。**要与「拍单中」分开渲染** ——
+       -- 列表上一排 claimed 里,有一条已经等了 4 分钟、再等几分钟就会转待人工,
+       -- 其余是正常在跑的,而屏幕上这两种一模一样:没有任何理由去点开那一条,
+       -- 于是没人去催操作员完成验证。一个「有人正在等你」的状态被渲染成
+       -- 「机器正常运行」。
+       COALESCE(t.status = 'claimed' AND ev.state = 'manual_verification', false)
+           AS awaiting_manual_verification,
+       CASE WHEN t.status = 'claimed' AND ev.state = 'manual_verification'
+            THEN ev.at END AS awaiting_since
   FROM procure.tasks t
   JOIN procure.buyer_envs e ON e.id = t.buyer_env_id
   -- 一单可能同步过多次轨迹,取最后一条。LATERAL 而不是普通 JOIN:
@@ -50,6 +59,19 @@ SELECT t.id, t.line_key, t.upstream_order_no, t.marketplace, t.status,
         FROM logistics.shipments
        WHERE task_id = t.id ORDER BY id DESC LIMIT 1
   ) s ON TRUE
+  -- 最后一条 step 事件的 state。插件在进入/离开人工验证时各发一条
+  -- (payload.state = manual_verification / manual_verification_done),
+  -- 所以「最后一条是不是它」就是「此刻在不在等人」。
+  --
+  -- **不许把它写进 WHERE 的默认过滤**:那会给 task_events 加一次全表扫。
+  -- 这条 LATERAL 只在已经选出的那一页上跑,与上面 shipment 那条同一个量级,
+  -- 走的也是同一个索引(idx_task_events_task 的 task_id 前缀)。
+  LEFT JOIN LATERAL (
+      SELECT payload->>'state' AS state, created_at AS at
+        FROM procure.task_events
+       WHERE task_id = t.id AND kind = 'step'
+       ORDER BY id DESC LIMIT 1
+  ) ev ON TRUE
  WHERE {where}
  ORDER BY {order_by}
  LIMIT %(limit)s OFFSET %(offset)s

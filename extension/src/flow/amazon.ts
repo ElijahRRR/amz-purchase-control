@@ -14,8 +14,8 @@
  */
 
 import { SEL, URLS } from "./dom/selectors.js";
-import { openFrame, withFrame, type Frame } from "./dom/frame.js";
-import { waitFor, waitStable, WaitTimeout } from "./dom/wait.js";
+import { openFrame, withFrame, type Frame, type UrlState } from "./dom/frame.js";
+import { sleep, waitFor, waitStable, WaitTimeout } from "./dom/wait.js";
 import {
   cartMatches, describeMiss, findAddNewAddressEntry, findAddToCartButton,
   findAddressChangeEntry, findAddressFormNameField, findAddressSection,
@@ -33,20 +33,80 @@ import {
   type AddressSaveOutcome, type CartLine, type LoginState, type OrderState,
 } from "./dom/parse.js";
 import type { ShipmentReader, TrackingRead } from "./shipment.js";
-import { DriverError, LoginLostError, type AddResult, type CartReadReporter, type CheckoutReading, type OrderCard, type PageDriver } from "./driver.js";
+import { DriverError, LoginLostError, type AddResult, type CartReadReporter, type CheckoutReading, type OrderCard, type PageDriver, type PlaceOrderHooks } from "./driver.js";
+import { DEFAULTS, type Timeouts } from "../core/config.js";
 import type { Shipping } from "../core/types.js";
 
-const T = {
-  frameLoad: 30_000,
-  /** 判登录态那一次:只要导航栏渲染出来就够,不等整页加载完。 */
-  loginProbe: 20_000,
-  addToCart: 30_000,
-  checkoutNav: 45_000,
-  addressForm: 30_000,
-  addressSave: 30_000,
-  orderConfirm: 60_000,
-  orderCards: 20_000,
+/** 页面等待预算。**值来自 core/config.ts**(可调参数的唯一来源),这里只留一份
+ *  兜底默认值:单元测试直接 `new AmazonDriver()` 时用得上。
+ *
+ *  为什么 T 还是一个模块级对象、而不是实例字段:一个标签页里同一时刻只有一单在跑
+ *  (单飞闸在 content/runner.ts,跨标签页那道在 background/service-worker.ts),
+ *  所以它事实上是进程内单例;构造函数把配置灌进来,其余步骤照旧读 `T.xxx`。
+ *  这样这次改动只落在「下单之后那一段」,不去动清车/加购/填地址那几处。 */
+const DEFAULT_TIMEOUTS: Timeouts = { ...DEFAULTS.timeouts };
+
+const T: Timeouts = { ...DEFAULT_TIMEOUTS };
+
+/** 输入:配置里的超时表(可以残缺)→ 输出:无;就地灌进 T。
+ *  没给的键回落到默认值 —— 不让上一个实例的设置渗到下一个实例里。 */
+function applyTimeouts(t: Partial<Timeouts> | undefined): void {
+  const given = t ?? {};
+  for (const k of Object.keys(DEFAULT_TIMEOUTS) as Array<keyof Timeouts>) {
+    const v = given[k];
+    T[k] = typeof v === "number" && Number.isFinite(v) && v > 0 ? v : DEFAULT_TIMEOUTS[k];
+  }
+}
+
+/** 点了下单之后的三段等待。分开计时,各有各的预算与各自的错误码。 */
+type OrderWaitPhase = "normal" | "manual_verify" | "post_verify";
+
+const PHASE_BUDGET: Record<OrderWaitPhase, () => number> = {
+  normal: () => T.orderConfirm,
+  manual_verify: () => T.manualVerify,
+  post_verify: () => T.postVerify,
 };
+
+/** 露出验证窗口时贴在上面的那句话。**不给关闭按钮**,所以要写清楚
+ *  「关掉这个窗口会怎样」——人只有知道后果才不会去关它。 */
+const REVEAL_BANNER =
+  "Amazon 把这一单转到了发卡行的验证页。请在下面的窗口里完成验证," +
+  "完成前不要关闭或刷新本页 —— 超时后这一单会转为待人工,而订单可能已经提交。";
+
+/** 输入:服务端会把这条判成认领超时的**绝对时刻**(没有就是 null)+ 此刻
+ *  → 输出:placeOrder 这一段还能等多久。
+ *
+ *  为什么上界不能由插件自己拍脑袋:服务端的 task_sweep 只看 claimed_at,
+ *  插件发再多 step 事件也不会推迟清扫。等过了头的后果是所有结局里最坏的一个 ——
+ *  第 15 分钟任务被转成 manual/CLAIM_TIMEOUT,第 16 分钟操作员做完验证、
+ *  订单真下成了、单号也读到了,complete 却拿回一个 409 TASK_NOT_HELD,
+ *  **钱花了、货发了,系统里是一条没有单号的待人工**。
+ *
+ *  入参是绝对时刻而不是「认领超时几分钟」:后者会让这本账从点下单那一刻起算,
+ *  而清车/加购/填地址前面那几步(上界加起来能到五六分钟)同样记在服务端的
+ *  claimed_at 上。起点由 run.ts 在认领之后取,这里只做减法。
+ *
+ *  服务端那个值配得特别小、或者前面几步已经把预算吃光的时候这里会算出 0 ——
+ *  那就只探一次立刻超时,这是对的:那种情况下本来就没有等的余地。 */
+function orderHardCapMs(claimDeadlineMs: number | null, now: number): number {
+  const own = T.orderHardCap;
+  if (claimDeadlineMs === null || !Number.isFinite(claimDeadlineMs)) return own;
+  return Math.max(0, Math.min(own, claimDeadlineMs - T.orderServerMargin - now));
+}
+
+/** 输入:一次 urlState 读数 → 输出:写进 detail 的中文。
+ *
+ *  原先这里是 `当前 URL:${f.url()}`,而 url() 把「跨域(人在验证)」
+ *  「iframe 已销毁」「URL 真为空」都渲染成空串 —— 运营台上三种完全不同的现场
+ *  长成同一句 `当前 URL:`。两种不同的情况渲染出同一个结果就是缺陷。 */
+function describeUrl(s: UrlState): string {
+  switch (s.kind) {
+    case "ok": return `当前 URL:${s.url || "(空)"}`;
+    case "cross_origin": return "当前停在跨域页面上(读 location 抛 SecurityError,多半是发卡行验证页)";
+    case "detached": return "结算 iframe 已经不存在";
+    case "unreadable": return `结算页读不到 URL(${s.name})`;
+  }
+}
 
 function click(el: Element | null | undefined): boolean {
   if (!el) return false;
@@ -72,7 +132,14 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
   /** 购物车 → 结算页 → 下单,是同一个 iframe 一路跳过来的。 */
   private checkout: Frame | null = null;
 
-  constructor(private readonly origin: string = "https://www.amazon.com") {}
+  /** 超时表从配置来(见 core/config.Timeouts)。不传就是默认值 —— 单元测试里
+   *  `new AmazonDriver()` 照旧能用;生产链路由 content/runner.ts 把 cfg.timeouts 传进来。 */
+  constructor(
+    private readonly origin: string = "https://www.amazon.com",
+    timeouts?: Partial<Timeouts>,
+  ) {
+    applyTimeouts(timeouts);
+  }
 
   async dispose(): Promise<void> {
     this.checkout?.close();
@@ -813,24 +880,121 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
   }
 
   // ── 下单 ─────────────────────────────────────────────────────────
-  async placeOrder(): Promise<void> {
+  //
+  // 这一段是整条流水线上唯一「已经花过钱」的地方,所以它的形状与别处不同:
+  // **有界、分段、可见、上报**,四件缺一不可。
+  //
+  //  · 有界:三段各有预算,再压一道硬顶 —— 它按**服务端的认领超时**反推,
+  //          而那本账是从认领那一刻开始记的,不是从点下单开始记的。
+  //          绝不 while(true) —— 厂商 v2.5.3 把两处结算导航的 maxWaitTime 改成 0,
+  //          于是「跨域后回到别的页面」「一直停在跨域页」两格变成永不返回,
+  //          连带把他们的全局锁焊死,整个插件不再接受新的拍单请求。
+  //  · 分段:normal / manual_verify / post_verify 分开计时。manual_verify
+  //          **不重置总时钟**;post_verify 独立且短 —— 那一格就是厂商的永久卡死。
+  //  · 可见:进入 manual_verify 必须把 iframe 露出来(frame.reveal)。
+  //          我们的 iframe 平时在屏幕外、pointer-events:none —— 不露出来的话,
+  //          「等操作员完成验证」是一句假话:他看不见,也点不到,
+  //          把 60 秒改成 60 分钟只会把「立刻失败」变成「一小时后失败」。
+  //  · 上报:进出 manual_verify 各发一条 step 事件(run.ts 传 hooks 进来),
+  //          面板起一个 verify 相位与倒计时,运营台列表挂一个徽标。
+  //
+  // 到期的码分两种,因为现场是两种:停在发卡行验证页上到期是
+  // PAYMENT_VERIFICATION_TIMEOUT(订单多半已经提交,钱可能已经扣了),
+  // 其余是 ORDER_CONFIRM_TIMEOUT(常见成因是根本没点动那个按钮)。
+  // 两者同属「必须转人工 + 可能已下单」,处置的第一步都是去买家号里看一眼。
+  async placeOrder(hooks: PlaceOrderHooks = {}): Promise<void> {
     const f = this.need();
     if (!click(findSubmitOrderButton(f.doc()))) {
       throw new DriverError("PLUGIN_INTERNAL", "结算页找不到下单按钮");
     }
+
+    const startedAt = Date.now();
+    const hardCapMs = orderHardCapMs(hooks.claimDeadlineMs ?? null, startedAt);
+    let phase: OrderWaitPhase = "normal";
+    let phaseStartedAt = startedAt;
+    let revealed = false;
+
+    /** 这一段还剩多少时间。取「本段预算」与「总硬顶」里更紧的那个。 */
+    const deadlineOf = (p: OrderWaitPhase, from: number) =>
+      Math.min(from + PHASE_BUDGET[p](), startedAt + hardCapMs);
+
+    const leaveManualVerify = async () => {
+      if (revealed) {
+        f.hide();
+        revealed = false;
+      }
+      await hooks.onVerificationDone?.();
+    };
+
     try {
-      // 只认 thankyou。被退回购物车不是成功 —— 厂商把它也判成功,
-      // 于是失败的单会带着上一单的号被回填(深度分析 §4.2.4 高危)。
-      await waitFor("下单确认页", () => f.url().includes(URLS.thankyou),
-                    { timeoutMs: T.orderConfirm, everyMs: 500 });
-    } catch {
-      // 落到登录页说明 Amazon 在最后一步要求重新认证 —— 单多半没下成。
-      // 但**这里已经越过下单点了**:guardLogin 抛出的 LoginLostError 在 run.ts 里
-      // 走既有的转人工路径(不退回队列),同时把这台机器标成已登出。
-      // 「可能已经花了钱」比「被登出了」更要紧,处置不能变。
-      await this.guardLogin(f, "下单后等确认页");
-      throw new DriverError("ORDER_CONFIRM_TIMEOUT",
-                            `点了下单但没等到确认页,当前 URL:${f.url()}`);
+      for (;;) {
+        const s = f.urlState();
+
+        // 只认 thankyou。被退回购物车不是成功 —— 厂商把它也判成功,
+        // 于是失败的单会带着上一单的号被回填(深度分析 §4.2.4 高危)。
+        if (s.kind === "ok" && s.url.includes(URLS.thankyou)) {
+          if (phase === "manual_verify") await leaveManualVerify();
+          return;
+        }
+
+        // iframe 没了(标签页被关、页面被换掉)。等下去没有意义,而且这不是
+        // 「验证还没做完」—— 分开说,detail 里写清楚是哪一种。
+        if (s.kind === "detached") {
+          throw new DriverError("ORDER_CONFIRM_TIMEOUT",
+                                "点了下单,但结算 iframe 已经不存在了(页面被关掉或被导走)");
+        }
+
+        // ── 相位迁移 ──
+        if (s.kind === "cross_origin" && phase !== "manual_verify") {
+          phase = "manual_verify";
+          phaseStartedAt = Date.now();
+          f.reveal(REVEAL_BANNER);
+          revealed = true;
+          await hooks.onManualVerification?.({
+            deadlineMs: deadlineOf("manual_verify", phaseStartedAt),
+          });
+        } else if (phase === "manual_verify" && s.kind === "ok") {
+          // 回到读得到的页面,但还不是确认页:验证做完了(或者被拒了),
+          // 页面正在往下走。给一段**短而独立**的预算,总时钟继续走。
+          phase = "post_verify";
+          phaseStartedAt = Date.now();
+          await leaveManualVerify();
+        }
+
+        // ── 到期 ──
+        const now = Date.now();
+        if (now >= deadlineOf(phase, phaseStartedAt)) {
+          const overHardCap = now >= startedAt + hardCapMs;
+          const waited = Math.round((now - startedAt) / 1000);
+          if (phase === "manual_verify") {
+            // **这里不问 guardLogin。** 停在发卡行的验证页上读不到 URL 是常态,
+            // 再去开一张购物车页问「是不是被登出了」,拿回来的结论会把
+            // 「验证没做完」改写成 LoginLostError,而后者在 run.ts 里最终落成
+            // ORDER_CONFIRM_TIMEOUT —— 刚分出来的这个码当场就被抹掉了。
+            // detail 里写**这一刻**读到的是什么,而不是一句「跨域」了事:
+            // 进了这一格之后页面还可能变成别的读不到的样子(unreadable),
+            // 两种写成同一句的话,运营台上又是一次「两种情况渲染成同一个结果」。
+            throw new DriverError("PAYMENT_VERIFICATION_TIMEOUT",
+                                  `点了下单,页面转到发卡行验证页等人完成验证,` +
+                                  `等了 ${waited} 秒仍未完成` +
+                                  `${overHardCap ? "(已到总硬顶)" : ""};${describeUrl(s)}`);
+          }
+          // 落到登录页说明 Amazon 在最后一步要求重新认证 —— 单多半没下成。
+          // 但**这里已经越过下单点了**:guardLogin 抛出的 LoginLostError 在 run.ts 里
+          // 走既有的转人工路径(不退回队列),同时把这台机器标成已登出。
+          // 「可能已经花了钱」比「被登出了」更要紧,处置不能变。
+          await this.guardLogin(f, "下单后等确认页");
+          throw new DriverError("ORDER_CONFIRM_TIMEOUT",
+                                `点了下单但没等到确认页,等了 ${waited} 秒,` +
+                                `${phase === "post_verify" ? "验证已结束但页面没走到确认页," : ""}` +
+                                `${describeUrl(s)}${overHardCap ? "(已到总硬顶)" : ""}`);
+        }
+
+        await sleep(T.orderPoll);
+      }
+    } finally {
+      // 无论怎么离开这一段,都不能把那个 1280×900 的窗口留在页面正中央。
+      if (revealed) f.hide();
     }
   }
 

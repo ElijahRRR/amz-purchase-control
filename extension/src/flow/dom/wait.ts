@@ -12,6 +12,12 @@
  *
  * 所以这里只有一个出口形状:**要么返回值,要么抛 WaitTimeout**。
  * 定时器在 finally 里清,不看成功与否。
+ *
+ * 「厂商那四个坑我们没有」不是靠读代码读出来的,有测试盯着:
+ * `extension/test/unit.test.mjs` 里那两条 —— 探针每轮抛 SecurityError 时
+ * waitFor 必须**按时超时**(厂商 2.4.1 在同一场景下永远不 settle),
+ * 以及 waitStable 在探针抛错的那一轮必须把连续计数**打断**(见下面 waitStable)。
+ * 这句话得能被验证:一条声称有测试盯着、实际没有的注释,比不写更危险。
  */
 
 export class WaitTimeout extends Error {
@@ -74,7 +80,24 @@ export async function waitStable<T>(
   let last: T | undefined;
   let hits = 0;
   return waitFor<T>(what, () => {
-    const got = probe();
+    let got: T | null | undefined | false;
+    try {
+      got = probe();
+    } catch (e) {
+      // **探针抛错必须打断连续性。**
+      //
+      // 外层 waitFor 会把探针异常吞成「这一轮没探到」(那是对的),但异常是在
+      // 这个 lambda **之外**被接住的 —— 下面那句 hits = 0 根本执行不到,
+      // hits 与 last 保持着抛错之前的值。于是序列「A、A、<抛错>、A」在
+      // times=3 时返回 A:三次「连续」跨过了一段读不到的空档。
+      //
+      // 今天这条路是潜伏的(唯一的调用点探针是 f.url(),它自己 catch 了),
+      // 但 frame.urlState() 是会抛的,谁把它接进来就立刻踩到。
+      // 实测与断言见 extension/test/unit.test.mjs。
+      hits = 0;
+      last = undefined;
+      throw e;
+    }
     if (got === null || got === undefined || got === false) {
       hits = 0;
       return null;

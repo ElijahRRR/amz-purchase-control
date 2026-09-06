@@ -19,6 +19,10 @@ const tag = cva(
         "dashed-zinc": "bg-white text-zinc-600 border-zinc-300 border-dashed",
         "dashed-sky": "bg-white text-sky-700 border-sky-200 border-dashed",
         "dashed-amber": "bg-white text-amber-700 border-amber-200 border-dashed",
+        // 实心琥珀留给一种情况:**机器已经停下来了,正在等某个人动手**。
+        // 与虚线琥珀(拍单中 —— 机器还在跑,你不用管)刚好相反,
+        // 也与紫色(可能已下单,已经定了要人工处理)分开:这一格还来得及。
+        "solid-amber": "bg-amber-50 text-amber-700 border-amber-200",
         "solid-emerald": "bg-emerald-50 text-emerald-700 border-emerald-200",
         "solid-red": "bg-red-50 text-red-700 border-red-200",
         "solid-violet": "bg-violet-50 text-violet-700 border-violet-200",

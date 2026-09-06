@@ -18,8 +18,19 @@ export type Phase =
   | "claimed"    // 领到一单,还没动页面
   | "running"    // 正在跑
   | "confirm"    // 护栏放行,停在下单前等人按
+  /** 点了下单,Amazon 转到发卡行验证页,**此刻正在等这个人动手**。
+   *  与 running 分开:running 是「机器在跑,你不用管」,verify 是「轮到你了」;
+   *  与 blocked 分开:blocked 是「已经定了要人工处理」,这一格还救得回来。 */
+  | "verify"
   | "blocked"    // 被护栏拦下,已上报
   | "signed-out" // 这个浏览器被登出了,暂停认领 —— 要人去重新登录
+  /** 连着几单清不动购物车,熔断了。**与「待命」分开**:待命是「没单可跑」,
+   *  这一格是「有单也不领,因为再领也只会再废一单」—— 要人去看一眼购物车。 */
+  | "cart-blocked"
+  /** 上一单被看门狗强行掐掉了,而那条 runTask 还没走到 finish()。
+   *  这期间不认领(两条 runTask 会动同一个购物车)。**与「待命」分开**:
+   *  待命是「没单可跑」,这一格是「有单也不领,因为上一单还没收住」。 */
+  | "stuck"
   | "done";      // 这一单完了
 
 export const PHASE_LABEL: Record<Phase, string> = {
@@ -28,9 +39,13 @@ export const PHASE_LABEL: Record<Phase, string> = {
   claimed: "已认领",
   running: "执行中",
   confirm: "下单确认",
+  verify: "等待人工验证",
   blocked: "护栏拦截",
   // 与「待命」必须是两个词:待命是"没单可跑",已登出是"跑不了,要人管"。
   // 渲染成同一句话的话,一台其实已经废掉的机器看起来一切正常。
   "signed-out": "已登出",
+  "cart-blocked": "清车受阻",
+  // 与「待命」也必须是两个词:一个是没单可跑,一个是上一单还挂着、有单也不敢领。
+  stuck: "上一单未收尾",
   done: "已完成",
 };

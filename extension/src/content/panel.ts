@@ -20,6 +20,8 @@ interface State {
   /** 本标签页是不是那个在跑单的。同一浏览器开着好几个 amazon.com 时,
    *  只有拿到租约的那个会认领 —— 不显示的话,人会以为另一个标签页坏了。 */
   hasLease: boolean;
+  /** 正在等操作员做发卡行验证时,这一段的到期时刻(epoch 毫秒)。 */
+  verifyDeadlineMs: number | null;
 }
 
 const PHASE_TAG: Record<Phase, [string, string]> = {
@@ -28,10 +30,19 @@ const PHASE_TAG: Record<Phase, [string, string]> = {
   claimed: ["tag tagdash", "background:#fff;color:#b45309;border-color:#fde68a"],
   running: ["tag tagdash", "background:#fff;color:#b45309;border-color:#fde68a"],
   confirm: ["tag tagdash", "background:#fff;color:#b45309;border-color:#fde68a"],
+  // 琥珀**实心**:与 blocked 的紫色分开 —— 紫色是「已经定了要人工处理」,
+  // 这一格是「此刻正在等你动手,还来得及」。也与上面几个虚线琥珀分开:
+  // 虚线是「机器在跑,你不用管」。
+  verify:  ["tag", "background:#fffbeb;color:#b45309;border-color:#fde68a"],
   blocked: ["tag", "background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe"],
   // 红色:这台机器**真的坏了**,不重新登录一单也跑不了。
   // 与「待命」的灰色分开,是为了让人一眼看出该动手的是他自己。
   "signed-out": ["tag", "background:#fef2f2;color:#b91c1c;border-color:#fecaca"],
+  // 同样是红的:这台机器此刻拍不了单,而且要人去动手。
+  "cart-blocked": ["tag", "background:#fef2f2;color:#b91c1c;border-color:#fecaca"],
+  // 上一单被强行掐掉、还没落地:这期间不认领。也是红的 —— 它同样是
+  //「有单也不领」,不是「没单可跑」,而后者的灰色会让人以为一切正常。
+  stuck: ["tag", "background:#fef2f2;color:#b91c1c;border-color:#fecaca"],
   done:    ["tag", "background:#ecfdf5;color:#047857;border-color:#a7f3d0"],
 };
 
@@ -45,11 +56,20 @@ const STEPS = [
   "回填单号 · ASIN 断言",
 ];
 
-let state: State = { phase: "off", task: null, log: [], config: null, hasLease: false };
+let state: State = { phase: "off", task: null, log: [], config: null, hasLease: false,
+                     verifyDeadlineMs: null };
 const runner = new Runner();
 let root: ShadowRoot;
 let mount: HTMLElement;
 let toast: HTMLElement;
+/** 等验证那一格的倒计时。只在那一格跑 —— 平时每秒重绘一次面板没有意义。 */
+let verifyTimer: ReturnType<typeof setInterval> | undefined;
+
+/** 输入:剩余毫秒 → 输出:M:SS。到点了写 0:00,不写负数。 */
+function mmss(ms: number): string {
+  const s = Math.max(0, Math.round(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, "0")}`;
+}
 
 function esc(s: unknown): string {
   return String(s ?? "").replace(/[&<>"]/g, (c) =>
@@ -67,7 +87,13 @@ function id(v: string | undefined | null): string {
 function render(): void {
   const { phase, task, config } = state;
   const [tagCls, tagStyle] = PHASE_TAG[phase];
-  const stepIdx = phase === "running" ? 3 : phase === "confirm" ? 5 : phase === "done" ? 7 : 0;
+  // verify 与 confirm 一样落在「下单 · 确认页」那一步:点已经点下去了,
+  // 正卡在确认页之前。原先整个 placeOrder 期间步骤条停在第 4 步「读结算页」,
+  // 而屏幕上(其实在屏幕外)有一个验证页在等人 —— 面板从头到尾没提过这件事。
+  const stepIdx = phase === "running" ? 3
+                : phase === "confirm" || phase === "verify" ? 5
+                : phase === "done" ? 7 : 0;
+  const leftMs = state.verifyDeadlineMs === null ? null : state.verifyDeadlineMs - Date.now();
 
   const modeBtn = (m: string, label: string) =>
     `<button data-mode="${m}" class="${config?.mode === m ? "on" : ""}">${label}</button>`;
@@ -91,6 +117,23 @@ function render(): void {
     ${config?.mode === "simulate" ? `<div class="warnbar">模拟档:页面动作全是假的,只用来自检和服务端说话的时序。不会在 Amazon 上产生任何订单。</div>` : ""}
     ${config?.mode === "live" && !state.hasLease ? `<div class="warnbar">另一个 Amazon 标签页正在跑单,本页只看不动。关掉那个标签页,租约会自动转到这里。</div>` : ""}
     ${config?.mode === "live" && state.hasLease ? `<div class="warnbar">真实档:会在这个买家号上下真单。页面动作从未在真实 Amazon 上验证过,第一次请拿可弃的号试。</div>` : ""}
+    ${phase === "stuck" ? `<div class="warnbar" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">
+      上一单跑过了硬顶,已经强制关掉页面,正在等它收尾。收尾之前不认领新单 ——
+      两条流程会动同一个购物车。
+    </div>` : ""}
+    ${phase === "cart-blocked" ? `<div class="warnbar" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">
+      连着几单清不动购物车,已暂停认领一段时间 —— 多半是 Amazon 改了购物车页的结构。
+      请打开这个买家号的购物车看一眼(手动清空一次也好),日志里有每一次的失败原因。
+    </div>` : ""}
+    ${phase === "verify" ? `<div class="warnbar" style="background:#fffbeb;color:#92400e;border-color:#fde68a">
+      <b>轮到你了:</b>Amazon 把这一单转到了发卡行验证页,窗口已经弹在本页中间 ——
+      请在里面完成验证,不要关闭或刷新本页。${
+        // 倒计时来自驱动给出的 deadline,不是面板自己拍的数 ——
+        // 面板另算一个的话,它迟早与真正到期的那一刻对不上,
+        // 而这句话承诺的正是「到点会发生什么」。
+        leftMs === null ? "" :
+        `剩余 <b>${mmss(leftMs)}</b>,超时后这一单转为待人工(订单可能已经提交,届时要去买家号里查一遍)。`}
+    </div>` : ""}
 
     <div class="body">
       ${task ? taskCard(task) : ""}
@@ -166,7 +209,15 @@ function boot(): void {
   // 执行器就在这个内容脚本里(MV3 的后台没有 document,跑不了页面动作),
   // 所以状态是本地的,不用跟后台来回要。
   runner.onChange((rs) => {
-    state = { ...state, phase: rs.phase, task: rs.task, hasLease: rs.hasLease };
+    state = { ...state, phase: rs.phase, task: rs.task, hasLease: rs.hasLease,
+              verifyDeadlineMs: rs.verifyDeadlineMs };
+    // 倒计时只在等验证那一格跑。**离开那一格必须把定时器收掉** ——
+    // 一个还在走的秒表配着一句「剩余 3:12」,而其实没有任何东西在等,
+    // 正是这个项目反复记的那种「看起来在盯、其实是假的」。
+    if (verifyTimer !== undefined) { clearInterval(verifyTimer); verifyTimer = undefined; }
+    if (rs.phase === "verify" && rs.verifyDeadlineMs !== null) {
+      verifyTimer = setInterval(render, 1000);
+    }
     render();
   });
   runner.log.onChange((lines) => {
