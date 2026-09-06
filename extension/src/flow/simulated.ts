@@ -84,9 +84,11 @@ export class SimulatedDriver implements PageDriver {
     this.mark("readCheckout");
     const total = this.scenario === "over_cap" ? "99.00" : "10.79";
     // 每个商品面板一条交期,故意给两条不同的 —— 服务端要取最晚那条。
+    // 相对今天算,不写死月日:写死的日期过了当天就会被交期解析(正确地)判成
+    // 「已过去 → 不凭空滚到明年 → 解析不出」,整套 smoke 跟着日历一起坏掉。
     const deliveryTexts = this.scenario === "late_delivery"
-      ? ["Monday, August 24", "Friday, September 18"]
-      : ["Monday, August 24", "Wednesday, August 27"];
+      ? [weekdayMonthDay(2), weekdayMonthDay(14)]
+      : [weekdayMonthDay(2), weekdayMonthDay(5)];
     return {
       actualTotal: total,
       actualShipping: "0.00",
@@ -132,6 +134,12 @@ export class SimulatedDriver implements PageDriver {
 
 /** 物流同步的模拟读取器。场景与 SimulatedDriver 分开给,
  *  因为这条流跑在 purchased 之后,和拍单场景不是同一批。 */
+/** 「Wednesday, September 9」这种 Amazon 结算页的交期写法,从今天往后数 n 天。 */
+function weekdayMonthDay(daysFromToday: number): string {
+  const d = new Date(); d.setDate(d.getDate() + daysFromToday);
+  return d.toLocaleDateString("en-US", { weekday: "long", month: "long", day: "numeric" });
+}
+
 export type ShipScenario =
   | "in_transit" | "delivered" | "not_shipped" | "cancelled" | "not_found"
   /** Amazon 跟踪页明说「这会儿给不了轨迹」—— 与「我们没解析出来」是两回事,
