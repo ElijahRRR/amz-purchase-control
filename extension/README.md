@@ -47,6 +47,11 @@ python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
 npm run test:dom     # 109 条断言
 ```
 
+这一套里有一节不是纯解析:**执行中掉线那条兜底**。它用 route 拦截给 `/ap/signin`
+真发一顶 `X-Frame-Options: DENY` 的帽子,把 iframe 导过去,再让 `guardLogin` 去判 ——
+那是这条兜底的头号场景,而它只有在真有一个 iframe 的浏览器页面里才走得到
+(Node 里没有 document,`npm run smoke` 走的是模拟驱动)。
+
 夹具里塞满了干扰项——隐藏的同 id 副本、Saved for later、推荐位、`<template>` 模板节点、
 支付文案里先出现的另一个 4 位数。选择器写松了会当场被抓住。实际抓到过两个：
 
@@ -158,6 +163,7 @@ src/core/      types(契约) codes(19 个错误码) status(界面标签)
 src/flow/      driver(页面动作接口) simulated(自检用) amazon(真实驱动) run(执行时序)
                shipment(物流同步,独立一条流)
 src/flow/dom/  wait(等待原语) frame(同源 iframe) selectors(选择器,标出处) parse(纯解析,含登录态判定)
+               kit(只给测试:打成 window.amzdom 在 Playwright 页面里调)
 src/background/ loop(认领循环,不碰 chrome API) service-worker(配置/注册/心跳/租约)
 src/content/   runner(执行器,真正跑单的地方) panel(注入面板) styles copy(点击复制)
 tools/         smoke.mjs(自检) copy-static.mjs
