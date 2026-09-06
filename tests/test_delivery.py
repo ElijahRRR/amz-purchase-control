@@ -108,6 +108,19 @@ def test_our_gap_1_range_normalisation_does_not_touch_non_dates(raw):
     assert p(raw, today=SEP6) is None
 
 
+@pytest.mark.parametrize("raw", [
+    "Sep 8 - 10 PM",       # 10 是钟点,不是日号
+    "Sep 8 - 10 AM",
+])
+def test_our_gap_1_a_clock_time_is_not_the_end_of_a_range(raw):
+    """区间归一化不许把「几点」读成「几号」。
+
+    "Sep 8 - 10 PM" 归一化成 "Sep 10" 的话,一条我们其实读不懂的文案会变成
+    一个看着很确定的日期,而且比真实交期晚两天 —— 编一个日期出来比返回 None 危险。
+    """
+    assert p(raw, today=SEP6) is None
+
+
 def test_our_gap_1_iso_date_is_not_a_range():
     """`2026-09-08` 里有两个连字符,但一个月名都没有 —— 归一化不该动它。
 

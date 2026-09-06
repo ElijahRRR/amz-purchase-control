@@ -217,7 +217,7 @@ SELECT count(*) AS n
 
 
 def assert_skipped(conn, *, days: int = ASSERT_SKIPPED_DAYS) -> dict[str, Any]:
-    """输入:连接(+ 回看几天)→ 输出:{recent_7d, days, label}。
+    """输入:连接(+ 回看几天)→ 输出:{count, days, label}。
 
     回填时的 ASIN 断言在「一个 ASIN 都没采到」时**照旧放行**(既定取舍:
     断言的职责是抓错配,不是制造噪音)。既然放行,这件事就只能靠数出来 ——
@@ -231,5 +231,8 @@ def assert_skipped(conn, *, days: int = ASSERT_SKIPPED_DAYS) -> dict[str, Any]:
     from services import vocab
 
     n = conn.execute(_ASSERT_SKIPPED_SQL, {"days": days}).fetchone()["n"]
-    return {"recent_7d": n, "days": days,
+    # 键名不写死成 `recent_7d`:窗口是个参数,而一个叫 recent_7d 的字段
+    # 在有人传 days=30 时会**言之凿凿地说错话**。数是 count,窗口是 days,
+    # 界面那句「近 N 天」照 days 写,两者永远对得上。
+    return {"count": n, "days": days,
             "label": vocab.OPS_METRIC_LABELS["assert_skipped"]}

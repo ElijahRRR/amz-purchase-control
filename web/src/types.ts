@@ -256,7 +256,7 @@ export interface ErrorStats {
    *  「这段时间出了什么事」,而是「那道断言现在还工作吗」。
    *  文案(label)也由服务端下发:它不属于任何封闭集,前端再写一份中文
    *  就又多了一处会分叉的副本。 */
-  assert_skipped: { recent_7d: number; days: number; label: string };
+  assert_skipped: { count: number; days: number; label: string };
 }
 
 export interface WorkflowRun {

@@ -187,7 +187,7 @@ def complete(task_id: int, req: schemas.CompleteReq,
         task_event.record(conn, task_id, "assert_skipped", instance_id=inst["id"],
                           payload={"reason": "no_asin_observed", "expected": expected,
                                    "amazon_order_no": req.amazon_order_no})
-    if verdict == "mismatch":
+    elif verdict == "mismatch":
         task_event.record(conn, task_id, "assert_failed", instance_id=inst["id"],
                           payload={"expected": expected, "observed": req.observed_asins,
                                    "amazon_order_no": req.amazon_order_no})

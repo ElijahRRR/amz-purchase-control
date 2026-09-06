@@ -141,7 +141,7 @@ def test_error_stats_reports_the_recent_skip_count(client, conn, seed):
             "observed_asins": []})
 
     data = client.get("/v1/admin/error-stats").json()["data"]
-    assert data["assert_skipped"]["recent_7d"] == 2
+    assert data["assert_skipped"]["count"] == 2
     assert data["assert_skipped"]["days"] == 7
     # 文案从 vocab 单一来源下发,前端不写死
     assert data["assert_skipped"]["label"]
@@ -154,7 +154,7 @@ def test_the_skip_count_is_zero_when_the_assertion_is_working(client, conn, seed
         "instance_uid": UID, "amazon_order_no": "111-2223334-4445556",
         "observed_asins": ["B0FB3VS68J"]})
     data = client.get("/v1/admin/error-stats").json()["data"]
-    assert data["assert_skipped"]["recent_7d"] == 0
+    assert data["assert_skipped"]["count"] == 0
 
 
 def test_the_skip_count_only_looks_at_the_last_seven_days(conn, seed):
@@ -168,7 +168,7 @@ def test_the_skip_count_only_looks_at_the_last_seven_days(conn, seed):
                       payload={"reason": "no_asin_observed"})
     conn.execute("UPDATE procure.task_events SET created_at = now() - interval '9 days' "
                  " WHERE task_id = %s", (tasks[1],))
-    assert ops_query.assert_skipped(conn)["recent_7d"] == 1
+    assert ops_query.assert_skipped(conn)["count"] == 1
 
 
 def test_the_new_kind_is_in_every_copy_of_the_closed_set():

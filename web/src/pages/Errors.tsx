@@ -191,10 +191,10 @@ export default function ErrorsPage() {
             文案也由服务端下发 —— 它不属于任何封闭集,前端再写一份中文
             就又多了一处会分叉的副本。 */}
         <Card className={cn("px-4 py-3 flex items-center gap-3",
-                            data && data.assert_skipped.recent_7d > 0
+                            data && data.assert_skipped.count > 0
                               ? "border-amber-300 bg-amber-50" : "")}>
           <span className="w-2 h-2 rounded-full shrink-0"
-                style={{ background: data && data.assert_skipped.recent_7d > 0 ? "#f59e0b" : "#d4d4d8" }} />
+                style={{ background: data && data.assert_skipped.count > 0 ? "#f59e0b" : "#d4d4d8" }} />
           <span className="text-xs text-zinc-600">
             {data ? data.assert_skipped.label : "回填时 ASIN 断言没采到"}
             <span className="text-zinc-400">
@@ -202,7 +202,7 @@ export default function ErrorsPage() {
             </span>
           </span>
           <span className="font-mono text-lg font-semibold tabular-nums ml-auto">
-            {data ? data.assert_skipped.recent_7d : "—"}
+            {data ? data.assert_skipped.count : "—"}
           </span>
           <span className="text-xs+ text-zinc-500 leading-relaxed basis-full">
             订单卡上一个 ASIN 都没采到,断言这次没说上话 ——
