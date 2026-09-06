@@ -69,6 +69,9 @@ class ShippingOut(BaseModel):
 class GuardsOut(BaseModel):
     price_cap: Decimal
     max_delivery_days: int
+    #: 从 procure.tasks.require_fba 来,**不是这里的默认值**。
+    #: 在此之前它就是这个 `= True`:库里没有这一列,路由也不往 adjudicate 传,
+    #: 于是一道号称"可关"的闸恒为真 —— 照文档去配置它的人会发现改哪儿都不生效。
     require_fba: bool = True
 
 
@@ -100,8 +103,22 @@ class LineItemIn(BaseModel):
     quantity: int
 
 
+class GiftCardIn(BaseModel):
+    """结算页上的礼品卡/余额抵扣。
+
+    `applied` 与 `amount` 是**两个独立的事实**:认出抵扣行却读不出金额时
+    amount 是 None,不是 0 —— 「抵扣 0 元」和「不知道抵扣了多少」不是一件事,
+    后者根本不许下单(货款基数算不出来)。
+    """
+
+    applied: bool = False
+    amount: Decimal | None = None
+
+
 class GuardCheckReq(BaseModel):
     instance_uid: str
+    #: **这张卡要扣的钱。** 礼品卡垫过之后它比货款小,全额抵扣时就是 0.00。
+    #: 护栏比的不是它 —— 见 goods_total。
     actual_total: Decimal
     actual_shipping: Decimal | None = None
     actual_tax: Decimal | None = None
@@ -111,6 +128,14 @@ class GuardCheckReq(BaseModel):
     #: —— 挑哪条算数是护栏的一部分,不该让插件自己决定。
     delivery_raws: list[str] = Field(default_factory=list)
     is_fba: bool | None = None
+    gift_card: GiftCardIn | None = None
+    #: 插件算好的货款(= 实付 + 礼品卡抵扣)。**服务端自己再算一遍并以自己的为准**
+    #: —— 收下它只是为了两边不一致时看得见。护栏裁决在服务端,
+    #: 把基数交给被管的一方算,闸门就不成其为闸门。
+    goods_total: Decimal | None = None
+    #: 结算页选中的那张卡的后四位。买家号配了 expected_card_last4 时拿它比对。
+    #: 此前这一位只在 complete 里出现 —— 也就是说下单**之前**从不过问支付方式。
+    payment_last4: str | None = None
 
 
 class GuardCheckOut(BaseModel):
@@ -120,6 +145,10 @@ class GuardCheckOut(BaseModel):
     delivery_date: str | None = None
     #: 服务端最终采信的那条原文。插件回填时原样带回,别自己另挑一条。
     delivery_raw_used: str | None = None
+    #: 服务端**自己算出来并真正拿去跟限价比**的货款。回给插件是为了让它的日志
+    #: 写的是这次真发生过的比较 —— 面板上写「实付 0.00 ≤ 限价 2500」而实际比的
+    #: 是货款 2241.86,人看着就以为这单没花钱。
+    goods_total: Decimal | None = None
 
 
 class CompleteReq(BaseModel):

@@ -181,6 +181,25 @@ def fail(
     return True
 
 
+def record_guard_amounts(conn, task_id: int, *, gift_card_amount, goods_total) -> None:
+    """输入:连接 + 任务 id + 服务端算出的礼品卡抵扣额与货款 → 输出:无。
+
+    在 guard-check 那一步落库,**不管放不放行**:被护栏拦下的单同样要能答出
+    「当时比的是哪个数」。放在这里而不是 complete 里,是因为这两个数是服务端
+    在裁决那一刻算出来的,complete 那一步的请求体里根本没有它们 ——
+    让插件在下单后再报一遍,等于给同一个事实开两个来源。
+
+    只更新还在途(claimed)的任务:一条迟到的 guard-check 不该改动一张已经
+    流转到终态的单上的金额。
+    """
+    conn.execute(
+        """UPDATE procure.tasks
+              SET gift_card_amount = %(gift)s, goods_total = %(goods)s, updated_at = now()
+            WHERE id = %(task_id)s AND status = 'claimed'""",
+        {"task_id": task_id, "gift": gift_card_amount, "goods": goods_total},
+    )
+
+
 def _write_unit_prices(conn, task_id: int, line_items) -> None:
     """输入:任务 id + 结算页实测的行 → 输出:无。按 ASIN 回填 actual_unit_price。
 
