@@ -175,8 +175,10 @@ export class Loop {
     }
 
     // 清车熔断:连着几单清不动车的话,再领下一单也只是再废一单。
+    // 相位要报 cart-blocked 而不是 idle:「没单可跑」和「有单也不领」
+    // 渲染成同一个「待命」的话,没人会知道这台机器其实停了。
     if (Date.now() < this.cartBlockedUntil) {
-      this.phase("idle");
+      this.phase("cart-blocked");
       return { kind: "cart-blocked", untilMs: this.cartBlockedUntil };
     }
 

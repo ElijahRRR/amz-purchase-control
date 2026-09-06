@@ -13,6 +13,8 @@
 import { waitFor, waitStable, WaitTimeout } from "../build/flow/dom/wait.js";
 import { SingleFlight } from "../build/core/singleflight.js";
 import { decideLease, LEASE_TTL_MS, LEASE_BUSY_GRACE_MS } from "../build/core/lease.js";
+import { Loop } from "../build/background/loop.js";
+import { DriverError } from "../build/flow/driver.js";
 
 let pass = 0;
 const failures = [];
@@ -191,6 +193,145 @@ const ask = (o) => ({ tabId: 1, busy: false, now: NOW, holderAlive: true, ...o }
 {
   const v = decideLease(null, ask({ busy: true }));
   eq("要租约时报的 busy 会被记进租约", v.next.busy, true);
+}
+
+// ── 清车熔断与看门狗(OG-02 / G8) ──────────────────────────────────────
+//
+// Loop 与 runTask 刻意不碰任何 chrome API,所以这两条能在 Node 里**真的跑一遍**,
+// 而不是靠读代码相信。
+
+function fakeTask(id) {
+  return {
+    task_id: id, marketplace: "US",
+    shipping: { name: "N", phone: "p", line1: "1 Main St", city: "Santa Ana",
+                state: "CA", postcode: "92707", country: "US" },
+    products: [{ asin: "B0FB3VS68J", quantity: 1 }],
+    guards: { price_cap: "20.00", max_delivery_days: 30, require_fba: false },
+    claim_timeout_min: 15,
+  };
+}
+
+function fakeClient(n) {
+  const queue = Array.from({ length: n }, (_, i) => fakeTask(i + 1));
+  const fails = [];
+  return {
+    fails,
+    claim: async () => ({ ok: true, data: queue.shift() ?? null }),
+    events: async () => ({ ok: true, data: { recorded: 1 } }),
+    guardCheck: async () => ({ ok: true, data: { allow: true, error_code: null,
+                                                 detail: null, delivery_date: null,
+                                                 delivery_raw_used: null } }),
+    complete: async () => ({ ok: true, data: {} }),
+    fail: async (_id, body) => { fails.push(body); return { ok: true, data: {} }; },
+    release: async () => ({ ok: true, data: {} }),
+  };
+}
+
+const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
+
+{
+  // 清车一直失败:头 3 单照跑照报,第 4 轮就不该再认领了。
+  // 不熔断的话,tickPollMs=10s 一个夜里能把队列里几百单全打进「拍单异常」桶。
+  const client = fakeClient(10);
+  const driver = {
+    name: "fake", ready: true,
+    readLoginState: async () => "unknown",
+    clearCart: async () => { throw new DriverError("PLUGIN_INTERNAL", "找不到删除控件"); },
+    addProduct: async () => ({ shipperIsAmazon: null }),
+    verifyCart: async () => true,
+    proceedToCheckout: async () => {},
+    fillAddress: async () => {},
+    readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
+                                 unitPrices: [] }),
+    placeOrder: async () => {},
+    readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
+    dispose: async () => {},
+  };
+  const loop = new Loop({
+    client, log: silentLog,
+    config: () => ({ mode: "simulate", taskHardCapMs: 60_000 }),
+    driver: () => driver,
+  });
+
+  const kinds = [];
+  for (let i = 0; i < 4; i += 1) kinds.push((await loop.tickOnce()).kind);
+  eq("清车连着失败 3 单之后停止认领", kinds, ["ran", "ran", "ran", "cart-blocked"]);
+  check("每一单都照样上报了失败", client.fails.length === 3);
+  check("上报里说清了车没清干净",
+        client.fails.every((f) => f.cart_cleared === false && f.cart_clear_attempted === true));
+}
+
+{
+  // 越过下单点之后按规矩不清车 —— 那**不是**一次清车失败,不该把熔断计数推上去。
+  // 混为一谈的话,三单「可能已下单」就能让一台购物车好好的机器停止认领。
+  const client = fakeClient(10);
+  const driver = {
+    name: "fake", ready: true,
+    readLoginState: async () => "unknown",
+    clearCart: async () => {},
+    addProduct: async () => ({ shipperIsAmazon: null }),
+    verifyCart: async () => true,
+    proceedToCheckout: async () => {},
+    fillAddress: async () => {},
+    readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
+                                 unitPrices: [] }),
+    placeOrder: async () => {
+      throw new DriverError("PAYMENT_VERIFICATION_TIMEOUT", "等了 360 秒仍未完成");
+    },
+    readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
+    dispose: async () => {},
+  };
+  const loop = new Loop({
+    client, log: silentLog,
+    config: () => ({ mode: "simulate", taskHardCapMs: 60_000 }),
+    driver: () => driver,
+  });
+  const kinds = [];
+  for (let i = 0; i < 4; i += 1) kinds.push((await loop.tickOnce()).kind);
+  eq("「可能已下单」不算清车失败,不触发熔断", kinds, ["ran", "ran", "ran", "ran"]);
+  check("这一路报的是「没试过清车」",
+        client.fails.every((f) => f.cart_clear_attempted === false));
+  check("而且一律转人工", client.fails.every((f) => f.to_manual === true));
+}
+
+{
+  // 看门狗:一单卡住超过硬顶,tickOnce 必须**返回**(而不是跟着一起挂死),
+  // 驱动被强制关掉,而且在那条 runTask 真的落地之前不许再认领。
+  // busy 闸永不复位是我们这边与厂商同型的最后一个坑。
+  const client = fakeClient(10);
+  let releaseHang;
+  const hang = new Promise((r) => { releaseHang = r; });
+  let disposed = 0;
+  const driver = {
+    name: "fake", ready: true,
+    readLoginState: async () => "unknown",
+    clearCart: async () => { await hang; throw new DriverError("PLUGIN_INTERNAL", "收尾"); },
+    addProduct: async () => ({ shipperIsAmazon: null }),
+    verifyCart: async () => true,
+    proceedToCheckout: async () => {},
+    fillAddress: async () => {},
+    readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
+                                 unitPrices: [] }),
+    placeOrder: async () => {},
+    readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
+    dispose: async () => { disposed += 1; },
+  };
+  const loop = new Loop({
+    client, log: silentLog,
+    config: () => ({ mode: "simulate", taskHardCapMs: 30 }),
+    driver: () => driver,
+  });
+
+  const first = await loop.tickOnce();
+  eq("跑过硬顶的那一单被强制收尾", first.kind, "hard-cap");
+  check("驱动被 dispose 掉了", disposed >= 1, `dispose ${disposed} 次`);
+  eq("收尾之后不许再认领(两条 runTask 会动同一个购物车)",
+     (await loop.tickOnce()).kind, "busy");
+
+  releaseHang();
+  await new Promise((r) => setTimeout(r, 20));   // 让那条 runTask 走完
+  const after = await loop.tickOnce();
+  check("被掐掉的那一单落地之后恢复认领", after.kind === "ran", after.kind);
 }
 
 console.log(`\n  通过 ${pass} 条`);

@@ -38,6 +38,8 @@ const PHASE_TAG: Record<Phase, [string, string]> = {
   // 红色:这台机器**真的坏了**,不重新登录一单也跑不了。
   // 与「待命」的灰色分开,是为了让人一眼看出该动手的是他自己。
   "signed-out": ["tag", "background:#fef2f2;color:#b91c1c;border-color:#fecaca"],
+  // 同样是红的:这台机器此刻拍不了单,而且要人去动手。
+  "cart-blocked": ["tag", "background:#fef2f2;color:#b91c1c;border-color:#fecaca"],
   done:    ["tag", "background:#ecfdf5;color:#047857;border-color:#a7f3d0"],
 };
 
@@ -112,6 +114,10 @@ function render(): void {
     ${config?.mode === "simulate" ? `<div class="warnbar">模拟档:页面动作全是假的,只用来自检和服务端说话的时序。不会在 Amazon 上产生任何订单。</div>` : ""}
     ${config?.mode === "live" && !state.hasLease ? `<div class="warnbar">另一个 Amazon 标签页正在跑单,本页只看不动。关掉那个标签页,租约会自动转到这里。</div>` : ""}
     ${config?.mode === "live" && state.hasLease ? `<div class="warnbar">真实档:会在这个买家号上下真单。页面动作从未在真实 Amazon 上验证过,第一次请拿可弃的号试。</div>` : ""}
+    ${phase === "cart-blocked" ? `<div class="warnbar" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">
+      连着几单清不动购物车,已暂停认领一段时间 —— 多半是 Amazon 改了购物车页的结构。
+      请打开这个买家号的购物车看一眼(手动清空一次也好),日志里有每一次的失败原因。
+    </div>` : ""}
     ${phase === "verify" ? `<div class="warnbar" style="background:#fffbeb;color:#92400e;border-color:#fde68a">
       <b>轮到你了:</b>Amazon 把这一单转到了发卡行验证页,窗口已经弹在本页中间 ——
       请在里面完成验证,不要关闭或刷新本页。${

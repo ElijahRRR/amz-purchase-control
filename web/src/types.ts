@@ -115,8 +115,15 @@ export interface Shipment {
  *  `SELECT t.*`,那三列压根不在 procure.tasks 上,详情里根本没有。
  *  照 TaskRow 继承的话,类型系统会承诺三个运行时是 undefined 的非空字段 ——
  *  哪天有人照着类型写 `t.carrier.toUpperCase()`,编译器一句话不说,线上白屏。
- *  物流在详情里走 `shipment` 那个对象。 */
-export interface TaskDetail extends Omit<TaskRow, "carrier" | "tracking_no" | "shipment_status"> {
+ *  物流在详情里走 `shipment` 那个对象。
+ *
+ *  `awaiting_manual_verification` / `awaiting_since` 同理:那两列也是列表 SQL 的
+ *  LATERAL 拼出来的,详情里没有。**详情里那件事看事件流** —— 抽屉里本来就把
+ *  「等待人工完成支付验证」那条 step 原样铺开了,再复制一份状态出来只会多一处
+ *  可能与事件流说得不一样的地方。 */
+export interface TaskDetail extends Omit<TaskRow,
+  "carrier" | "tracking_no" | "shipment_status" |
+  "awaiting_manual_verification" | "awaiting_since"> {
   ship_country: string;
   max_delivery_days: number;
   delivery_raw: string | null;

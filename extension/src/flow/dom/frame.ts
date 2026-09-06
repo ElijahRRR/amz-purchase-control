@@ -64,6 +64,9 @@ function showHost(el: HTMLIFrameElement, banner: string): void {
     h.insertBefore(b, h.firstChild);
   }
   b.textContent = banner;
+  // iframe 原本是按属性写死的 1280×900。露出来之后宿主被限制在视口以内,
+  // 不跟着改的话验证表单的下半截会被裁掉 —— 而那里往往就是「提交」按钮。
+  el.style.cssText = "width:100%;height:calc(100% - 42px);border:0;display:block";
   revealedBy = el;
 }
 
