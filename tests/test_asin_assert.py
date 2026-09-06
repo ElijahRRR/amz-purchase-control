@@ -141,10 +141,97 @@ def test_error_stats_reports_the_recent_skip_count(client, conn, seed):
             "observed_asins": []})
 
     data = client.get("/v1/admin/error-stats").json()["data"]
-    assert data["assert_skipped"]["count"] == 2
-    assert data["assert_skipped"]["days"] == 7
+    got = data["assert_skipped"]
+    assert got["count"] == 2
+    assert got["days"] == 7
+    # 分母必须一起下发 —— 单独一个 count 回答不了「断言还工作吗」
+    assert got["backfills"] == 2
     # 文案从 vocab 单一来源下发,前端不写死
-    assert data["assert_skipped"]["label"]
+    assert got["label"]
+
+
+def test_the_same_count_means_two_opposite_things_and_must_not_render_the_same(client, conn, seed):
+    """**一个 count 说不清任何事。**
+
+    近 7 天回填很多单、其中 1 单没采到(页面没渲染完,无害),与
+    近 7 天只回填了 1 单、这 1 单没采到(选择器已坏,断言 100% 失效)——
+    两者的 count 都是 1。只发 count,这两件事在界面上渲染成完全一样的结果:
+    同一个琥珀边框、同一个数字 1、同一句「去跟同期回填条数比」的说明,
+    而那个分母这一页压根没有。
+
+    所以分母、比例、要不要报警都在服务端算好。这条测试盯的就是
+    「两种相反的情况不许给出同一个结论」。
+    """
+    from services import ops_query, task_event
+
+    _env, inst, tasks = seed
+    # 场景 A:只回填了 1 单,而它没采到 —— 断言整体失效的样子
+    task_event.record(conn, tasks[0], "purchased", instance_id=inst)
+    task_event.record(conn, tasks[0], "assert_skipped", instance_id=inst,
+                      payload={"reason": "no_asin_observed"})
+    a = ops_query.assert_skipped(conn)
+    assert (a["count"], a["backfills"], a["alert"]) == (1, 1, True)
+    assert a["ratio"] == 1.0
+
+    # 场景 B:同一个 count=1,但同期回填了很多单 —— 零星一次,不该报警
+    for _ in range(19):
+        task_event.record(conn, tasks[1], "purchased", instance_id=inst)
+    b = ops_query.assert_skipped(conn)
+    assert b["count"] == 1 and b["backfills"] == 20
+    assert b["alert"] is False, "count 没变、结论必须变 —— 否则这两种情况又渲染成同一个结果"
+
+
+def test_no_backfills_at_all_is_not_the_same_as_nothing_wrong(conn, seed):
+    """「这几天一次都没回填」与「回填了很多次、一次都没漏」不是同一件事。
+
+    ratio 给 0.0 就把它们抹成同一个数了,而前者的含义是**这个数眼下说明不了任何事**。
+    """
+    from services import ops_query, task_event
+
+    _env, inst, tasks = seed
+    empty = ops_query.assert_skipped(conn)
+    assert empty["backfills"] == 0 and empty["ratio"] is None and empty["alert"] is False
+
+    task_event.record(conn, tasks[0], "purchased", instance_id=inst)
+    working = ops_query.assert_skipped(conn)
+    assert working["backfills"] == 1 and working["ratio"] == 0.0
+
+
+def test_the_alert_threshold_is_a_ratio_not_count_over_zero(conn, seed):
+    """琥珀挂在比例上,不挂在 count > 0。
+
+    挂在 count > 0 的话这张卡片常年琥珀 —— 而一张常年琥珀的卡片会把人训练成
+    忽略它,恰恰在它真该报警的那天。阈值只有服务端这一份,前端不判。
+    """
+    from services import ops_query, task_event
+
+    _env, inst, tasks = seed
+    for _ in range(100):
+        task_event.record(conn, tasks[0], "purchased", instance_id=inst)
+    task_event.record(conn, tasks[0], "assert_skipped", instance_id=inst,
+                      payload={"reason": "no_asin_observed"})
+    got = ops_query.assert_skipped(conn)
+    assert got["count"] == 1 and got["alert"] is False, "1/100 不该报警"
+    assert got["alert_ratio"] == ops_query.ASSERT_SKIPPED_ALERT_RATIO
+
+    # 补到刚过线
+    need = int(100 * ops_query.ASSERT_SKIPPED_ALERT_RATIO) + 1
+    for _ in range(need - 1):
+        task_event.record(conn, tasks[0], "assert_skipped", instance_id=inst,
+                          payload={"reason": "no_asin_observed"})
+    assert ops_query.assert_skipped(conn)["alert"] is True
+
+
+def test_the_denominator_uses_the_same_window(conn, seed):
+    """分子分母同一个窗口 —— 分开查会出现「分子这 7 天、分母上一次那 7 天」的错位。"""
+    from services import ops_query, task_event
+
+    _env, inst, tasks = seed
+    task_event.record(conn, tasks[0], "purchased", instance_id=inst)
+    task_event.record(conn, tasks[1], "purchased", instance_id=inst)
+    conn.execute("UPDATE procure.task_events SET created_at = now() - interval '9 days' "
+                 " WHERE task_id = %s", (tasks[1],))
+    assert ops_query.assert_skipped(conn)["backfills"] == 1
 
 
 def test_the_skip_count_is_zero_when_the_assertion_is_working(client, conn, seed):
