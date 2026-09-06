@@ -356,6 +356,25 @@ await withFixture("checkout.html", async (run) => {
                 first.closest("[style*='display:none']") !== null];
      })()`), [2, "$1,299.99", true]);
 
+  // **「限容器」这半此前没有任何断言单独盯着。** 把 summaryTables 那个循环整个
+  // 删掉,全部断言照样绿(逐行 isHidden 一个人就把干扰项 F 兜住了)。于是往清单里
+  // 混进一条**根本不装小结行**的容器也没人会发现:#checkout-pyo-button-block
+  // 是下单按钮那个盒子,厂商拿它只取 .grand-total-cell(v2.5.3 :2473),
+  // 从不用来扫小结行。它一旦命中,root 就从「文档」收窄成「按钮盒」,
+  // 运费/税费对每一单都读成 undefined,落库 NULL,导出两列全空,还不报错 ——
+  // 一条本该防改版的措施,自己成了改版当天的单点。
+  //
+  // 这一条钉的就是它:两张 subtotals 表的 id 都被改掉时(正是收窄想防的那件事),
+  // 必须退回文档级、照样读得出来。
+  eq("checkout 小结表 id 被改掉时退回文档级,运费税费照样读得出",
+     await run(`(() => {
+        const t = document.querySelector("#subtotals-marketplace-table");
+        t.id = "subtotals-v2";
+        const got = amzdom.readOrderSummary(document);
+        t.id = "subtotals-marketplace-table";       // 原样放回,不影响后面的断言
+        return [got.shipping, got.tax, got.orderTotal];
+     })()`), ["12.99", "180.38", "2241.86"]);
+
   // 夹具的支付文案里故意先出现别的 4 位数,取"第一个 4 位数字"的写法会当场露馅;
   // 另有一个隐藏的同 id 副本(尾号 0000)排在真身前面,裸 querySelector 会读成 0000
   eq("checkout 卡后四位取的是 ending in 后面那个",

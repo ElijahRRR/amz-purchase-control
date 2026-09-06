@@ -118,17 +118,25 @@ export const SEL = {
       ],
     },
 
-    /** 订单小结的容器。**按 label 扫行必须限定在这里面。**
+    /** 订单小结的容器。**按 label 扫行优先限定在这里面,一个都不在就退回文档级。**
      *
-     * 前两条出自 v2.5.3 :2530 / :2844(厂商是按 id 限定容器再取行的)。
-     * 不限容器的后果实测过:我们自己的夹具里,隐藏的粘性底栏
+     * 两条都出自 v2.5.3 :2530 / :2844 —— 厂商就是按这两个 id 限定容器再取
+     * `li` 小结行的。不限容器的后果实测过:我们自己的夹具里,隐藏的粘性底栏
      * (#checkout-sticky-summary,display:none)排在真表**之前**,
      * 全文档扫到的 Order total 是加第二件商品之前的过期值 $1,299.99,
-     * 而真值是 $2,241.86。 */
+     * 而真值是 $2,241.86。
+     *
+     * **这里只放真的装着小结行的容器。** 曾经多列过一条
+     * `#checkout-pyo-button-block`,它是**下单按钮那个盒子**,厂商拿它只取
+     * `.grand-total-cell`(v2.5.3 :2473),从不用来扫小结行。列进来的后果是
+     * 把「限容器、否则退回文档级」变成了「收窄到一个根本没有小结行的盒子」:
+     * Amazon 哪天把两张 subtotals 表的 id 改掉(正是收窄想防的那件事),
+     * 前两条落空、第三条命中 → root 变成按钮盒 → 运费/税费对**每一单**
+     * 都读成 undefined,落库是 NULL,导出两列全空,而且不报任何错。
+     * 收窄之前反倒读得到 —— 一条「防改版」的措施本身成了改版时的单点。 */
     summaryTables: [
       "#subtotals-marketplace-table",
       "#subtotals-transactional-table",
-      "#checkout-pyo-button-block",
     ],
     itemPanel: '[data-csa-c-slot-id="checkout-itemBlockPanel"]',
     lineItemContainer: ".lineitem-container",
