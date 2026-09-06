@@ -71,6 +71,9 @@ export class Client {
     /** 结算页选中的那张卡的后四位。买家号配了期望卡时服务端拿它比对,
      *  不符即 PAYMENT_METHOD_UNEXPECTED —— **在下单之前**。 */
     payment_last4?: string;
+    /** 「已选支付方式」的槽位数。服务端扣掉礼品卡那一个之后 >1 即拆分支付,
+     *  按 PAYMENT_METHOD_UNEXPECTED 拦 —— 与「读不出来也算不符」同一个立场。 */
+    payment_slots?: number;
     line_items?: LineItem[];
     delivery_raws?: string[];
     is_fba?: boolean | null;

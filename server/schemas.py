@@ -136,6 +136,11 @@ class GuardCheckReq(BaseModel):
     #: 结算页选中的那张卡的后四位。买家号配了 expected_card_last4 时拿它比对。
     #: 此前这一位只在 complete 里出现 —— 也就是说下单**之前**从不过问支付方式。
     payment_last4: str | None = None
+    #: 结算页上「已选支付方式」的槽位数(礼品卡余额也占一个)。
+    #: payment_last4 只答得出**第一个**槽位里那张卡;Amazon 允许把一单拆到
+    #: 多张卡上,那时第一张对得上、第二张刷了多少这道闸完全不知道。
+    #: None = 老插件没报(退化成原行为:只校验第一张卡)。
+    payment_slots: int | None = None
 
 
 class GuardCheckOut(BaseModel):

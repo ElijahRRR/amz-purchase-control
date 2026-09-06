@@ -243,6 +243,117 @@ def test_guard_check_event_carries_the_numbers_the_guard_actually_used(client, c
     assert row["payload"]["consistency_note"]
 
 
+def test_blocked_orders_carry_the_same_numbers_as_allowed_ones(client, conn, seed):
+    """被拦下的单和放行的单,事件载荷里是同一组数 —— 尤其是插件报的那个。
+
+    plugin_goods_total 当初只写进了放行那一支。于是「插件把货款算错了」与
+    「这一单被护栏拦下了」同时发生时 —— 也就是最需要这条线索的时候 ——
+    事件流里反而没有它:事后只知道「服务端算出 99.00 拦了」,不知道插件当时
+    算的是 1.00,而这正是「解析层坏了」与「这单真超了」的分水岭。
+    """
+    _register(client)
+    t = _claim(client)
+    r = client.post(f"/v1/tasks/{t['task_id']}/guard-check", json={
+        "instance_uid": UID, "actual_total": "0.00",
+        "gift_card": {"applied": True, "amount": "99.00"},
+        "goods_total": "1.00",                       # ← 插件报的,与服务端算的不符
+        "line_items": [{"asin": "B0FB3VS68J", "unit_price": "1.00", "quantity": 1}],
+        "delivery_raw": "Tomorrow", "is_fba": True,
+    })
+    assert r.json()["data"]["error_code"] == "PRICE_CAP_EXCEEDED"
+    ev = conn.execute(
+        "SELECT kind, payload FROM procure.task_events WHERE task_id=%s ORDER BY id DESC LIMIT 1",
+        (t["task_id"],),
+    ).fetchone()
+    assert ev["kind"] == "guard_block"
+    assert ev["payload"]["goods_total"] == "99.00"        # 服务端自己算的
+    assert ev["payload"]["plugin_goods_total"] == "1.00"  # 插件算的,两边不一致才非空
+    assert ev["payload"]["gift_card_amount"] == "99.00"
+    # 护栏正拿这个基数拦单,自洽记录必须跟着出来
+    assert ev["payload"]["consistency_note"]
+
+
+def test_plugin_goods_total_stays_out_of_the_payload_when_the_two_agree(client, conn, seed):
+    """一致时不记 —— 一条每单都出现的记录等于没有记录。"""
+    _register(client)
+    t = _claim(client)
+    client.post(f"/v1/tasks/{t['task_id']}/guard-check", json={
+        "instance_uid": UID, "actual_total": "8.00",
+        "gift_card": {"applied": True, "amount": "2.00"},
+        "goods_total": "10.00",                      # ← 与服务端算的一致
+        "delivery_raw": "Tomorrow", "is_fba": True,
+    })
+    row = conn.execute(
+        "SELECT payload FROM procure.task_events WHERE task_id=%s ORDER BY id DESC LIMIT 1",
+        (t["task_id"],),
+    ).fetchone()
+    assert row["payload"]["plugin_goods_total"] is None
+
+
+# ── 拆分支付:第一张卡对上了不等于只刷了这一张 ────────────────────────────
+
+def test_split_payment_is_refused_when_the_env_checks_its_card(client, conn, seed):
+    """两个已选支付方式、第一个正是期望卡 —— 照旧放行的话第二张卡白刷。
+
+    Amazon 允许把一单拆到多个已选支付方式上。payment_last4 只答得出第一个槽位:
+    买家号后台被加了第二张卡时,第一个槽位读出 4417 对得上 → 放行 → 下单 →
+    另一张卡也被扣了钱,而库里记的是 4417,运营看到的是一道「已核过支付卡」的绿灯。
+    """
+    _register(client)
+    t = _claim(client)
+    conn.execute("UPDATE procure.buyer_envs SET expected_card_last4 = '4417'")
+    body = {"instance_uid": UID, "actual_total": "10.79", "payment_last4": "4417",
+            "delivery_raw": "Tomorrow", "is_fba": True}
+
+    # 一个槽位:正常单,放行
+    assert client.post(f"/v1/tasks/{t['task_id']}/guard-check",
+                       json={**body, "payment_slots": 1}).json()["data"]["allow"] is True
+
+    # 两个槽位、没有礼品卡 = 拆到了两张卡上 → 拦
+    d = client.post(f"/v1/tasks/{t['task_id']}/guard-check",
+                    json={**body, "payment_slots": 2}).json()["data"]
+    assert d["allow"] is False and d["error_code"] == "PAYMENT_METHOD_UNEXPECTED"
+
+    # 老插件不报这一位 → 退化成只校验第一张卡,不许因此把正常单拦下
+    assert client.post(f"/v1/tasks/{t['task_id']}/guard-check",
+                       json=body).json()["data"]["allow"] is True
+
+
+def test_gift_card_slot_does_not_count_as_a_second_card(client, conn, seed):
+    """礼品卡余额自己也占一个槽位 —— 不扣掉它,每张用礼品卡的单都会被拦。
+
+    夹具 checkout-giftcard.html 就是这个形态:两个槽位,第二个是 Gift Card Balance。
+    一道把每一单都拦下的闸门等于没有闸门。
+    """
+    _register(client)
+    t = _claim(client)
+    conn.execute("UPDATE procure.buyer_envs SET expected_card_last4 = '4417'")
+    body = {"instance_uid": UID, "actual_total": "8.79", "payment_last4": "4417",
+            "gift_card": {"applied": True, "amount": "2.00"},
+            "delivery_raw": "Tomorrow", "is_fba": True}
+
+    assert client.post(f"/v1/tasks/{t['task_id']}/guard-check",
+                       json={**body, "payment_slots": 2}).json()["data"]["allow"] is True
+    # 卡 + 卡 + 礼品卡 = 还是拆分支付
+    d = client.post(f"/v1/tasks/{t['task_id']}/guard-check",
+                    json={**body, "payment_slots": 3}).json()["data"]
+    assert d["allow"] is False and d["error_code"] == "PAYMENT_METHOD_UNEXPECTED"
+
+
+def test_split_payment_gate_follows_the_expected_card_switch(client, conn, seed):
+    """买家号没配期望卡 = 这个买家号整条支付判据都不看,槽位数也不看。
+
+    与 require_fba / expected_card_last4 同一形态:闸是可关的,关了就全关,
+    不要留下「卡不校验但槽位校验」这种半开的状态 —— 那种状态没人说得清它在防什么。
+    """
+    _register(client)
+    t = _claim(client)
+    d = client.post(f"/v1/tasks/{t['task_id']}/guard-check", json={
+        "instance_uid": UID, "actual_total": "10.79", "payment_slots": 4,
+        "delivery_raw": "Tomorrow", "is_fba": True}).json()["data"]
+    assert d["allow"] is True
+
+
 # ── 完成与断言 ──────────────────────────────────────────────────────────
 
 def test_complete_backfills(client, conn, seed):

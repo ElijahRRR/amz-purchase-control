@@ -674,3 +674,31 @@ export function readGiftCardDeduction(doc: Document): GiftCardRead {
   if (!applied) return { applied: false, amount: undefined };
   return { applied: true, amount: parsed > 0 ? sum.toFixed(2) : undefined };
 }
+
+/** 结算页上「已选支付方式」的槽位数。读不到支付面板时返回 undefined。
+ *
+ * **为什么单独数一个数,而不是让 readPaymentLast4 多返回一位。**
+ * 那一位答的是「第一个槽位里是哪张卡」,而 Amazon 允许把一单拆到多个已选支付
+ * 方式上。买家号后台被加了第二张卡、Amazon 把一单拆成「公司卡 4417 + 另一张
+ * 9021」时:第一个槽位读出 4417,与买家号配的期望卡一致 → 护栏放行 → 下单 →
+ * 另一张卡也被扣了钱。库里 payment_last4 记的是 4417,事件流里没有任何痕迹,
+ * 运营看到的是一道「已核过支付卡」的绿灯。**一道只管第一张卡的支付闸,
+ * 比没有支付闸更危险** —— 后者至少不会让人以为核过了。
+ *
+ * 这里只数,不下结论:礼品卡余额自己也占一个槽位(夹具 checkout-giftcard.html
+ * 就是这个形态,两个槽位里第二个是 Gift Card Balance),该不该扣掉它,
+ * 得由同时知道 gift_card.applied 的那一方来判 —— 那是服务端。
+ * 插件在这一档**不拦**:拦了就是插件自己吞掉,运营看不见。
+ *
+ * 数的是**可见**槽位:Amazon 把整套支付模板塞进 display:none 的壳里,
+ * 隐藏副本一起数会把每一张普通单都算成拆分支付。
+ *
+ * 返回 undefined(而不是 0)表示「没数着」:老形态的结算页把卡文案直接放在
+ * 面板里、根本没有 selected-payment-method 这层壳(夹具 checkout.html 就是),
+ * 那种页面 0 是真的 0;而面板都找不到时报 0,会让服务端以为「数过了,只有零个」。 */
+export function readPaymentSlots(doc: Document): number | undefined {
+  const panel = visible(doc, SEL.checkout.payment.panel);
+  if (!panel) return undefined;
+  return Array.from(panel.querySelectorAll(SEL.checkout.payment.selectedSlots))
+    .filter((el) => !isHidden(el)).length;
+}

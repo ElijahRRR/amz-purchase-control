@@ -89,6 +89,14 @@ export const SEL = {
         '#selected-payment-method-_default [data-testid="_default"]',
         '[id^="selected-payment-method-"] [data-testid="_default"]',
       ],
+      /** 「已选支付方式」的槽位(v2.5.3 :2041 用的就是这个前缀)。
+       *
+       *  selectedTexts 只答得出**第一个**槽位里那张卡。Amazon 允许把一单拆到
+       *  多个已选支付方式上,那时第一张对得上、第二张刷了多少,这道闸完全不知道。
+       *  数出来交服务端裁决 —— 礼品卡余额自己也占一个槽位(见夹具
+       *  checkout-giftcard.html 的两个槽位),扣不扣得由知道 gift_card.applied
+       *  的那一方来做,插件这里只报个数。 */
+      selectedSlots: '[id^="selected-payment-method-"]',
     },
 
     /** 礼品卡 / 余额抵扣行(出处 v2.5.3 popup.js:2054、2062、2066-2068)。

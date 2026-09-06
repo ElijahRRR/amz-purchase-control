@@ -50,11 +50,12 @@ def adjudicate(
     gift_card_amount: str | Decimal | None = None,
     expected_card_last4: str | None = None,
     payment_last4: str | None = None,
+    payment_slots: int | None = None,
     line_items: Sequence[Mapping] | None = None,
 ) -> Verdict:
     """输入:任务护栏参数 + 结算页实测值 + 站点当天 → 输出:Verdict。
 
-    判定顺序:FBA → 支付方式 → 货款(下界 + 限价)→ 交期。
+    判定顺序:FBA → 支付方式(卡尾号 + 槽位数)→ 货款(下界 + 限价)→ 交期。
     前两条最便宜且与金额无关,限价在业务上最要紧,交期要解析所以放最后。
 
     **限价比的是「这一单的货款」,不是「这张卡要扣的钱」。**
@@ -92,6 +93,25 @@ def adjudicate(
             return Verdict(False, "PAYMENT_METHOD_UNEXPECTED",
                            f"结算页选中的卡尾号是 {got},"
                            f"这个买家号配的是 {want} —— 不下单,交人核对")
+
+        # ── 拆分支付:第一张卡对上了不等于只刷了这一张 ──
+        #
+        # payment_last4 答的是**第一个槽位**里那张卡。Amazon 允许把一单拆到
+        # 多个已选支付方式上;买家号后台被加了第二张卡时,第一个槽位读出 4417
+        # 对得上 → 放行 → 下单 → 另一张卡也被扣了钱,而库里记的是 4417,
+        # 事件流里没有任何痕迹,运营看到的是一道「已核过支付卡」的绿灯。
+        #
+        # 礼品卡余额自己也占一个槽位(实测夹具就是这个形态),所以先扣掉它 ——
+        # 不扣的话每一张用礼品卡的单都会被判成拆分支付,那种闸门等于没有。
+        # 槽位没报上来(老插件)就不判这一条,退化成只校验第一张卡。
+        if payment_slots is not None:
+            cards = payment_slots - (1 if gift_card_applied else 0)
+            if cards > 1:
+                return Verdict(False, "PAYMENT_METHOD_UNEXPECTED",
+                               f"结算页上有 {cards} 个已选支付方式(共 {payment_slots} 个槽位"
+                               + (",其中一个是礼品卡余额)" if gift_card_applied else ")")
+                               + f",第一个是尾号 {payment_last4 or '读不出来'} —— "
+                               "拆分支付时这道闸只看得见第一张卡,不下单,交人核对")
 
     total = _to_decimal(actual_total)
     if total is None:

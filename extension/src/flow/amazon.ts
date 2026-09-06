@@ -24,7 +24,7 @@ import {
   isSignInUrl,
   readLoginState,
   readGiftCardDeduction,
-  readOrderSummary, readPaymentLast4, readProductShipper, readTrackingEvents,
+  readOrderSummary, readPaymentLast4, readPaymentSlots, readProductShipper, readTrackingEvents,
   readTrackingNumber, readTrackingStatus,
   type LoginState, type OrderState,
 } from "./dom/parse.js";
@@ -486,6 +486,10 @@ export class AmazonDriver implements PageDriver {
       deliveryTexts: panels.map((p) => p.deliveryText as string),
       isFba,
       paymentLast4: readPaymentLast4(f.doc()),
+      // 槽位数与卡尾号是两个事实:后者只答得出第一个槽位里那张卡。
+      // 拆分支付(公司卡 + 另一张)时第一张对得上就放行,第二张刷了多少
+      // 这道闸完全不知道 —— 数出来交服务端裁决,插件自己不拦。
+      paymentSlots: readPaymentSlots(f.doc()),
       // 只报**读到的**单价。数量结算页上没读(报告说厂商那道数量校验是死代码,
       // 真正的数量比对在购物车页已经做过),所以不在这里编一个 1 出来。
       unitPrices: priced.map((p) => ({ asin: p.asin!, unit_price: p.unitPrice! })),

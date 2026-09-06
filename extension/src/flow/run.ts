@@ -124,6 +124,8 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
       // 下单**之前**就把卡尾号报上去。此前它只在 complete 里出现,
       // 也就是说下单前从不过问支付方式,换了卡只能等对账时才发现。
       payment_last4: reading.paymentLast4,
+      // 槽位数:服务端扣掉礼品卡那一个之后 >1 即拆分支付。
+      payment_slots: reading.paymentSlots,
       line_items: lineItems,
       delivery_raws: reading.deliveryTexts,
       is_fba: reading.isFba,

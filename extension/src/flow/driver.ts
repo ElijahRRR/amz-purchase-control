@@ -84,6 +84,10 @@ export interface CheckoutReading {
    *  不中断下单(限价护栏不依赖它),但要在事件流里留痕。 */
   unitPriceSelectorBroken?: boolean;
   paymentLast4?: string;
+  /** 结算页上「已选支付方式」的槽位数(礼品卡余额也占一个)。
+   *  paymentLast4 只答得出第一个槽位里那张卡 —— 拆分支付时这道闸只管第一张。
+   *  undefined = 没数着(读不到支付面板,或模拟驱动不造这个场景)。 */
+  paymentSlots?: number;
 }
 
 export interface OrderCard {

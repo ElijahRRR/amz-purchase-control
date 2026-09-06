@@ -461,6 +461,28 @@ await withFixture("checkout-giftcard.html", async (run) => {
   eq("giftcard 卡后四位仍然是 4417(不是隐藏副本的 0000)",
      await run("amzdom.readPaymentLast4(document)"), "4417");
 
+  // **槽位数与卡尾号是两个事实。** 这张夹具的支付面板里有两个已选支付方式:
+  // 尾号 4417 的卡 + 礼品卡余额。readPaymentLast4 只答得出第一个,
+  // 拆分支付(公司卡 + 另一张卡)时第一张对得上就放行,第二张刷了多少
+  // 这道闸完全不知道 —— 所以要把个数数出来交服务端裁决。
+  // 该不该扣掉礼品卡那一个由服务端判(它才知道 gift_card.applied)。
+  eq("giftcard 数出两个已选支付槽位(卡 + 礼品卡余额)",
+     await run("amzdom.readPaymentSlots(document)"), 2);
+  // 隐藏的支付模板副本不能算进槽位数:算进去的话每一张普通单都会被判成拆分支付,
+  // 那种闸门等于没有。这里就地造一个隐藏槽位,个数必须不变。
+  eq("giftcard 隐藏的支付槽位不算数",
+     await run(`(() => {
+        const panel = [...document.querySelectorAll("#checkout-payment-option-panel")]
+          .find((p) => !p.closest("[style*='display:none']"));
+        const ghost = document.createElement("div");
+        ghost.id = "selected-payment-method-ghost";
+        ghost.style.display = "none";
+        panel.appendChild(ghost);
+        const n = amzdom.readPaymentSlots(document);
+        ghost.remove();
+        return n;
+     })()`), 2);
+
   // 面板与下单按钮不受影响 —— 这张夹具只改了金额那几处
   eq("giftcard 面板数 2", (await run("amzdom.readCheckoutPanels(document)")).length, 2);
   eq("giftcard 下单按钮不是隐藏的 csrf input",

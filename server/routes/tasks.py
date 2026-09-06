@@ -100,6 +100,7 @@ def guard_check(task_id: int, req: schemas.GuardCheckReq,
         gift_card_amount=gift.amount if gift else None,
         expected_card_last4=env["expected_card_last4"] if env else None,
         payment_last4=req.payment_last4,
+        payment_slots=req.payment_slots,
         line_items=[i.model_dump() for i in req.line_items],
     )
 
@@ -118,29 +119,34 @@ def guard_check(task_id: int, req: schemas.GuardCheckReq,
     mismatch = (plugin_goods is not None and server_goods is not None
                 and req.goods_total != verdict.goods_total)
 
+    # **放行与拦下共用同一份载荷。** 拆成两处各拼一遍的后果实测过:
+    # plugin_goods_total 当初只写进了放行那一支,于是「插件把货款算错了」
+    # 与「这一单被护栏拦下了」同时发生时 —— 也就是最需要这条线索的时候 ——
+    # 事件流里反而没有它,事后只知道「服务端算出 2241.86 拦了」,
+    # 不知道插件当时算的是 1.00,而这正是「解析层坏了」与「这单真超了」的分水岭。
+    amounts = {
+        "actual_total": str(req.actual_total),
+        "goods_total": server_goods,
+        "gift_card_amount": (str(verdict.gift_card_amount)
+                             if verdict.gift_card_amount is not None else None),
+        # 非阻断的自洽记录。事件流是这类「不拦但要留痕」信号的正确去处 ——
+        # 与 unitPriceSelectorBroken 同一个模式。
+        "consistency_note": verdict.consistency_note,
+        # 只在两边真的不一致时非空:一致时写进去等于每一单都记一笔「一致」,
+        # 而一条每单都出现的记录等于没有记录。
+        "plugin_goods_total": plugin_goods if mismatch else None,
+        # 结算页上「已选支付方式」的槽位数。见 price_guard 里拆分支付那一段。
+        "payment_slots": req.payment_slots,
+    }
+
     if not verdict.allow:
         task_event.record(conn, task_id, "guard_block", instance_id=inst["id"],
                           code=verdict.error_code,
-                          payload={"detail": verdict.detail,
-                                   "actual_total": str(req.actual_total),
-                                   "goods_total": server_goods,
-                                   "gift_card_amount": (str(verdict.gift_card_amount)
-                                                        if verdict.gift_card_amount is not None
-                                                        else None),
-                                   "consistency_note": verdict.consistency_note,
+                          payload={"detail": verdict.detail, **amounts,
                                    "delivery_raw": verdict.delivery_raw_used or req.delivery_raw})
     else:
         task_event.record(conn, task_id, "step", instance_id=inst["id"],
-                          payload={"step": "guard_check", "result": "allow",
-                                   "actual_total": str(req.actual_total),
-                                   "goods_total": server_goods,
-                                   "gift_card_amount": (str(verdict.gift_card_amount)
-                                                        if verdict.gift_card_amount is not None
-                                                        else None),
-                                   # 非阻断的自洽记录。事件流是这类「不拦但要留痕」
-                                   # 信号的正确去处 —— 与 unitPriceSelectorBroken 同一个模式。
-                                   "consistency_note": verdict.consistency_note,
-                                   "plugin_goods_total": plugin_goods if mismatch else None,
+                          payload={"step": "guard_check", "result": "allow", **amounts,
                                    "delivery_date": str(verdict.delivery_date)})
 
     return schemas.Envelope(ok=True, data=schemas.GuardCheckOut(

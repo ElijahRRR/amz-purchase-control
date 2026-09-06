@@ -160,6 +160,38 @@ def test_payment_gate_runs_before_the_money_gates():
     assert v.error_code == "PAYMENT_METHOD_UNEXPECTED"
 
 
+# ── 拆分支付:这道闸只管第一张卡的话,比没有这道闸更危险 ──────────────
+
+def test_split_payment_slots_edge_values_never_block_on_their_own():
+    """0 / 1 / 老形态页面 —— 这几档都不是拆分支付,一个都不许拦。
+
+    结算页有一种老形态:卡文案直接放在支付面板里,根本没有
+    selected-payment-method 这层壳,槽位数真的是 0(夹具 checkout.html 就是)。
+    把 0 判成异常,等于在这种页面上把每一单都拦下。
+    """
+    card = dict(expected_card_last4="4417", payment_last4="4417")
+    for slots in (None, 0, 1):
+        assert guard(payment_slots=slots, **card).allow is True, slots
+    # 礼品卡占掉一个槽位之后只剩一张卡
+    assert guard(payment_slots=2, gift_card_applied=True,
+                 gift_card_amount="100.00", **card).allow is True
+    # 礼品卡报了 applied 但页面上没数出槽位:cards 会算成 -1,同样不许拦
+    assert guard(payment_slots=0, gift_card_applied=True,
+                 gift_card_amount="100.00", **card).allow is True
+
+
+def test_split_payment_blocks_before_any_money_is_read():
+    """判定顺序:支付这条在金额之前。
+
+    理由是运营拿到的应该是「去核对这个买家号的支付方式」,
+    而不是一句与此无关的金额话术。这里给一个连解析都过不去的实付,
+    错误码仍然必须是支付那条。
+    """
+    v = guard(actual_total="读不动的东西", payment_slots=3,
+              expected_card_last4="4417", payment_last4="4417")
+    assert v.allow is False and v.error_code == "PAYMENT_METHOD_UNEXPECTED"
+
+
 # ── 自洽记录:不拦单,但要留痕 ────────────────────────────────────────
 
 def test_consistency_note_is_silent_when_the_numbers_line_up():
