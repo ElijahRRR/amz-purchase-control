@@ -35,6 +35,59 @@ function visible<T extends Element>(doc: Document | Element, selector: string): 
   return null;
 }
 
+/** 输入:一个元素 → 输出:它此刻**真的画在页面上**吗。
+ *
+ *  与上面的 isHidden 是两条不同强度的判据,都要有:
+ *   · isHidden 只看 **inline style / [hidden] / [aria-hidden]** 这些标记,
+ *     解析文本时够用,而且对 `DOMParser` 造出来的离线文档也成立(没有布局);
+ *   · isRendered 看的是**布局结果**(`getClientRects()`),要有真实布局才有意义,
+ *     但它能挡住 isHidden 挡不住的那些:class 带来的 display:none、
+ *     父级折叠、`visibility:hidden`、宽高为 0 的占位。
+ *
+ *  **为什么不能只看 `getComputedStyle(el).display`**:实测(SP/wf/address_probe.mjs)
+ *  父级 `display:none` 时,子 `<a>` 自己的 computed display 仍然是 `inline`——
+ *  只看它等于没判。`getClientRects().length > 0` 才是「有没有被布局出来」。
+ *  这条判据抄的是厂商 v2.5.3:2166-2176 的 isRenderedElement,他们是拿真实页面
+ *  校出来的。
+ *
+ *  拿不到 window(离线文档、跨域)时**退回 !isHidden**:
+ *  「读不到布局」不是「它是隐藏的」,判成隐藏会让每条判据都落空。 */
+export function isRendered(el: Element | null | undefined): boolean {
+  if (!el) return false;
+  if (!el.isConnected) return false;
+  if (isHidden(el)) return false;
+  const view = el.ownerDocument?.defaultView;
+  if (!view || typeof view.getComputedStyle !== "function") return true;
+  let style: CSSStyleDeclaration;
+  try {
+    style = view.getComputedStyle(el);
+  } catch {
+    return true;
+  }
+  if (style.display === "none" || style.visibility === "hidden") return false;
+  return el.getClientRects().length > 0;
+}
+
+/** 输入:一个根节点 + **有序**的选择器数组 → 输出:第一个既命中又渲染出来的元素。
+ *
+ *  数组的顺序是判据的可信度顺序(见 selectors.ts 文件头规矩二),
+ *  所以这里是「按顺序试,谁先给出一个**渲染出来的**元素就用谁」,
+ *  而不是「哪条命中得多用哪条」。
+ *
+ *  同一条选择器命中多个时取第一个渲染出来的 —— Amazon 常把隐藏的模板副本
+ *  排在真身**前面**,裸 querySelector 取到的就是那一个。 */
+export function pickFirstRendered<T extends Element>(
+  root: Document | Element,
+  selectors: readonly string[],
+): T | null {
+  for (const sel of selectors) {
+    for (const el of Array.from(root.querySelectorAll<T>(sel))) {
+      if (isRendered(el)) return el;
+    }
+  }
+  return null;
+}
+
 /** 输入:含金额的文本 → 输出:去掉货币符号与千分位的数字串。认不出返回 undefined。 */
 export function parseMoney(s: string | null | undefined): string | undefined {
   if (!s) return undefined;
@@ -308,6 +361,37 @@ export function readPaymentLast4(doc: Document): string | undefined {
   if (masked) return masked[1];
   const all = t.match(/\b\d{4}\b/g);
   return all ? all[all.length - 1] : undefined;
+}
+
+// ── 「选择器坏了」还是「页面慢」 ──────────────────────────────────────
+
+/** 一组选择器一个都没给出可用元素时,到底是哪种情况。 */
+export type SelectorMiss =
+  /** 一个节点都没匹配到 —— **选择器坏了**(Amazon 改版),重试多少次都一样。 */
+  | { kind: "no_match"; tried: number }
+  /** 匹配到了节点,但没有一个渲染出来 —— **页面慢**,或者入口被折叠着。 */
+  | { kind: "not_rendered"; matched: string; count: number };
+
+/** 输入:根节点 + 那组选择器 → 输出:这次落空属于哪一种。
+ *
+ *  这个函数存在的理由就是 README 反复说的那条:
+ *  **两种不同的情况不许渲染出同一个结果。**「选择器坏了」和「页面慢」
+ *  今天都长成 ADDRESS_FORM_TIMEOUT,而前者要改代码、后者重试就好。
+ *  错误 detail 里带上这一句,运营台上一眼就能分开。 */
+export function diagnoseMiss(root: Document | Element, selectors: readonly string[]): SelectorMiss {
+  for (const sel of selectors) {
+    const n = root.querySelectorAll(sel).length;
+    if (n > 0) return { kind: "not_rendered", matched: sel, count: n };
+  }
+  return { kind: "no_match", tried: selectors.length };
+}
+
+/** diagnoseMiss 的中文说法,直接进 DriverError 的 detail。 */
+export function describeMiss(root: Document | Element, selectors: readonly string[]): string {
+  const d = diagnoseMiss(root, selectors);
+  return d.kind === "no_match"
+    ? `${d.tried} 条判据在页面上一个节点都没匹配到 —— 选择器坏了(Amazon 改版),重试无用`
+    : `「${d.matched}」匹配到 ${d.count} 个节点但没有一个渲染出来 —— 页面还没画完或入口被折叠着`;
 }
 
 // ── 订单历史 ────────────────────────────────────────────────────────
