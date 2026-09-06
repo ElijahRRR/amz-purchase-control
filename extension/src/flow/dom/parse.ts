@@ -539,11 +539,23 @@ export function diagnoseMiss(root: Document | Element, selectors: readonly strin
   return { kind: "no_match", tried: selectors.length };
 }
 
-/** diagnoseMiss 的中文说法,直接进 DriverError 的 detail。 */
+/** diagnoseMiss 的中文说法,直接进 DriverError 的 detail —— 也就是**运营台上的字**。
+ *
+ *  **只说页面上看到了什么,不预告系统会怎么处置这一单。**
+ *  「选择器坏了」这一档今天仍然落在 ADDRESS_FORM_TIMEOUT 上,而那是个可重试码:
+ *  services/task_retry.py 的自动重试正是按 error_codes.RETRYABLE 挑单
+ *  (registry/settings.py 的 auto_retry_max 默认 0,开关一开就生效)。
+ *  detail 里写「重试无用」而系统照样把它重拍 N 次,就是在界面上写一句
+ *  系统不会兑现的话 —— 这条判据本身是给人看的,机器读不到它。
+ *
+ *  要让机器也用上这个区分,得给「选择器坏了」单开一个归 TO_MANUAL 的错误码。
+ *  错误码是封闭集(docs/01 §4 ↔ services/error_codes.py ↔ core/codes.ts),
+ *  开口子是跨线的事,不在这一条里定。 */
 export function describeMiss(root: Document | Element, selectors: readonly string[]): string {
   const d = diagnoseMiss(root, selectors);
   return d.kind === "no_match"
-    ? `${d.tried} 条判据在页面上一个节点都没匹配到 —— 选择器坏了(Amazon 改版),重试无用`
+    ? `${d.tried} 条判据在页面上一个节点都没匹配到 —— 多半是 Amazon 改版了:` +
+      `这一条要改选择器,原样重拍同一条判据结果相同`
     : `「${d.matched}」匹配到 ${d.count} 个节点但没有一个渲染出来 —— 页面还没画完或入口被折叠着`;
 }
 

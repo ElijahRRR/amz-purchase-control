@@ -44,7 +44,7 @@ python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
 真实 Amazon 页面拿不到，所以 DOM 解析对着 `test/fixtures/` 里按逆向报告造的页面跑：
 
 ```bash
-npm run test:dom     # 170 条断言
+npm run test:dom     # 198 条断言
 ```
 
 这一套里有一节不是纯解析:**执行中掉线那条兜底**。它用 route 拦截给 `/ap/signin`
@@ -61,7 +61,7 @@ npm run test:dom     # 170 条断言
 |---|---|---|
 | `nav-signed-in.html` / `nav-signed-out.html` | 导航栏 | 登录态三档；隐藏的反向模板 |
 | `product.html` / `product-oos.html` | 商品页 | 数量下拉、优惠券、库存；**disabled 的加购按钮副本** |
-| `cart.html` / `cart-empty.html` | 购物车 | 只数 Active Items；「空车」与「没渲染」分开 |
+| `cart.html` / `cart-empty.html` | 购物车 | 只数 Active Items；「空车」「没渲染」「读不懂这一页」三者分开；**只靠 CSS 类隐藏的空车提示模板 / 行模板** |
 | `cart-icon-delete.html` | 购物车 | **删除控件的三种图标形态**（厂商 v2.5.3:687-703） |
 | `checkout.html` | 结算页 | 金额、卡尾号、下单按钮、地址面板；折叠地址簿干扰项 |
 | `checkout-apex-price.html` | 结算页 | 划线原价与实付价挂同一个类名 |
@@ -93,6 +93,15 @@ npm run test:dom     # 170 条断言
 **判据落空时要能一眼分出「选择器坏了」和「页面慢」。** 前者要改代码、后者重试就好，
 而它们今天都渲染成同一个可重试错误码。`parse.diagnoseMiss` 把这两种分开写进错误 detail：
 一个节点都没匹配到 = Amazon 改版；匹配到了但没渲染出来 = 页面还没画完。
+⚠ 这条区分**只给人看**：错误码仍然是 `ADDRESS_FORM_TIMEOUT`（属于 `RETRYABLE`），
+自动重试开关一开，系统照样会把这类单再拍几次。所以 detail 的文案只描述页面上看到了
+什么，不写「重试无用」这种系统不会兑现的话。要让机器也用上它，得给这一档单开一个归
+`TO_MANUAL` 的错误码 —— 错误码是封闭集，开口子是跨线的决定。
+
+**驱动级演练。** 有几件事纯函数够不着：清车用哪种方式取「空车」证据、地址保存的
+那段循环有没有在每一轮动作之后真的等状态变化。这两处让 `AmazonDriver` 对着夹具
+真跑一遍（`clearCart` 自己开 iframe；`fillAddress` 自己填字、点保存、等结果），
+断言的是**行为**，不是某个纯函数的返回值。
 
 这不能替代真实页面验证——Amazon 的真实 DOM 一定和夹具有出入。它能保证的是：
 **报告里记着的那些选择器，我们的解析器确实按它们的语义在读。**

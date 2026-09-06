@@ -734,8 +734,14 @@ await withFixture("checkout.html", async (run) => {
   check("address 两种落空的说法确实不同",
         (await run(`amzdom.describeMiss(document, [amzdom.SEL.address.addNew])`)) !==
         (await run(`amzdom.describeMiss(document, ["#no-such-entry"])`)));
-  check("address「选择器坏了」那句话里点明了重试无用",
-        (await run(`amzdom.describeMiss(document, ["#no-such-entry"])`)).includes("重试无用"));
+  check("address「选择器坏了」那句话点明了要改选择器",
+        (await run(`amzdom.describeMiss(document, ["#no-such-entry"])`)).includes("改选择器"));
+  // detail 会显示在运营台上,而 ADDRESS_FORM_TIMEOUT 属于 RETRYABLE 组 ——
+  // services/task_retry.py 按这一组挑单,开关(auto_retry_max)一开就会把这类单
+  // 自动再拍 N 次。文案里写「重试无用」而系统照样重拍,就是在界面上写一句
+  // 系统不会兑现的话;这条判据是给人看的,机器读不到它。
+  check("address 落空诊断不预告系统行为(不出现「重试无用」)",
+        !(await run(`amzdom.describeMiss(document, ["#no-such-entry"])`)).includes("重试无用"));
 });
 
 await withFixture("address-select.html", async (run) => {
