@@ -725,6 +725,49 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
   await new Promise((r) => setTimeout(r, 20));
 }
 
+// ── 「清车没清动」两个生产者、一个键名(F2) ─────────────────────────────
+//
+// 服务端 /fail 那一路写的是 `warning=cart_not_cleared`,运营台实例页那一格
+// (services/instance.LIST_SQL 的 cart_fail_24h)数的也是它。插件 tryClear 原先
+// 发的是 `state=cart_not_cleared` —— 同一件事两个键名,于是走「护栏没说上话 /
+// 人按了取消」这两条路清不动车的机器,在运营台上和插件熔断上**同时是隐形的**:
+// 实例页那一格是 0,机器满格绿色「在线 · 可派」。
+{
+  const client = fakeClient(3);
+  const events = [];
+  client.events = async (_id, evs) => { events.push(...evs); return { ok: true, data: {} }; };
+  // 护栏裁决没说上话 → tryClear → unreported
+  client.guardCheck = async () => ({ ok: false, kind: "transport", message: "请求超时" });
+  let calls = 0;
+  const driver = {
+    name: "fake", ready: true,
+    readLoginState: async () => "unknown",
+    // 开头那次成功(车是空的),收尾那次失败 —— 与真实形状一致
+    clearCart: async () => {
+      calls += 1;
+      if (calls >= 2) throw new DriverError("PLUGIN_INTERNAL", "找不到删除控件");
+    },
+    addProduct: async () => ({ shipperIsAmazon: null }),
+    verifyCart: async () => true,
+    proceedToCheckout: async () => {},
+    fillAddress: async () => {},
+    readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
+                                 unitPrices: [] }),
+    placeOrder: async () => {},
+    readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
+    dispose: async () => {},
+  };
+  const out = await runTask(fakeTask(1), { client, driver, log: silentLog });
+  eq("护栏没说上话 → 不下单,这一单交给服务端超时清扫", out.kind, "unreported");
+  eq("而且说得出车没清动(这一位是关于这台机器的事实)", out.cartCleared, false);
+  const warn = events.find((e) => e.payload?.step === "清车失败");
+  check("「清车没清动」用的是服务端那一路同一个键名 warning",
+        warn?.payload?.warning === "cart_not_cleared",
+        JSON.stringify(warn?.payload ?? null));
+  check("state 那个键留给「此刻在哪一段」那套语义,不混用",
+        warn?.payload?.state === undefined);
+}
+
 // ── 「上界由服务端反推」那条算式(F3) ──────────────────────────────────
 //
 // docs/01 §8.3 那句「插件永远给服务端留出余量」的本体就是这个纯函数,而它一条

@@ -34,8 +34,14 @@ export type Outcome =
    *  而这条路上照样清过车,不带这一位的话它在熔断那本账上是一格空白。 */
   | { kind: "released"; cartCleared: boolean | null }
   /** 没跟服务端说上话。任务此刻仍是 claimed,交给服务端的超时清扫去收
-   *  —— 它 15 分钟后转待人工,而不是退回队列。 */
-  | { kind: "unreported"; message: string };
+   *  —— 它 15 分钟后转待人工,而不是退回队列。
+   *
+   *  `cartCleared` 与另外两个终态同义(true / false / null=没试过或不知道)。
+   *  **任务的结局没说上话,不等于购物车的结局也不知道**:护栏裁决那一路
+   *  (guard-check 传输失败)确确实实清过一次车,那一次清没清动是关于**这台机器**
+   *  的事实,与服务端知不知道这一单无关。不带这一位的话,一台每一单都清不动车的
+   *  机器在这条路上对清车熔断是隐形的。 */
+  | { kind: "unreported"; message: string; cartCleared: boolean | null };
 
 export interface RunDeps {
   client: Client;
@@ -222,8 +228,8 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
       // 没拿到裁决就绝不下单 —— 宁可这一单不做,也不在没闸门的情况下花钱。
       if (verdict.kind === "transport") {
         log.err("护栏裁决没说上话:" + verdict.message + " —— 不下单,清车");
-        await tryClear("护栏没说上话");
-        return { kind: "unreported", message: verdict.message };
+        const cleared = await tryClear("护栏没说上话");
+        return { kind: "unreported", message: verdict.message, cartCleared: cleared };
       }
       throw new Abort("PLUGIN_INTERNAL", `护栏裁决被拒:${verdict.code} ${verdict.message}`);
     }
@@ -253,7 +259,7 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
         const rel = await client.release(task.task_id);
         return rel.ok
           ? { kind: "released", cartCleared: cleared }
-          : { kind: "unreported", message: "release 失败" };
+          : { kind: "unreported", message: "release 失败", cartCleared: cleared };
       }
     }
 
@@ -287,7 +293,7 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
       const rel = await client.release(task.task_id);
       return rel.ok
         ? { kind: "released", cartCleared: cleared }
-        : { kind: "unreported", message: rel.message };
+        : { kind: "unreported", message: rel.message, cartCleared: cleared };
     }
 
     mayHaveOrdered = true;               // ← 从这里开始,退回队列是被禁止的
@@ -335,7 +341,8 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
       return { kind: "failed", code: done.code as ErrorCode, toManual: true, cartCleared: null };
     }
     log.err("回填没说上话:" + done.message + " —— 单可能已经下成,交给服务端超时清扫");
-    return { kind: "unreported", message: done.message };
+    // 越过下单点之后按规矩没动过购物车 —— null 是「没试过」,不是「清不动」。
+    return { kind: "unreported", message: done.message, cartCleared: null };
 
   } catch (e) {
     if (e instanceof LoginLostError) {
@@ -403,7 +410,7 @@ async function releaseAfterLoginLost(
   const rel = await client.release(task.task_id);
   if (!rel.ok) {
     // 没说上话:任务仍是 claimed,交给服务端的超时清扫(15 分钟后转待人工)。
-    return { kind: "unreported", message: rel.message };
+    return { kind: "unreported", message: rel.message, cartCleared };
   }
   return { kind: "released", cartCleared };
 }
@@ -452,7 +459,7 @@ async function finish(
   });
   if (!res.ok) {
     log.err("上报失败也没说上话:" + (res.kind === "business" ? res.message : res.message));
-    return { kind: "unreported", message: detail };
+    return { kind: "unreported", message: detail, cartCleared };
   }
   return { kind: "failed", code, toManual: manual, cartCleared };
 }

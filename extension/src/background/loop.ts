@@ -447,13 +447,13 @@ export class Loop {
    *  于是这道熔断在它最该起作用的那一格上完全是死的。
    *
    *  purchased 记 true:拍成了说明开头那次清车成功过(它失败会直接抛),
-   *  而下单之后车本来就空了。released 自己带着这一位(见 run.ts 的 Outcome)。 */
+   *  而下单之后车本来就空了。released / unreported 自己带着这一位
+   *  (见 run.ts 的 Outcome)——「服务端不知道这一单的结局」不等于
+   *  「不知道购物车清没清动」,后者是关于**这台机器**的事实。 */
   private noteCart(outcome: Outcome): void {
     const cleared: boolean | null =
-      outcome.kind === "purchased" ? true
-      : outcome.kind === "failed" || outcome.kind === "released" ? outcome.cartCleared
-      : null;                       // unreported:连结局都没说上话,不下结论
-    if (cleared === null) return;
+      outcome.kind === "purchased" ? true : outcome.cartCleared;
+    if (cleared === null) return;   // 没试过 / 不知道 —— 既不加也不清
     if (cleared) {
       this.cartFailStreak = 0;
       return;

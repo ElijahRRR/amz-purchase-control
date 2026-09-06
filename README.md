@@ -59,7 +59,7 @@ python tools/mock_plugin.py --scenario no_asin     # 一个 ASIN 都没采到:�
 # 6. 插件侧
 cd extension && npm install
 npm run typecheck && npm run build        # → dist/,可加载进 Chrome
-npm run test:dom                          # 225 条 DOM 解析断言(不需要服务端),顺带跑 test:unit 91 条
+npm run test:dom                          # 225 条 DOM 解析断言(不需要服务端),顺带跑 test:unit 95 条
 npm run smoke                             # 用插件自己的 Loop/runTask 跑闭环
 node tools/smoke.mjs --scenario happy --ship in_transit
 node tools/smoke.mjs --scenario login_lost         # 跑到一半被登出:退回队列,不记异常
@@ -190,7 +190,7 @@ python cli.py feishu_writeback
 | 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 409 条 pytest,跑在真 PostgreSQL 17 上 |
 | 插件与服务端的时序(认领 → 执行 → 护栏 → 回填 → 失败清车) | ✅ 全部 smoke 场景实跑,跑的是插件自己的 `Loop`/`runTask`(清单见 `extension/README.md`,那张表就是唯一的场景清单 —— 写死一个数字每加一条就过期一次) |
 | 物流同步时序 | ✅ 实跑 |
-| DOM 解析层(选择器是否按报告的语义在读) | ✅ 225 条断言,对着按报告造的夹具跑(地址/购物车/商品页从 0 条到有断言);另有 91 条纯 Node 断言盯等待原语、单飞闸、租约、认领循环、看门狗、清车熔断、「下单点留痕没落地就不许点」,以及「上界由服务端反推」那条算式 |
+| DOM 解析层(选择器是否按报告的语义在读) | ✅ 225 条断言,对着按报告造的夹具跑(地址/购物车/商品页从 0 条到有断言);另有 95 条纯 Node 断言盯等待原语、单飞闸、租约、认领循环、看门狗、清车熔断、「下单点留痕没落地就不许点」,以及「上界由服务端反推」那条算式 |
 | 登录态(被登出 → 拒绝派单 → 重新登录后自愈) | ✅ 心跳落库/认领被拒/恢复/unknown 的 pytest,加一轮 `--scenario login_lost` 实跑 |
 | 下单后的三段等待(发卡行验证 → 露窗口 → 上报 → 有界超时) | ⚠️ **只验到时序那一半**:两条 step 事件、`claim_timeout_min` 下发、列表徽标、新错误码转人工,都有 pytest 与 `--scenario manual_verify / manual_verify_timeout` 实跑;**「iframe 真被导到跨域页之后 `urlState()` 读到什么、`reveal()` 出来的窗口能不能真的输验证码」没验过** —— 那要一个真买家号 |
 | 运营台前端 | ✅ 真库 + 真服务 + 真浏览器跑过四页、详情弹窗、改地址、剪贴板、NEEDS_ACK 流程 |
