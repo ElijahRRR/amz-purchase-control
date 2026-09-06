@@ -68,7 +68,60 @@ export const SEL = {
   checkout: {
     interstitialButtons: ["#checkout-byg-ptc-button a", "#sc-byc-ptc-button-lower a"],
     addressText: "#deliver-to-address-text",
-    paymentText: "#payment-option-text-default",
+
+    // ── 支付区(出处 v2.5.3 popup.js:2021-2050)────────────────────────
+    //
+    // **只读不写。** 厂商 v2.5.3 :2229-2310 会点开 payselect 页、替买家号勾选
+    // 指定尾号的卡、再点 SetPaymentPlanSelectContinueEvent 确认 —— 依据是插件
+    // 本地 localStorage 里一个操作员随手能改的输入框。我们不做:
+    // 改一个买家号的支付配置是**人**的动作,不是拍单流程的动作;
+    // 而且那等于把闸门交给被管的一方。不符就转人工(PAYMENT_METHOD_UNEXPECTED)。
+    payment: {
+      /** 一切支付读取的作用域(v2.5.3 :2029-2031)。
+       *  **拿不到就当读不到,不要退到文档级** —— Amazon 结算页有同 id 的隐藏
+       *  模板副本,文档级 querySelector 会先命中它(实测:隐藏副本尾号 0000
+       *  排在真身 8738 前面时,裸取读出的是 0000)。 */
+      panel: "#checkout-payment-option-panel",
+      /** 面板内按序试,第一个出文本的赢(v2.5.3 :2034-2042)。
+       *  第一条是报告 §4.2.4 检查 3 记的老形态,后两条是 2.5.3 新增。 */
+      selectedTexts: [
+        "#payment-option-text-default",
+        '#selected-payment-method-_default [data-testid="_default"]',
+        '[id^="selected-payment-method-"] [data-testid="_default"]',
+      ],
+    },
+
+    /** 礼品卡 / 余额抵扣行(出处 v2.5.3 popup.js:2054、2062、2066-2068)。
+     *
+     * 这是这次从厂商那儿最值得抄的一条:判据是**隐藏表单标记**,与页面语言无关。
+     * v2.5.1 靠 `includes("Paying with Amazon Points")` 这类文案判,换个站点语言就瞎。
+     *
+     * 为什么必须有它:结算页的 grand-total-cell 读到的是「这张卡要扣多少」,
+     * 礼品卡垫过之后它比货款小,甚至是 0.00。没有这条选择器,
+     * 限价护栏在任何有礼品卡余额的买家号上就是空的。 */
+    giftCard: {
+      marker: 'input[name="subtotalLineType"][value="SPECIAL_PAYMENTS_GIFT_CARD_BALANCE"]',
+      /** 从 marker 往上 closest 到抵扣行(v2.5.3 :2062,按序试)。 */
+      rowAncestors: [".order-summary-grid", "li"],
+      /** 行内的金额格(v2.5.3 :2066-2068)。 */
+      amounts: [
+        '.order-summary-line-definition [data-shimmer-target="ordertotals-amount"]',
+        ".order-summary-line-definition .aok-nowrap",
+      ],
+    },
+
+    /** 订单小结的容器。**按 label 扫行必须限定在这里面。**
+     *
+     * 前两条出自 v2.5.3 :2530 / :2844(厂商是按 id 限定容器再取行的)。
+     * 不限容器的后果实测过:我们自己的夹具里,隐藏的粘性底栏
+     * (#checkout-sticky-summary,display:none)排在真表**之前**,
+     * 全文档扫到的 Order total 是加第二件商品之前的过期值 $1,299.99,
+     * 而真值是 $2,241.86。 */
+    summaryTables: [
+      "#subtotals-marketplace-table",
+      "#subtotals-transactional-table",
+      "#checkout-pyo-button-block",
+    ],
     itemPanel: '[data-csa-c-slot-id="checkout-itemBlockPanel"]',
     lineItemContainer: ".lineitem-container",
     panelAsin: '[id="col-item-block-description"] > .aok-hidden',

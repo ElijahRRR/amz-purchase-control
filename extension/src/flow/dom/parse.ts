@@ -273,17 +273,43 @@ export function readGrandTotal(doc: Document): string | undefined {
   return parseMoney(text(doc.querySelector(SEL.checkout.grandTotal)));
 }
 
-/** 报告没记结算页的运费/税选择器(厂商是在**订单详情页**读的)。
- *  所以这里按 label 文案扫行,而不是赌一个 id —— 文案比 id 稳。 */
-export function readOrderSummary(doc: Document): {
+export interface OrderSummary {
   shipping?: string;
   tax?: string;
   beforeTax?: string;
-  total?: string;
-} {
-  const out: { shipping?: string; tax?: string; beforeTax?: string; total?: string } = {};
-  const rows = Array.from(doc.querySelectorAll("tr, .a-row, li"));
+  /** 页面上写着 "Order total" 的那一行。 */
+  orderTotal?: string;
+  /** 页面上写着 "Grand Total" 的那一行。 */
+  grandTotal?: string;
+}
+
+/** 报告没记结算页的运费/税选择器(厂商是在**订单详情页**读的)。
+ *  所以这里按 label 文案扫行,而不是赌一个 id —— 文案比 id 稳。
+ *
+ *  但**扫描范围必须先收窄**,两道:
+ *
+ *  ① 限定在订单小结的容器里(SEL.checkout.summaryTables,出自 v2.5.3 :2530/:2844)。
+ *  ② 逐行过滤隐藏节点(复用本文件的 isHidden)。
+ *
+ *  为什么:实测我们自己的夹具,全文档扫到的 "Order total" 是隐藏粘性底栏
+ *  (#checkout-sticky-summary,display:none,排在真表**之前**)里的过期值
+ *  $1,299.99,而真值是 $2,241.86。今天只有总额被污染、而总额恰好没人用,
+ *  所以这个缺陷是**沉默**的 —— Amazon 哪天往粘性条里也放上 Shipping & handling,
+ *  现在正确的运费/税就跟着错,而「非空」那种断言照样绿。
+ *
+ *  `orderTotal` 与 `grandTotal` **分成两个键**:有礼品卡时这两行同时存在
+ *  且含义不同(货款 vs 这张卡要扣的钱)。合成一个 total 等于让「先命中谁」
+ *  决定语义 —— 那正是两种不同的情况渲染出同一个结果。 */
+export function readOrderSummary(doc: Document): OrderSummary {
+  const out: OrderSummary = {};
+  let root: ParentNode = doc;
+  for (const sel of SEL.checkout.summaryTables) {
+    const box = visible(doc, sel);
+    if (box) { root = box; break; }
+  }
+  const rows = Array.from(root.querySelectorAll("tr, .a-row, li"));
   for (const row of rows) {
+    if (isHidden(row)) continue;
     const t = text(row);
     if (!t || t.length > 120) continue;
     const money = parseMoney(t);
@@ -291,7 +317,8 @@ export function readOrderSummary(doc: Document): {
     if (out.shipping === undefined && /shipping\s*(&|and)?\s*handling/i.test(t)) out.shipping = money;
     else if (out.tax === undefined && /(estimated\s+)?tax(\s+to\s+be\s+collected)?/i.test(t) && !/before\s+tax/i.test(t)) out.tax = money;
     else if (out.beforeTax === undefined && /total\s+before\s+tax/i.test(t)) out.beforeTax = money;
-    else if (out.total === undefined && /(order|grand)\s+total/i.test(t)) out.total = money;
+    else if (out.grandTotal === undefined && /grand\s+total/i.test(t)) out.grandTotal = money;
+    else if (out.orderTotal === undefined && /order\s+total/i.test(t)) out.orderTotal = money;
   }
   return out;
 }
@@ -300,7 +327,18 @@ export function readOrderSummary(doc: Document): {
  *  文案里的年份、分期数、金额都会被误采。这里先认"ending in/with",
  *  再认掩码,都不中才退到**最后**一组 4 位数字。 */
 export function readPaymentLast4(doc: Document): string | undefined {
-  const t = text(doc.querySelector(SEL.checkout.paymentText));
+  // **先收窄到支付面板,再逐条候选取第一个可见的。**
+  //
+  // 裸 doc.querySelector 会先命中 Amazon 的同 id 隐藏模板副本:实测在一张
+  // 隐藏副本(尾号 0000)排在真身(8738)前面的页面上,裸取读出的是 0000。
+  // 同一个文件里 readInStock / pickQuantitySelect / findInterstitialButton
+  // 都走了 visible(),偏偏支付这条没走 —— 而这一列是拿去跟期望卡比对的。
+  //
+  // 面板拿不到就当读不到(返回 undefined),**不退到文档级**:退回去就等于
+  // 把刚收窄的作用域又放开,而调用方看到的是一个长得很正常的四位数。
+  const panel = visible(doc, SEL.checkout.payment.panel);
+  if (!panel) return undefined;
+  const t = firstVisibleText(panel, SEL.checkout.payment.selectedTexts);
   if (!t) return undefined;
   const ending = /ending\s+(?:in|with)\s+(\d{4})/i.exec(t);
   if (ending) return ending[1];
@@ -562,4 +600,77 @@ export function readTrackingEvents(doc: Document): TrackingEvent[] {
   };
   walk(container);
   return out;
+}
+
+// ── 结算页:礼品卡抵扣(护栏基数的另一半)────────────────────────────
+
+/** 一组选择器里第一个**可见**且有文本的。
+ *
+ *  与上面那个 firstText 的差别只有一处:它不看可见性。
+ *  两个都留着是有意的 —— 订单详情页那几处读的是已经成交的静态页,
+ *  结算页则满是同 id 的隐藏模板副本,那里必须过滤。 */
+function firstVisibleText(root: Document | Element, sels: readonly string[]): string {
+  for (const sel of sels) {
+    const t = text(visible(root, sel));
+    if (t) return t;
+  }
+  return "";
+}
+
+export interface GiftCardRead {
+  /** 这张结算页上有没有礼品卡/余额抵扣。 */
+  applied: boolean;
+  /** 抵扣了多少。**认出抵扣行却读不出金额时是 undefined,不是 "0"** ——
+   *  「抵扣 0 元」与「不知道抵扣多少」是两件事,后者根本不许下单。 */
+  amount: string | undefined;
+}
+
+/** 结算页的礼品卡/余额抵扣。出处 v2.5.3 popup.js:2052-2079。
+ *
+ * 三段式,与厂商一致:隐藏表单标记 → closest 到所在小结行 → 行内取金额元素。
+ * 判据是**表单标记而不是文案**,与页面语言无关 —— v2.5.1 靠
+ * `includes("Paying with Amazon Points")` 判,换个站点语言就瞎。
+ *
+ * 为什么必须有这个函数:readGrandTotal 读的 `.grand-total-cell` 是
+ * **这张卡要扣的钱**,礼品卡垫过之后它比货款小,全额抵扣时就是 0.00。
+ * 护栏拿它跟 price_cap 比,在任何有礼品卡余额的买家号上就是空的
+ * (实测:礼品卡垫 1100 的 2241.86 元单,price_cap=1200 照样放行)。
+ *
+ * 两个坑,都不是理论上的:
+ *
+ *  1. **符号。** parseMoney 的正则只认紧贴数字的负号,`"-$5.09"` 会被读成
+ *     `"5.09"`(负号在 `$` 前),而 `"$-5.09"` 读成 `"-5.09"`。抵扣行两种写法
+ *     都出现过。所以这里显式取绝对值语义 —— 这一格的含义就是「减掉了多少」,
+ *     正负号是排版,不是数据。
+ *  2. **隐藏模板。** 可见性判在**小结行**上而不是 marker 上:marker 本身就是个
+ *     隐藏表单字段,拿 isHidden 判它会把真的那条也一起丢掉。
+ *     行都找不到的 marker 按「真的」算(applied=true、金额未知)——
+ *     那一档服务端会拒,宁可停一单,不许放行一次没算过的护栏。 */
+export function readGiftCardDeduction(doc: Document): GiftCardRead {
+  const markers = Array.from(doc.querySelectorAll(SEL.checkout.giftCard.marker));
+  let applied = false;
+  let sum = 0;
+  let parsed = 0;
+
+  for (const marker of markers) {
+    let row: Element | null = null;
+    for (const sel of SEL.checkout.giftCard.rowAncestors) {
+      row = marker.closest(sel);
+      if (row) break;
+    }
+    // 隐藏模板里的抵扣行不算数(Amazon 把整套小结模板塞进 display:none 的壳里)
+    if (row && isHidden(row)) continue;
+    applied = true;
+    if (!row) continue;                       // 行找不到:算数,但金额未知
+    const raw = firstVisibleText(row, SEL.checkout.giftCard.amounts);
+    const money = parseMoney(raw);
+    if (money === undefined) continue;
+    const n = Math.abs(Number(money));         // 见上面「坑 1」
+    if (!Number.isFinite(n)) continue;
+    sum += n;
+    parsed += 1;
+  }
+
+  if (!applied) return { applied: false, amount: undefined };
+  return { applied: true, amount: parsed > 0 ? sum.toFixed(2) : undefined };
 }

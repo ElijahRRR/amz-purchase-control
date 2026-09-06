@@ -1,6 +1,15 @@
 <!--
 ================================================================================
-  夹具：Amazon 最终结算页（US 站，地址已保存，两件商品）
+  夹具：Amazon 最终结算页 · **礼品卡全额抵扣**（US 站，地址已保存，两件商品）
+================================================================================
+  与 checkout.html 的差别只有一处，但它是本项目最贵的那一处：
+  这一单的**货款仍然是 $2,241.86**，礼品卡把它垫平了，所以
+  `#checkout-pyo-button-block .grand-total-cell` 上写的是 **$0.00**。
+
+  照 v2.5.3 popup.js:2052-2079 造的礼品卡抵扣行：判据是隐藏表单标记
+  `input[name="subtotalLineType"][value="SPECIAL_PAYMENTS_GIFT_CARD_BALANCE"]`，
+  与页面语言无关。没有这条判据，限价护栏在任何有礼品卡余额的买家号上就是空的
+  （0.00 ≤ 任何 price_cap，一律放行，而库里和界面上一切正常）。
 ================================================================================
   页面        ：Checkout — Place Your Order
   URL 形态    ：https://www.amazon.com/checkout/p/p-8829471056332145/ref=chk_pymt_sel
@@ -109,7 +118,12 @@
       order.products = [ {asin:"B0FB3VS68J", quantity:1},
                          {asin:"B0CHXNPXVX", quantity:3} ]
 
-      期望解析结果：
+      期望解析结果（礼品卡这一版，与 checkout.html 不同的几行标了 ★）：
+      ★ readGrandTotal              = 0.00        ← 这张卡要扣的钱
+      ★ readGiftCardDeduction       = { applied: true, amount: "2241.86" }
+      ★ readOrderSummary().orderTotal = 2241.86   ← 这一单的货款
+      ★ readOrderSummary().grandTotal = 0.00
+      ★ 服务端算出的 goods_total     = 0.00 + 2241.86 = 2241.86 ← 护栏比的就是它
         面板数            = 2（隐藏模板不算，它没有 .lineitem-container）
         ASIN[0]/[1]       = B0FB3VS68J / B0CHXNPXVX
         unitPrice[0]/[1]  = 1299.99 / 249.50
@@ -243,15 +257,15 @@
       Amazon Store Card ending in 8842 &middot; not selected
     </div>
 
+    <!-- ✅ 报告记载：#payment-option-text-default（§4.2.4 检查 3，`:1670-1682`）
+         ⚠️ 本行是本夹具最重要的陷阱之一，见文件头「边界 1」。
+            厂商 `/\d{4}/` 取**第一个** 4 位连续数字：
+              "Pay over 4 months, 2026 promo · Visa ending in 4417"
+                              ↑单个 4     ↑↑↑↑ 第一个 4 位数 = 2026（会被当成卡号）
+                                                              ↑↑↑↑ 真卡号 = 4417
+            期望：解析器锚定 "ending in" 之后的 4 位，得到 4417。 -->
     <!-- ----------------------------------------------------------------------
          干扰项 B-3：**隐藏的同 id 模板副本**，尾号 0000，排在真身前面
-         ------------------------------------------------------------------------
-         Amazon 结算页确实有同 id 的隐藏模板（本文件头「边界 2」记的就是这件事）。
-         写松了会怎样：`doc.querySelector("#payment-option-text-default")` 取第一个，
-         读出的是 0000 —— 一个长得完全正常的四位数，写进 procure.tasks.payment_last4，
-         对账时把这一单挂到另一张卡上，而没有任何地方报错。
-         正确形态：先收窄到 #checkout-payment-option-panel，再逐条候选取**可见**的。
-         （出处 v2.5.3 popup.js:2029-2043）
          ---------------------------------------------------------------------- -->
     <div class="a-section" style="display:none">
       <div id="checkout-payment-option-panel">
@@ -259,23 +273,17 @@
       </div>
     </div>
 
-    <!-- ✅ 报告记载：#payment-option-text-default（§4.2.4 检查 3，`:1670-1682`）
-         ⚠️ 本行是本夹具最重要的陷阱之一，见文件头「边界 1」。
-            厂商 `/\d{4}/` 取**第一个** 4 位连续数字：
-              "Pay over 4 months, 2026 promo · Visa ending in 4417"
-                              ↑单个 4     ↑↑↑↑ 第一个 4 位数 = 2026（会被当成卡号）
-                                                              ↑↑↑↑ 真卡号 = 4417
-            期望：解析器锚定 "ending in" 之后的 4 位，得到 4417。
-
-         ✅ v2.5.3 :2029-2031 的新外壳 #checkout-payment-option-panel。
-            支付读取一律先收窄到它 —— 上面 B-2「没被选中的另一张卡 8842」
-            与 B-3「隐藏副本 0000」都在它外面/隐藏着，收窄之后两个都够不着。 -->
     <div id="checkout-payment-option-panel" class="a-section">
       <div id="selected-payment-method-_default">
-        <div id="payment-option-text-default" data-testid="_default"
-             class="a-size-base a-color-base">
+        <div id="payment-option-text-default" data-testid="_default" class="a-size-base a-color-base">
           Pay over 4 months, 2026 promo &middot; Visa ending in 4417
         </div>
+      </div>
+      <div id="selected-payment-method-payment-option-text-1">
+        <div data-testid="giftcard" class="a-size-base a-color-base">Gift Card Balance applied: $2,241.86</div>
+      </div>
+      <div data-action="page-transit-no-update-action">
+        <a href="/checkout/p/p-XYZ/pay?toPage=payselect&amp;redirectReason=ChangePaymentMethod">Change payment method</a>
       </div>
     </div>
 
@@ -541,6 +549,22 @@
         <td class="a-color-secondary a-size-small">Items:</td>
         <td class="a-text-right a-size-small">$1,299.99</td>
       </tr>
+      <!-- ------------------------------------------------------------------
+           干扰项 F-2：粘性底栏里那条**过期的**礼品卡抵扣行（$500.00）
+           --------------------------------------------------------------------
+           它带着一模一样的 subtotalLineType 标记。不判可见性的实现会把
+           500.00 一起加进抵扣额（或者干脆只读到它），于是护栏基数变成
+           0.00 + 500.00 = 500.00 —— 比 0.00 隐蔽得多，它长得像个正常的数。
+           正确形态：可见性判在**小结行**上（marker 自己就是隐藏表单字段，
+           拿它判会把真的那条也一起丢掉）。
+           ------------------------------------------------------------------ -->
+      <tr class="a-row order-summary-grid">
+        <td class="a-color-secondary a-size-small order-summary-line-term">Gift Card Amount:</td>
+        <td class="a-text-right order-summary-line-definition">
+          <input type="hidden" name="subtotalLineType" value="SPECIAL_PAYMENTS_GIFT_CARD_BALANCE">
+          <span class="aok-nowrap">-$500.00</span>
+        </td>
+      </tr>
       <tr>
         <td class="a-color-base a-size-base a-text-bold">Order total:</td>
         <td class="a-text-right grand-total-cell">$1,299.99</td>
@@ -550,17 +574,13 @@
 
 
   <!-- ==========================================================================
-       干扰项 F-2：客户端渲染用的**隐藏小结模板**，里面有一条礼品卡抵扣行
+       干扰项 H：客户端渲染用的**隐藏小结模板**（整块 display:none）
        --------------------------------------------------------------------------
-       这一单**没有**用礼品卡 —— 模板是页面自带的空壳，跟这单没关系。
-
-       写松了会怎样：礼品卡判据是隐藏表单标记
-       `input[name="subtotalLineType"][value="SPECIAL_PAYMENTS_GIFT_CARD_BALANCE"]`，
-       不判所在小结行的可见性就会在这张页面上判出「用了礼品卡」。
-       而「用了礼品卡但读不出金额」这一档服务端是**拒**的（货款基数算不出来），
-       于是每一张普通单都会被拦下，错误码还是 PLUGIN_INTERNAL —— 看起来像插件坏了。
-
-       可见性必须判在**行**上而不是 marker 上：marker 本身就是个隐藏表单字段。
+       里面同样有一条礼品卡抵扣行，金额是模板占位的 $0.00。
+       写松了会怎样：把它算进去，抵扣额变成 2241.86 + 0.00 还好；但如果实现
+       是「取第一个命中的抵扣行」而不是累加，读到的就是 **0.00** ——
+       于是 goods_total = 0.00 + 0.00 = 0.00，护栏比了个寂寞，
+       而事件流里那条「货款 $0.00」看起来只是这单没花钱。
        ========================================================================== -->
   <div id="subtotals-template" class="a-section" style="display:none">
     <table>
@@ -617,6 +637,17 @@
         <td class="a-color-base a-size-medium a-text-left a-text-bold">Order total:</td>
         <td class="a-color-price a-size-medium a-text-right a-text-bold">$2,241.86</td>
       </tr>
+      <tr class="a-row order-summary-grid">
+        <td class="a-color-secondary a-size-base a-text-left order-summary-line-term">Gift Card Amount:</td>
+        <td class="a-color-base a-size-base a-text-right order-summary-line-definition">
+          <input type="hidden" name="subtotalLineType" value="SPECIAL_PAYMENTS_GIFT_CARD_BALANCE">
+          <span class="aok-nowrap">-$2,241.86</span>
+        </td>
+      </tr>
+      <tr class="a-row">
+        <td class="a-color-base a-size-medium a-text-left a-text-bold order-summary-line-term">Grand Total:</td>
+        <td class="a-color-price a-size-medium a-text-right a-text-bold order-summary-line-definition">$0.00</td>
+      </tr>
     </table>
   </div>
 
@@ -633,7 +664,7 @@
     <div class="a-row a-spacing-mini">
       <span class="a-size-medium a-text-bold">Order total:</span>
       <!-- ✅ 报告记载：.grand-total-cell（正主，$2,241.86） -->
-      <span class="grand-total-cell a-color-price a-size-medium a-text-bold">$2,241.86</span>
+      <span class="grand-total-cell a-color-price a-size-medium a-text-bold">$0.00</span>
     </div>
 
     <!-- ✅ 报告记载：#submitOrderButtonId input -->
