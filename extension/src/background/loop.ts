@@ -1,7 +1,7 @@
 /** 认领循环。不碰任何 chrome API —— 这样它能在 Node 里被自检脚本直接驱动。 */
 
 import type { Client } from "../core/client.js";
-import type { Config } from "../core/config.js";
+import { DEFAULTS, type Config } from "../core/config.js";
 import type { Log } from "../core/log.js";
 import type { Phase } from "../core/status.js";
 import type { Task } from "../core/types.js";
@@ -259,10 +259,16 @@ export class Loop {
       // runTask 因为某个原因不返回,busy 闸永不复位,这个标签页从此安静地什么都不干,
       // 面板停在「执行中」,而服务端 15 分钟后把这条判成 CLAIM_TIMEOUT。
       // 厂商的 purchaseBatchInProgress 死法就是这个形状,只是我们的锁叫 busy。
-      const cap = hardCap(cfg.taskHardCapMs);
+      // 配置里没有(旧存档、自检脚本给的桩)或者被人填坏了,就用默认值。
+      // **绝不允许算出 0**:那样看门狗会在每一单刚开跑时就触发,
+      // 而它的表现是「这一单跑了超过 0 分钟」—— 一道兜底网变成了绞索。
+      const capMs = Number.isFinite(cfg.taskHardCapMs) && cfg.taskHardCapMs > 0
+        ? cfg.taskHardCapMs
+        : DEFAULTS.taskHardCapMs;
+      const cap = hardCap(capMs);
       const outcome = await Promise.race([running, cap.race]).finally(cap.cancel);
       if (outcome === HARD_CAP) {
-        return await this.giveUp(task, running, driver, cfg.taskHardCapMs);
+        return await this.giveUp(task, running, driver, capMs);
       }
 
       this.noteCart(outcome);

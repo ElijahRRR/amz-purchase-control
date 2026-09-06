@@ -44,8 +44,16 @@ python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
 真实 Amazon 页面拿不到，所以 DOM 解析对着 `test/fixtures/` 里按逆向报告造的页面跑：
 
 ```bash
-npm run test:dom     # 109 条断言
+npm run test:dom     # 109 条 DOM 断言,跑完顺带把 test:unit 那 30 条也跑了
+npm run test:unit    # 30 条纯 Node 断言:等待原语 / 单飞闸 / 执行租约的裁决规则
 ```
+
+`test:unit` 里那几条盯的是**没有 DOM 也照样会出事**的三件东西:
+`waitFor` 在探针每轮抛错时必须按时超时(厂商 2.4.1 在这一场景下永远不 settle)、
+`waitStable` 在探针抛错的那一轮必须把「连续 N 次」的计数**打断**
+(否则序列 A、A、<抛错>、A 会被当成「连续三次稳定」,把一段读不到的空档跨过去)、
+以及租约在「持有者过期了但正跑着单」时不许换手。
+它们跑的是 `build/` 里的**真实编译产物**,不是另抄一份逻辑。
 
 这一套里有一节不是纯解析:**执行中掉线那条兜底**。它用 route 拦截给 `/ap/signin`
 真发一顶 `X-Frame-Options: DENY` 的帽子,把 iframe 导过去,再让 `guardLogin` 去判 ——
@@ -78,6 +86,8 @@ node tools/smoke.mjs --scenario confirm_timeout # 点了下单但没见确认页
 node tools/smoke.mjs --scenario late_delivery   # 交期超限
 node tools/smoke.mjs --scenario cart_mismatch   # 购物车回读与本单不符
 node tools/smoke.mjs --scenario login_lost      # 跑到一半被登出:退回队列,不记异常
+node tools/smoke.mjs --scenario manual_verify   # 转到发卡行验证页,人做完了 → 照常回填
+node tools/smoke.mjs --scenario manual_verify_timeout   # 人没做完 → 支付验证超时,转待人工
 
 # 物流同步是独立一条流,加 --ship 顺带跑一轮
 node tools/smoke.mjs --scenario happy --ship in_transit
@@ -98,6 +108,8 @@ node tools/smoke.mjs --scenario happy --ship delivered
 | wrong_asin | `manual` | `ORDER_NO_AMBIGUOUS`（**单号未写入**） |
 | confirm_timeout | `manual` | `ORDER_CONFIRM_TIMEOUT` |
 | login_lost | `ready`(**退回队列**) | — （单子没毛病，是这台机器被登出了；事件流里有一条「登录态失效，退回队列」） |
+| manual_verify | `purchased` | — （事件流里有「等待人工完成支付验证」「人工支付验证已完成」两条） |
+| manual_verify_timeout | `manual` | `PAYMENT_VERIFICATION_TIMEOUT`（**可能已下单**，重置前要有人去买家号里看一眼） |
 
 ## 写在代码里的几条规矩
 
@@ -151,15 +163,96 @@ node tools/smoke.mjs --scenario happy --ship delivered
 「登录态失效，退回队列」→ 清车 → `/release`，并把登录态标成 `signed_out` 上报。
 **已经越过下单点的除外**：那时"可能已经花了钱"比"被登出了"更要紧，仍走转人工那条路。
 
+**点了下单之后的等待:有界、分段、可见、上报,四件缺一不可。**
+美国站的真单会遇到发卡行验证(3DS):Amazon 把结算 iframe 导到一个**跨域**页面,
+要操作员去手机上收短信再回来输验证码。原先这里只有一个 60 秒的 `waitFor`,
+到点 `dispose()` 把 iframe 删掉 —— 凡是触发验证的订单 100% 失败,
+而且没有一条日志说过「有个验证页在等你」。把 60 秒改成 60 分钟不解决问题:
+那个 iframe 在 `left:-10000px; pointer-events:none` 的宿主里,他看不见也点不到。
+现在 `placeOrder` 是三段有界循环(`normal` / `manual_verify` / `post_verify`,
+预算全在 `core/config.ts` 的 `timeouts` 里),进入 `manual_verify` 就
+`frame.reveal()` 把窗口推到屏幕中间并上报一条 step;`manual_verify` 段到期抛
+`PAYMENT_VERIFICATION_TIMEOUT`,其余段抛 `ORDER_CONFIRM_TIMEOUT`。
+**仍然不给关闭按钮** —— 放弃的方式是让上界到期,不是给一个能让 Promise 永挂的 ×。
+
+**等待的上界由服务端反推,不由插件自己拍。** 认领响应带 `claim_timeout_min`,
+硬顶 = `min(timeouts.orderHardCap, claim_timeout_min×60s − orderServerMargin)`。
+因为 `task_sweep` 只看 `claimed_at`:等过了头,任务先被判成 `CLAIM_TIMEOUT`,
+之后操作员做完验证、订单真下成了、单号也读到了,`complete` 却拿回 409 ——
+**钱花了、货发了,系统里是一条没有单号的待人工**。
+
+**读不到 URL 要说清是哪一种读不到。** `frame.urlState()` 分四态:
+`ok` / `cross_origin`(人正在验证页上)/ `detached`(iframe 没了)/ `unreadable`。
+原先 `url()` 把后三种渲染成同一个空字符串,运营台上三种完全不同的现场
+长成同一句「当前 URL:」。`url()` 语义不变,要区分的地方改用 `urlState()`。
+
+**单飞闸挂在 Runner 上,不挂在 Loop 上。** 配置里的服务端地址一变,
+`setConfig` 会重建 Loop —— 闸跟着归零,正在跑的那一单还没结束就又领一单进来,
+两条 `runTask` 动同一个购物车(第二单的 `clearCart` 会把第一单加好的东西删光)。
+现在配置替换要**等在跑的那一单结束**才生效,`core/singleflight.ts` 里那道闸的
+检查与置位之间一个 `await` 都没有。
+
+**跨标签页的执行租约存在 `chrome.storage.session` 里,TTL 5 分钟,持有者忙不让位。**
+MV3 的 service worker 空闲约 30 秒被回收,模块级变量随之归零 ——
+原先那句 `leaseTabId === null` 在 SW 每次重启后对任何标签页都成立;而 45 秒的 TTL
+短于后台标签页的定时器节流周期(约 60 秒),正跑着单的标签页只要被切到后台
+就会把租约丢掉。裁决规则在 `core/lease.ts`(纯函数,Node 里验得了),
+「持有者的标签页还在不在」由 SW 问 `chrome.tabs`。
+持有者一直不来续租也有界:宽限期过完照样换手 —— 不然一个死掉的内容脚本
+能让这个买家号永远拍不了单。
+
+**清车连着失败要熔断。** `clearCart` 是每一单的第一步,它失败通常意味着
+Amazon 改了购物车页的结构 —— 而 `tickOnce` 每 10 秒来一次,一个夜里能把队列里
+几百单一单一单全打进「拍单异常」桶。连续 3 单清不动就暂停认领 10 分钟,
+并且这件事在运营台的买家号那一页上有一格(那一位以前是只写不读的)。
+
 **地址填完要验它真生效了。** 检查收货地址栏里确实含本单的邮编与城市，不符就报
 `ADDRESS_NOT_APPLIED`。厂商只做了"地址文本含邮编"这一条子串判断，姓名/街道/城市/州
 一概不校验。
 
+## 可调参数(插件这一侧)
+
+**服务端的配置表在仓库根 README 里,插件的在这里** —— 两处不是一回事:
+那边是环境变量,这边存在浏览器的 `chrome.storage` 里,由 `core/config.ts` 统一读。
+任何地方出现硬编码的地址或超时数字都是违规(与主项目 `registry/settings.py` 同一条规矩)。
+
+| 键 | 默认 | 说明 |
+|---|---|---|
+| `baseUrl` | `http://127.0.0.1:8781` | 服务端地址 |
+| `envCode` | 空 | 买家号。没配就不注册 —— 猜一个会把单派错账号 |
+| `mode` | `off` | 三档运行模式,见上 |
+| `heartbeatMs` | `20000` | 心跳间隔 |
+| `claimPollMs` | `10000` | 认领轮询间隔,也是执行租约的续租节奏 |
+| `shipmentPollMs` | `900000` | 物流同步轮询 |
+| `requestTimeoutMs` | `15000` | 单个 HTTP 请求的超时 |
+| `taskHardCapMs` | `1200000` | 一单最多跑多久。看门狗用的**最后一道网**,正常永远不该触发 |
+| `timeouts.frameLoad` | `30000` | iframe 加载 |
+| `timeouts.loginProbe` | `20000` | 判登录态时等导航栏渲染 |
+| `timeouts.addToCart` | `30000` | 加购后等跳转到购物车 |
+| `timeouts.checkoutNav` | `45000` | 等结算页(含中间页) |
+| `timeouts.addressForm` / `addressSave` | `30000` | 地址表单 / 保存后等地址栏 |
+| `timeouts.orderConfirm` | `60000` | 点了下单之后等确认页(页面还读得到的那一段) |
+| `timeouts.manualVerify` | `360000` | **留给操作员完成发卡行验证的时间**。按买家号/发卡行现场调:短信到达速度差异很大 |
+| `timeouts.postVerify` | `60000` | 验证结束之后等确认页。独立且短 |
+| `timeouts.orderHardCap` | `600000` | 整个 placeOrder 的硬顶 |
+| `timeouts.orderServerMargin` | `180000` | 硬顶要给服务端认领超时留的余量。**别调小** —— 它拦的是「订单下成了却报不上去」 |
+| `timeouts.orderCards` | `20000` | 订单历史页等卡片 |
+| `timeouts.orderPoll` | `500` | 下单之后那一段的轮询间隔 |
+
+超时值只接受**有限的正数**,填坏了(0、负数、字符串)一律退回默认值:
+一个存成 0 的 `manualVerify` 会让「等操作员完成验证」变成不等,
+而它长得跟配好了一模一样。
+
+`manualVerify` 与 `orderHardCap` 调大之前先看服务端的 `AMZ_CLAIM_TIMEOUT_MIN`:
+真正的钳制来自认领响应里的 `claim_timeout_min`,插件只会取两者更紧的那个。
+把插件这边调到 20 分钟而服务端还是 15 分钟的话,实际生效的仍是 12 分钟。
+
 ## 目录
 
 ```
-src/core/      types(契约) codes(19 个错误码) status(界面标签)
-               api(HTTP 出口) client(端点) config store log
+src/core/      types(契约) codes(错误码封闭集) status(界面标签)
+               api(HTTP 出口) client(端点) config(可调参数唯一来源,含超时表) store log
+               singleflight(单飞闸) lease(执行租约的裁决规则,纯函数)
 src/flow/      driver(页面动作接口) simulated(自检用) amazon(真实驱动) run(执行时序)
                shipment(物流同步,独立一条流)
 src/flow/dom/  wait(等待原语) frame(同源 iframe) selectors(选择器,标出处) parse(纯解析,含登录态判定)
@@ -167,6 +260,7 @@ src/flow/dom/  wait(等待原语) frame(同源 iframe) selectors(选择器,标�
 src/background/ loop(认领循环,不碰 chrome API) service-worker(配置/注册/心跳/租约)
 src/content/   runner(执行器,真正跑单的地方) panel(注入面板) styles copy(点击复制)
 tools/         smoke.mjs(自检) copy-static.mjs
+test/          dom.test.mjs(对着夹具跑解析层) unit.test.mjs(等待原语/单飞闸/租约,纯 Node)
 ```
 
 `loop.ts` 与 `run.ts` 刻意不碰任何 chrome API —— 否则这套逻辑就只能靠手点扩展来验证。
