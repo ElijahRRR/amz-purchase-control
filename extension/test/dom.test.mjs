@@ -194,6 +194,78 @@ await withFixture("cart-empty.html", async (run) => {
   eq("isSignInUrl null 不算命中", await run("amzdom.isSignInUrl(null)"), false);
 });
 
+// ── 执行中掉线:结算 iframe 被 302 到 /ap/signin ────────────────────────
+//
+// 这是「执行中掉线」的头号场景,也是整件事的起点。要命的地方在于:Amazon 登录页
+// 普遍带 X-Frame-Options: DENY,浏览器**拒绝在 iframe 里渲染它** —— 于是
+// guardLogin 的两条判据(URL 落在 /ap/signin、DOM 说已登出)一条都读不到,
+// 照旧报 CHECKOUT_TIMEOUT,「被登出」和「页面慢」又长成同一个样子。
+//
+// 下面这一节先把这个前提本身验一遍(Chromium 到底怎么表现),再验兜底那条路:
+// 两条判据都读不到时换一张购物车页(不会被 XFO 挡)再问一次。
+async function withCheckoutFrame(cartFixture, fn) {
+  const cart = readFileSync(join(here, "fixtures", cartFixture), "utf8");
+  const page = await browser.newPage();
+  await page.route("**/*", (route) => {
+    const url = route.request().url();
+    if (url.includes("/ap/signin")) {
+      // Amazon 登录页的那顶帽子。这一行就是整段的前提。
+      return route.fulfill({ status: 200, contentType: "text/html",
+                             headers: { "X-Frame-Options": "DENY" },
+                             body: "<h1>Sign in</h1>" });
+    }
+    if (url.includes("/gp/cart/view.html")) {
+      return route.fulfill({ contentType: "text/html; charset=utf-8", body: cart });
+    }
+    return route.fulfill({ contentType: "text/html; charset=utf-8",
+                           body: "<h1>checkout</h1>" });
+  });
+  await page.goto("https://www.amazon.com/checkout/p/p-1");
+  await page.addScriptTag({ path: KIT });
+  try {
+    await fn((expr) => page.evaluate(expr));
+  } finally {
+    await page.close();
+  }
+}
+
+/** 在页面里造出「结算 iframe 被 302 到登录页」这个局面,再让 guardLogin 去判。
+ *  返回 [两条判据还读不读得到, guardLogin 抛出来的东西]。 */
+const SIGNED_OUT_DRILL = `(async () => {
+  const f = await amzdom.openFrame("https://www.amazon.com/checkout/p/p-1", 8000);
+  f.el.src = "https://www.amazon.com/ap/signin?openid.pape=1";
+  await new Promise((r) => setTimeout(r, 800));
+  const readable = {
+    url: f.url(),
+    doc: (() => { try { f.doc(); return true; } catch { return false; } })(),
+  };
+  const driver = new amzdom.AmazonDriver("https://www.amazon.com");
+  let threw = "没抛";
+  // guardLogin 在 TS 里是私有的,这里是**故意**从外面戳它:它是这条兜底的全部内容,
+  // 而走公开方法(proceedToCheckout)要先把私有的 checkout frame 摆好,更绕。
+  // 真被改名了这一句会当场 TypeError —— 那也是一次响亮的失败,不是静默通过。
+  try { await driver.guardLogin(f, "跳转结算页"); }
+  catch (e) { threw = e.constructor.name; }
+  f.close();
+  return [readable, threw];
+})()`;
+
+await withCheckoutFrame("nav-signed-out.html", async (run) => {
+  const [readable, threw] = await run(SIGNED_OUT_DRILL);
+  // 前提:XFO 之后这一帧整个读不到 —— url 空串、doc 抛错。
+  // 这两条要是不成立,下面那条断言就证明不了任何事(它可能是走老判据过的)。
+  eq("XFO 之后 iframe 的 URL 读不到(前提)", readable.url, "");
+  eq("XFO 之后 iframe 的 document 读不到(前提)", readable.doc, false);
+  eq("两条判据都读不到 → 换购物车页再问 → 判为已登出", threw, "LoginLostError");
+});
+
+// 反过来:换的那张页面说"还登着",就**不下结论** —— 由调用方原本的错误码去说。
+// 少了这一条,上面那条断言就可能只是"读不到就说被登出了",那是另一种缺陷。
+await withCheckoutFrame("nav-signed-in.html", async (run) => {
+  const [, threw] = await run(SIGNED_OUT_DRILL);
+  eq("同样读不到,但购物车页说还登着 → 不下结论", threw, "没抛");
+});
+
 // ── 商品页 ──────────────────────────────────────────────────────────
 await withFixture("product.html", async (run) => {
   eq("product 有货", await run("amzdom.readInStock(document)"), true);
