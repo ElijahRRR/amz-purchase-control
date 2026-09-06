@@ -1,7 +1,7 @@
 /** 认领循环。不碰任何 chrome API —— 这样它能在 Node 里被自检脚本直接驱动。 */
 
 import type { Client } from "../core/client.js";
-import { DEFAULTS, type Config } from "../core/config.js";
+import { DEFAULTS, posOr, type Config } from "../core/config.js";
 import type { Log } from "../core/log.js";
 import type { Phase } from "../core/status.js";
 import type { Task } from "../core/types.js";
@@ -35,16 +35,18 @@ export type TickResult =
  *  (比如上报的那条心跳还没来得及发出去)时,别每 10 秒就开一张页面。 */
 const LOGIN_CACHE_MS = 10 * 60_000;
 
-/** 连着几单清不动购物车就停下来。
+/** 清车熔断的两个数从**配置**来(core/config.cartFailStreakMax / cartBlockMs)。
  *
  *  为什么要有这道熔断:clearCart 是每一单的第一步,它失败的原因通常是
  *  **Amazon 改了购物车页的结构**(删除控件的类名变了)。那种失败对每一单都成立,
  *  而 tickOnce 每 10 秒来一次 —— 一个夜里能把队列里几百单一单一单全部打进
  *  「拍单异常」桶,每一条的错误码还都是 PLUGIN_INTERNAL。
- *  停 10 分钟不解决问题,但它把「一次坏一整队」变成「一次坏三单」,
- *  剩下的留在队列里等人来看。 */
-const CART_FAIL_STREAK_MAX = 3;
-const CART_BLOCK_MS = 10 * 60_000;
+ *  停一会儿不解决问题,但它把「一次坏一整队」变成「一次坏几单」,
+ *  剩下的留在队列里等人来看。
+ *
+ *  这两个数原先是这里的模块级常量。运营台上那一格(cart_fail_24h)让人看得见
+ *  该不该调它们,而调不了 —— 要调就得重新打包、全员升级插件,
+ *  正是 README 批评厂商的那个毛病。 */
 
 export interface LoopDeps {
   client: Client;
@@ -323,13 +325,16 @@ export class Loop {
       this.cartFailStreak = 0;
       return;
     }
+    const cfg = this.deps.config();
+    const max = Math.floor(posOr(cfg.cartFailStreakMax, DEFAULTS.cartFailStreakMax));
+    const blockMs = posOr(cfg.cartBlockMs, DEFAULTS.cartBlockMs);
     this.cartFailStreak += 1;
-    if (this.cartFailStreak >= CART_FAIL_STREAK_MAX) {
-      this.cartBlockedUntil = Date.now() + CART_BLOCK_MS;
+    if (this.cartFailStreak >= max) {
+      this.cartBlockedUntil = Date.now() + blockMs;
       this.cartFailStreak = 0;
       this.deps.log.err(
-        `连续 ${CART_FAIL_STREAK_MAX} 单清不动购物车 —— 暂停认领 ` +
-        `${Math.round(CART_BLOCK_MS / 60_000)} 分钟。多半是 Amazon 改了购物车页的结构,` +
+        `连续 ${max} 单清不动购物车 —— 暂停认领 ` +
+        `${Math.round(blockMs / 60_000)} 分钟。多半是 Amazon 改了购物车页的结构,` +
         `请人工去这个买家号的购物车看一眼`);
     }
   }

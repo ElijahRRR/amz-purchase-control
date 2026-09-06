@@ -58,6 +58,20 @@ export interface Config {
    *  「runTask 因为某个想不到的原因不返回,busy 闸永不复位,这个标签页从此
    *  安静地什么都不干」。厂商的 purchaseBatchInProgress 就是这么死的。 */
   taskHardCapMs: number;
+  /** 连着几单清不动购物车就暂停认领(background/loop 的熔断)。
+   *  clearCart 是每一单的第一步,它失败通常意味着 Amazon 改了购物车页的结构 ——
+   *  那种失败对每一单都成立,而认领每 10 秒来一次。 */
+  cartFailStreakMax: number;
+  /** 熔断之后暂停认领多久。停这一会儿不解决问题,它把「一次坏一整队」
+   *  变成「一次坏几单」,剩下的留在队列里等人来看。 */
+  cartBlockMs: number;
+  /** 跨标签页执行租约的有效期。要比后台标签页的定时器节流周期(约 60 秒)
+   *  宽一个量级 —— 短于它的话,一个被切到后台的标签页会在自己正跑着单的时候
+   *  把租约丢掉,另一个标签页接管后两条 runTask 动同一个购物车。 */
+  leaseTtlMs: number;
+  /** 持有者说自己在跑单、却再也没来续租时,还给它多少宽限。
+   *  必须有界:标签页没关但内容脚本死了的话,租约会永远停在 busy 上。 */
+  leaseBusyGraceMs: number;
   timeouts: Timeouts;
 }
 
@@ -71,6 +85,13 @@ export const DEFAULTS = {
   // 比「所有步骤的上界加起来」再宽一点:兜底网不该在正常链路上被触发,
   // 那样它会把一单本来能成的单打断。
   taskHardCapMs: 20 * 60_000,
+  cartFailStreakMax: 3,
+  cartBlockMs: 10 * 60_000,
+  // 5 分钟。放大它不会造成「持有者已死却占着」:标签页被关掉时 onRemoved 立刻释放。
+  leaseTtlMs: 5 * 60_000,
+  // 比一单的硬顶短是故意的:真跑着单的标签页每一轮认领都续一次,
+  // 连着 10 分钟一次都没续上,它已经不在跑了。
+  leaseBusyGraceMs: 10 * 60_000,
   timeouts: {
     frameLoad: 30_000,
     loginProbe: 20_000,
@@ -113,6 +134,15 @@ function mergeTimeouts(saved: Partial<Timeouts> | undefined): Timeouts {
   return out;
 }
 
+/** 输入:存下来的一个数 + 默认值 → 输出:能用的那个。
+ *
+ *  与 mergeTimeouts 同一条规矩,只是给单个标量用:只收**有限的正数**,
+ *  其余(0、负数、字符串、undefined)一律退回默认值。一个存成 0 的
+ *  `cartFailStreakMax` 会让熔断在第一单就触发,而它长得跟配好了一模一样。 */
+export function posOr(v: unknown, fallback: number): number {
+  return typeof v === "number" && Number.isFinite(v) && v > 0 ? v : fallback;
+}
+
 /** 输入:一个 Store → 输出:补全默认值后的配置。instance_uid 生成一次就固定下来。 */
 export async function loadConfig(store: Store = memoryStore()): Promise<Config> {
   const saved = (await store.get<Partial<Config>>(KEY)) ?? {};
@@ -125,7 +155,11 @@ export async function loadConfig(store: Store = memoryStore()): Promise<Config> 
     claimPollMs: saved.claimPollMs ?? DEFAULTS.claimPollMs,
     shipmentPollMs: saved.shipmentPollMs ?? DEFAULTS.shipmentPollMs,
     requestTimeoutMs: saved.requestTimeoutMs ?? DEFAULTS.requestTimeoutMs,
-    taskHardCapMs: saved.taskHardCapMs ?? DEFAULTS.taskHardCapMs,
+    taskHardCapMs: posOr(saved.taskHardCapMs, DEFAULTS.taskHardCapMs),
+    cartFailStreakMax: Math.floor(posOr(saved.cartFailStreakMax, DEFAULTS.cartFailStreakMax)),
+    cartBlockMs: posOr(saved.cartBlockMs, DEFAULTS.cartBlockMs),
+    leaseTtlMs: posOr(saved.leaseTtlMs, DEFAULTS.leaseTtlMs),
+    leaseBusyGraceMs: posOr(saved.leaseBusyGraceMs, DEFAULTS.leaseBusyGraceMs),
     timeouts: mergeTimeouts(saved.timeouts),
   };
   if (saved.instanceUid !== cfg.instanceUid) await store.set(KEY, cfg);

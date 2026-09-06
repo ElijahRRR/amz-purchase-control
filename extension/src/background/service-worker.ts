@@ -9,9 +9,9 @@
  */
 
 import { Client } from "../core/client.js";
-import { loadConfig, saveConfig, type Config } from "../core/config.js";
+import { DEFAULTS, loadConfig, posOr, saveConfig, type Config } from "../core/config.js";
 import { Log } from "../core/log.js";
-import { decideLease, type Lease } from "../core/lease.js";
+import { decideLease, type Lease, type LeaseRules } from "../core/lease.js";
 import { chromeStore } from "../core/store.chrome.js";
 import type { LoginState } from "../core/types.js";
 
@@ -56,6 +56,15 @@ async function writeLease(l: Lease | null): Promise<void> {
   } catch {
     // 写不进去:这一轮的租约只在内存里有效,下一轮重新裁决。不阻断认领。
   }
+}
+
+/** 租约的两个时间预算。**从配置来**,不在这里也不在 lease.ts 里写死:
+ *  真机上一旦发现后台节流比预期更狠(或更松),写死就意味着重新打包、全员升级。 */
+function leaseRules(): LeaseRules {
+  return {
+    ttlMs: posOr(cfg?.leaseTtlMs, DEFAULTS.leaseTtlMs),
+    busyGraceMs: posOr(cfg?.leaseBusyGraceMs, DEFAULTS.leaseBusyGraceMs),
+  };
 }
 
 /** 持有者那个标签页还在不在。查不了就当它还在 ——
@@ -201,7 +210,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         holderAlive: cur && cur.tabId !== tabId && cur.busy
           ? await holderAlive(cur.tabId)
           : true,
-      });
+      }, leaseRules());
       if (v.granted && v.next) {
         await writeLease(v.next);
         if (v.reason === "taken-over" || v.reason === "holder-gone") {

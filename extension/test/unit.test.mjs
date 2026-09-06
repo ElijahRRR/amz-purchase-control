@@ -16,7 +16,7 @@ import { dirname, join } from "node:path";
 
 import { waitFor, waitStable, WaitTimeout } from "../build/flow/dom/wait.js";
 import { SingleFlight } from "../build/core/singleflight.js";
-import { decideLease, LEASE_TTL_MS, LEASE_BUSY_GRACE_MS } from "../build/core/lease.js";
+import { decideLease, LEASE_DEFAULTS } from "../build/core/lease.js";
 import { Loop } from "../build/background/loop.js";
 import { DriverError } from "../build/flow/driver.js";
 
@@ -156,13 +156,13 @@ const ask = (o) => ({ tabId: 1, busy: false, now: NOW, holderAlive: true, ...o }
 {
   const v = decideLease(null, ask({}));
   check("没有租约时谁问谁拿到", v.granted && v.reason === "fresh");
-  eq("新租约的到期时刻", v.next.until, NOW + LEASE_TTL_MS);
+  eq("新租约的到期时刻", v.next.until, NOW + LEASE_DEFAULTS.ttlMs);
 }
 {
   const cur = { tabId: 1, until: NOW + 1000, busy: true };
   const v = decideLease(cur, ask({ tabId: 1, busy: true }));
   check("持有者续租", v.granted && v.reason === "renew");
-  eq("续租把到期时刻往后推", v.next.until, NOW + LEASE_TTL_MS);
+  eq("续租把到期时刻往后推", v.next.until, NOW + LEASE_DEFAULTS.ttlMs);
 }
 {
   const cur = { tabId: 2, until: NOW + 1000, busy: false };
@@ -186,7 +186,7 @@ const ask = (o) => ({ tabId: 1, busy: false, now: NOW, holderAlive: true, ...o }
 {
   // 标签页还在、却再也没来续租(内容脚本死了)。宽限期一过就换手 ——
   // 任何等待都必须有界,这一条也不例外。
-  const cur = { tabId: 2, until: NOW - LEASE_BUSY_GRACE_MS - 1, busy: true };
+  const cur = { tabId: 2, until: NOW - LEASE_DEFAULTS.busyGraceMs - 1, busy: true };
   const v = decideLease(cur, ask({ tabId: 1, holderAlive: true }));
   check("busy 宽限期过完之后还是要换手", v.granted && v.reason === "taken-over");
 }
@@ -199,6 +199,18 @@ const ask = (o) => ({ tabId: 1, busy: false, now: NOW, holderAlive: true, ...o }
 {
   const v = decideLease(null, ask({ busy: true }));
   eq("要租约时报的 busy 会被记进租约", v.next.busy, true);
+}
+{
+  // 两个预算是**入参**,不是写死在 lease.ts 里的常量 —— 传什么就按什么算。
+  // 写死的话,真机上发现后台节流比预期更狠时要重新打包、全员升级插件。
+  const rules = { ttlMs: 1000, busyGraceMs: 2000 };
+  eq("TTL 由入参说了算", decideLease(null, ask({}), rules).next.until, NOW + 1000);
+  const cur = { tabId: 2, until: NOW - 1, busy: true };
+  check("宽限期之内不换手(按入参的宽限)",
+        !decideLease(cur, ask({ tabId: 1 }), rules).granted);
+  const old = { tabId: 2, until: NOW - 2001, busy: true };
+  check("过了入参给的宽限期就换手",
+        decideLease(old, ask({ tabId: 1 }), rules).granted);
 }
 
 // ── 清车熔断与看门狗(OG-02 / G8) ──────────────────────────────────────

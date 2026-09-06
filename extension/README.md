@@ -225,7 +225,11 @@ Amazon 改了购物车页的结构 —— 而 `tickOnce` 每 10 秒来一次,一
 | `claimPollMs` | `10000` | 认领轮询间隔,也是执行租约的续租节奏 |
 | `shipmentPollMs` | `900000` | 物流同步轮询 |
 | `requestTimeoutMs` | `15000` | 单个 HTTP 请求的超时 |
-| `taskHardCapMs` | `1200000` | 一单最多跑多久。看门狗用的**最后一道网**,正常永远不该触发 |
+| `taskHardCapMs` | `1200000` | 一单最多跑多久。看门狗用的**最后一道网**,正常永远不该触发。实际生效的还要与服务端 `claim_timeout_min` 取更紧的那个 |
+| `cartFailStreakMax` | `3` | 连着几单清不动购物车就暂停认领 |
+| `cartBlockMs` | `600000` | 熔断之后暂停认领多久 |
+| `leaseTtlMs` | `300000` | 跨标签页执行租约的有效期。**别调到 60 秒以下** —— 后台标签页的定时器节流周期就是那个量级,短了会把租约从一个正跑着单的标签页手里丢掉 |
+| `leaseBusyGraceMs` | `600000` | 持有者报着「我在跑单」却不再续租时的宽限。到点照样换手 —— 死掉的内容脚本不该让这个买家号永远拍不了单 |
 | `timeouts.frameLoad` | `30000` | iframe 加载 |
 | `timeouts.loginProbe` | `20000` | 判登录态时等导航栏渲染 |
 | `timeouts.addToCart` | `30000` | 加购后等跳转到购物车 |
