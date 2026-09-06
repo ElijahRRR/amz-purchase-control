@@ -80,10 +80,21 @@ export class Loop {
     try {
       state = await driver.readLoginState();
     } catch (e) {
-      // 读不出来就是 unknown。**不许兜底成 ok** —— 判不出来时放行,
-      // 这道闸就等于不存在,而界面上还写着"已登录"。
-      this.deps.log.warn("读登录态失败:" + (e instanceof Error ? e.message : String(e)));
-      state = "unknown";
+      // 读失败**什么都不报**,本地这一位也不动。
+      //
+      // 「不传 = 这一轮没有新消息」这条通道本来就有(client.heartbeat 的注释)。
+      // 报一个 unknown 上去会把服务端库里确凿的 signed_out 洗成"存疑",
+      // 认领闸当场重新打开 —— 而读失败恰恰是被登出时的常见现象
+      // (Amazon 弹验证码、探测页没加载出来)。服务端那边也拦着同一件事
+      // (services/instance._KEEPS_OLD_LOGIN_STATE),两头都不许它发生。
+      //
+      // 只把"刚试过"记下来:不记的话,服务端会一直说 login_check_due,
+      // 这里每一轮都去开一张页面。**不许兜底成 ok** 也仍然成立 ——
+      // 读不出来时放行,这道闸就等于不存在。
+      this.deps.log.warn("读登录态失败(这一轮不上报,保留上一次的结论):" +
+                         (e instanceof Error ? e.message : String(e)));
+      this.loginCheckedAt = Date.now();
+      return this.loginState;
     }
     const was = this.loginState;
     this.loginState = state;

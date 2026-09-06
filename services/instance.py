@@ -23,12 +23,43 @@ LOGIN_STATES = frozenset({"ok", "signed_out", "unknown"})
 
 
 def validate_login_state(state: str) -> str:
-    """输入:登录态 → 输出:原样返回;不在封闭集内抛 ValueError。"""
+    """输入:登录态 → 输出:原样返回;不在封闭集内抛 ValueError。
+
+    **HTTP 那条路上走不到这里** —— `server/schemas.HeartbeatReq.login_state` 是个
+    `Literal`,Pydantic 先回 422。这个函数是给直接调 service 的人(workflow、
+    cli、将来的别的入口)兜底的,两处一起构成封闭集的两道闸。
+    """
     if state not in LOGIN_STATES:
         raise ValueError(
             f"未知登录态 {state!r},封闭集:{', '.join(sorted(LOGIN_STATES))}"
         )
     return state
+
+
+#: 「这一次上报要不要留住库里的旧值」——**这条规则的唯一定义处**,
+#: 下面 heartbeat 的两个 CASE 用的是同一个片段(值和它的时刻永远一起动)。
+#:
+#: 两种情况留旧值:
+#:   · 没传          —— 「这一轮没有新消息」,不是「不知道」
+#:   · 传 unknown 而库里是 signed_out —— **unknown 不许解封 signed_out**。
+#:
+#: 第二条是这道闸的关键。插件读页面读不出来的情形是常态(Amazon 弹验证码、
+#: 探测 iframe 没加载出来、导航栏没渲染完),一次这样的上报要是能把库里确凿的
+#: signed_out 抹成 unknown,认领闸当场重新打开:单子被派给一台仍然登不上的机器,
+#: 领走 → 跑到 /ap/signin → 退回队列,每个复检周期循环一次;而运营台那一行
+#: 从红色「已登出 · 不可派」变回灰色「登录态存疑 · 可派」——
+#: **唯一能让人去重新登录的信号就此消失**。
+#:
+#: 只有 `ok` 能解封:那是「真读到了导航栏,而且登着」,是一个确凿的好消息。
+#: 插件侧还有一层(loop.ensureLoginChecked 读失败时**什么都不报**),
+#: 但那一层是可以被旧版插件、别的调用方绕开的,所以库这一侧必须自己站得住。
+#:
+#: `::text` 不是装饰:占位符落在 CASE 的条件里,PostgreSQL 没有上下文能推出
+#: 它的类型,不写就直接回 AmbiguousParameter。
+_KEEPS_OLD_LOGIN_STATE = (
+    "%(login_state)s::text IS NULL"
+    " OR (%(login_state)s::text = 'unknown' AND login_state = 'signed_out')"
+)
 
 
 def register(conn, *, env_code: str, instance_uid: str, plugin_version: str | None) -> dict[str, Any]:
@@ -73,6 +104,8 @@ def heartbeat(
     `login_state` 为 None 表示**这一轮没有新消息**,不是「不知道」——
     原样保留库里那一位。覆盖成 unknown 的话,一个已知被登出的买家号会在下一次
     心跳(20 秒后)自己变回"存疑"然后重新被派单,这道闸就等于不存在。
+    传上来的 `unknown` 同样不许把库里的 `signed_out` 洗掉,规则见
+    `_KEEPS_OLD_LOGIN_STATE`:**只有 `ok` 能解封**。
 
     `login_check_due` 是给插件的回话:**该去读一次页面了吗**。它=「这个买家号
     确实有单在等着派」且「上一次读页面已经超过 recheck_minutes」。
@@ -84,12 +117,16 @@ def heartbeat(
     if login_state is not None:
         validate_login_state(login_state)
     row = conn.execute(
-        """
+        f"""
         UPDATE procure.plugin_instances
            SET last_seen_at = now(),
-               -- COALESCE:没报就不动。见上面 docstring 里那段。
-               login_state = COALESCE(%(login_state)s, login_state),
-               login_checked_at = CASE WHEN %(login_state)s IS NULL
+               -- 留旧值还是覆盖,规则只有一处定义(_KEEPS_OLD_LOGIN_STATE)。
+               -- **这一位和它的时刻永远一起动**:留住旧值就连 login_checked_at
+               -- 一起留住,否则界面上会出现「已登出 · 刚刚检查过」——
+               -- 而"刚刚"那一次读到的其实是"读不出来",时刻描述的不是它旁边那个值。
+               login_state = CASE WHEN {_KEEPS_OLD_LOGIN_STATE}
+                                  THEN login_state ELSE %(login_state)s::text END,
+               login_checked_at = CASE WHEN {_KEEPS_OLD_LOGIN_STATE}
                                        THEN login_checked_at ELSE now() END
          WHERE instance_uid = %(uid)s
         RETURNING id, buyer_env_id, login_state, login_checked_at

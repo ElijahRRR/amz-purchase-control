@@ -25,6 +25,10 @@ export class Client {
    *  后者是一个结论 —— 把沉默当成 unknown 会让一个已知被登出的买家号
    *  在 20 秒后自己"洗白"成存疑,然后重新被派单。
    *
+   *  **unknown 也解不开 signed_out**:服务端只认 ok 这一个解封信号
+   *  (services/instance._KEEPS_OLD_LOGIN_STATE)。所以读页面读失败时
+   *  这里干脆不传 —— 见 background/loop.ensureLoginChecked 的 catch。
+   *
    *  登录态从哪来:插件开一张 Amazon 页面读导航栏(flow/dom/parse.readLoginState)。
    *  **不读 Cookie** —— 插件没申请 cookies 权限,这是架构选择,不是暂缓。 */
   heartbeat(loginState?: LoginState): Promise<ApiResult<HeartbeatOut>> {

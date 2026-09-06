@@ -53,6 +53,58 @@ def test_heartbeat_without_login_state_keeps_the_last_one(client, conn, seed):
     assert now["login_checked_at"] == was
 
 
+def test_unknown_does_not_wipe_a_known_signed_out(client, conn, seed):
+    """报 unknown **不许**把库里确凿的 signed_out 洗掉。只有 ok 能解封。
+
+    「不传」那一半上面那条测试已经盯着了,这条盯的是另一半 —— 而另一半才是
+    真会发生的那个:插件被服务端叫去复检,这一次读不出来(Amazon 弹了验证码、
+    探测页没加载出来)。unknown 是个非空值,原先那句 COALESCE 拦不住它,
+    于是闸门当场重新打开:单子被派给一台仍然登不上的机器,领走、跑到
+    /ap/signin、再退回队列,每个复检周期循环一次;更要紧的是运营台那一行
+    从红色「已登出 · 不可派」变回灰色「登录态存疑 · 可派」,
+    唯一能让人去重新登录的信号就此消失。
+    """
+    client.post("/v1/instances/heartbeat",
+                json={"instance_uid": "inst-A", "login_state": "signed_out"})
+    was = _login_state(conn)["login_checked_at"]
+
+    r = client.post("/v1/instances/heartbeat",
+                    json={"instance_uid": "inst-A", "login_state": "unknown"})
+    assert r.status_code == 200
+    assert r.json()["data"]["login_state"] == "signed_out"
+
+    now = _login_state(conn)
+    assert now["login_state"] == "signed_out"
+    # 值留住了,它的时刻也得留住:否则界面上是「已登出 · 刚刚检查过」,
+    # 而"刚刚"那一次读到的其实是"读不出来"。
+    assert now["login_checked_at"] == was
+
+    # 闸门还得关着 —— 这才是这条规则要保住的东西
+    assert client.post("/v1/tasks/claim", json={"instance_uid": "inst-A"}).status_code == 409
+    row = client.get("/v1/admin/instances").json()["data"]["items"][0]
+    assert row["login_state"] == "signed_out" and row["dispatchable"] is False
+
+    # 只有 ok 能解封
+    client.post("/v1/instances/heartbeat",
+                json={"instance_uid": "inst-A", "login_state": "ok"})
+    assert client.post("/v1/tasks/claim", json={"instance_uid": "inst-A"}).status_code == 200
+
+
+def test_unknown_still_overwrites_ok(client, conn, seed):
+    """反过来,unknown 盖掉 ok 是**应该**发生的。
+
+    「上一次读到登着」和「这一次读了、读不出来」是两件事,渲染成同一个词
+    就等于这一列没有。unknown 不拦认领,但它在界面上是「登录态存疑」,
+    运营看见会去看一眼。
+    """
+    client.post("/v1/instances/heartbeat",
+                json={"instance_uid": "inst-A", "login_state": "ok"})
+    r = client.post("/v1/instances/heartbeat",
+                    json={"instance_uid": "inst-A", "login_state": "unknown"})
+    assert r.json()["data"]["login_state"] == "unknown"
+    assert _login_state(conn)["login_state"] == "unknown"
+
+
 def test_heartbeat_rejects_unknown_login_state(client, seed):
     """封闭集。拼错的值宁可 422,也不写进库 —— 写进去之后那道闸就认不出它了。"""
     r = client.post("/v1/instances/heartbeat",
