@@ -68,7 +68,76 @@ export const SEL = {
   checkout: {
     interstitialButtons: ["#checkout-byg-ptc-button a", "#sc-byc-ptc-button-lower a"],
     addressText: "#deliver-to-address-text",
-    paymentText: "#payment-option-text-default",
+
+    // ── 支付区(出处 v2.5.3 popup.js:2021-2050)────────────────────────
+    //
+    // **只读不写。** 厂商 v2.5.3 :2229-2310 会点开 payselect 页、替买家号勾选
+    // 指定尾号的卡、再点 SetPaymentPlanSelectContinueEvent 确认 —— 依据是插件
+    // 本地 localStorage 里一个操作员随手能改的输入框。我们不做:
+    // 改一个买家号的支付配置是**人**的动作,不是拍单流程的动作;
+    // 而且那等于把闸门交给被管的一方。不符就转人工(PAYMENT_METHOD_UNEXPECTED)。
+    payment: {
+      /** 一切支付读取的作用域(v2.5.3 :2029-2031)。
+       *  **拿不到就当读不到,不要退到文档级** —— Amazon 结算页有同 id 的隐藏
+       *  模板副本,文档级 querySelector 会先命中它(实测:隐藏副本尾号 0000
+       *  排在真身 8738 前面时,裸取读出的是 0000)。 */
+      panel: "#checkout-payment-option-panel",
+      /** 面板内按序试,第一个出文本的赢(v2.5.3 :2034-2042)。
+       *  第一条是报告 §4.2.4 检查 3 记的老形态,后两条是 2.5.3 新增。 */
+      selectedTexts: [
+        "#payment-option-text-default",
+        '#selected-payment-method-_default [data-testid="_default"]',
+        '[id^="selected-payment-method-"] [data-testid="_default"]',
+      ],
+      /** 「已选支付方式」的槽位(v2.5.3 :2041 用的就是这个前缀)。
+       *
+       *  selectedTexts 只答得出**第一个**槽位里那张卡。Amazon 允许把一单拆到
+       *  多个已选支付方式上,那时第一张对得上、第二张刷了多少,这道闸完全不知道。
+       *  数出来交服务端裁决 —— 礼品卡余额自己也占一个槽位(见夹具
+       *  checkout-giftcard.html 的两个槽位),扣不扣得由知道 gift_card.applied
+       *  的那一方来做,插件这里只报个数。 */
+      selectedSlots: '[id^="selected-payment-method-"]',
+    },
+
+    /** 礼品卡 / 余额抵扣行(出处 v2.5.3 popup.js:2054、2062、2066-2068)。
+     *
+     * 这是这次从厂商那儿最值得抄的一条:判据是**隐藏表单标记**,与页面语言无关。
+     * v2.5.1 靠 `includes("Paying with Amazon Points")` 这类文案判,换个站点语言就瞎。
+     *
+     * 为什么必须有它:结算页的 grand-total-cell 读到的是「这张卡要扣多少」,
+     * 礼品卡垫过之后它比货款小,甚至是 0.00。没有这条选择器,
+     * 限价护栏在任何有礼品卡余额的买家号上就是空的。 */
+    giftCard: {
+      marker: 'input[name="subtotalLineType"][value="SPECIAL_PAYMENTS_GIFT_CARD_BALANCE"]',
+      /** 从 marker 往上 closest 到抵扣行(v2.5.3 :2062,按序试)。 */
+      rowAncestors: [".order-summary-grid", "li"],
+      /** 行内的金额格(v2.5.3 :2066-2068)。 */
+      amounts: [
+        '.order-summary-line-definition [data-shimmer-target="ordertotals-amount"]',
+        ".order-summary-line-definition .aok-nowrap",
+      ],
+    },
+
+    /** 订单小结的容器。**按 label 扫行优先限定在这里面,一个都不在就退回文档级。**
+     *
+     * 两条都出自 v2.5.3 :2530 / :2844 —— 厂商就是按这两个 id 限定容器再取
+     * `li` 小结行的。不限容器的后果实测过:我们自己的夹具里,隐藏的粘性底栏
+     * (#checkout-sticky-summary,display:none)排在真表**之前**,
+     * 全文档扫到的 Order total 是加第二件商品之前的过期值 $1,299.99,
+     * 而真值是 $2,241.86。
+     *
+     * **这里只放真的装着小结行的容器。** 曾经多列过一条
+     * `#checkout-pyo-button-block`,它是**下单按钮那个盒子**,厂商拿它只取
+     * `.grand-total-cell`(v2.5.3 :2473),从不用来扫小结行。列进来的后果是
+     * 把「限容器、否则退回文档级」变成了「收窄到一个根本没有小结行的盒子」:
+     * Amazon 哪天把两张 subtotals 表的 id 改掉(正是收窄想防的那件事),
+     * 前两条落空、第三条命中 → root 变成按钮盒 → 运费/税费对**每一单**
+     * 都读成 undefined,落库是 NULL,导出两列全空,而且不报任何错。
+     * 收窄之前反倒读得到 —— 一条「防改版」的措施本身成了改版时的单点。 */
+    summaryTables: [
+      "#subtotals-marketplace-table",
+      "#subtotals-transactional-table",
+    ],
     itemPanel: '[data-csa-c-slot-id="checkout-itemBlockPanel"]',
     lineItemContainer: ".lineitem-container",
     panelAsin: '[id="col-item-block-description"] > .aok-hidden',

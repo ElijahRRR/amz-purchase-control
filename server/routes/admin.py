@@ -203,6 +203,24 @@ def instances(conn=Depends(conn_ctx)) -> schemas.Envelope:
     })
 
 
+@router.post("/envs/{env_id}/expected-card")
+def expected_card(env_id: int, req: schemas.ExpectedCardReq, conn=Depends(conn_ctx)):
+    """配「这个买家号该刷哪张卡」。留空 = 关掉这道闸。
+
+    只校验、不替买家号切卡:改支付配置是人在 Amazon 后台做的动作,
+    拍单流程只负责发现不一致并停下来。
+    """
+    try:
+        got = instance.set_expected_card(conn, env_id, req.last4)
+    except instance.EnvRefused as exc:
+        return JSONResponse(
+            status_code=404 if exc.code == "ENV_NOT_FOUND" else 409,
+            content={"ok": False, "data": None,
+                     "error": {"code": exc.code, "message": exc.message}},
+        )
+    return schemas.Envelope(ok=True, data=got)
+
+
 @router.post("/tasks/{task_id}/reset")
 def reset(task_id: int, req: schemas.ResetReq, conn=Depends(conn_ctx)):
     try:

@@ -18,10 +18,18 @@ CREATE TABLE IF NOT EXISTS procure.buyer_envs (
     status             text NOT NULL DEFAULT 'active',
                                   -- active / paused / blocked / retired(封闭集)
     daily_cap          integer NOT NULL DEFAULT 0,    -- 0 = 不限
+    expected_card_last4 text,
+                                  -- 这个买家号该刷哪张卡的后四位。
+                                  -- 留空 = 这一道不校验(与 tasks.require_fba 同一形态)。
+                                  -- 填了之后结算页读到的尾号与它不符 → PAYMENT_METHOD_UNEXPECTED,
+                                  -- 在下单之前拦下。只校验、不替买家号切卡。
     note               text,
     created_at         timestamptz NOT NULL DEFAULT now(),
     updated_at         timestamptz NOT NULL DEFAULT now()
 );
+-- 老库补列:CREATE TABLE IF NOT EXISTS 对已存在的表是空操作(见下面 tasks 那一段的说明)。
+ALTER TABLE procure.buyer_envs
+    ADD COLUMN IF NOT EXISTS expected_card_last4 text;
 
 -- 插件实例:登记身份用,不发凭据(所有者决定:不做鉴权)
 CREATE TABLE IF NOT EXISTS procure.plugin_instances (
@@ -79,8 +87,13 @@ CREATE TABLE IF NOT EXISTS procure.tasks (
     ship_country      text NOT NULL DEFAULT 'US',
 
     -- 护栏输入(price_cap 由上游 ERP 算好下发,本系统只取用不计算)
+    -- price_cap 比的是 goods_total(这一单的货款),不是 actual_total(这张卡扣了多少)
     price_cap         numeric(12,2) NOT NULL,
     max_delivery_days smallint NOT NULL DEFAULT 7,
+    require_fba       boolean NOT NULL DEFAULT true,
+                              -- 这一单要不要求 Amazon 自营发货。
+                              -- 在此之前它只是 GuardsOut 里一个 `= True` 的默认值,
+                              -- 路由从不往 adjudicate 传 —— 一个恒为真的"可关的闸"。
 
     -- 在途
     claimed_by        bigint REFERENCES procure.plugin_instances(id),
@@ -88,9 +101,14 @@ CREATE TABLE IF NOT EXISTS procure.tasks (
 
     -- 执行结果
     amazon_order_no   text,
-    actual_total      numeric(12,2),
+    actual_total      numeric(12,2),   -- 这张卡要扣的钱(礼品卡抵扣后会变小,甚至 0.00)
     actual_shipping   numeric(12,2),
     actual_tax        numeric(12,2),
+    gift_card_amount  numeric(12,2),   -- 礼品卡/余额抵扣额;NULL = 这一单没有礼品卡抵扣。
+                                       -- 认出抵扣行却读不出金额时**不写 0** ——
+                                       -- 那会让"抵扣 0 元"和"不知道抵扣多少"长得一样
+    goods_total       numeric(12,2),   -- 这一单的货款 = actual_total + gift_card_amount。
+                                       -- **护栏比的就是它**,由服务端在 guard-check 自己算
     payment_last4     text,
     delivery_date     date,
     delivery_raw      text,                   -- Amazon 原始文案,保留供复核
@@ -120,6 +138,9 @@ CREATE TABLE IF NOT EXISTS procure.tasks (
 ALTER TABLE procure.tasks ADD COLUMN IF NOT EXISTS retry_count integer NOT NULL DEFAULT 0;
 ALTER TABLE procure.tasks
     ADD COLUMN IF NOT EXISTS may_have_ordered boolean NOT NULL DEFAULT false;
+ALTER TABLE procure.tasks ADD COLUMN IF NOT EXISTS require_fba boolean NOT NULL DEFAULT true;
+ALTER TABLE procure.tasks ADD COLUMN IF NOT EXISTS gift_card_amount numeric(12,2);
+ALTER TABLE procure.tasks ADD COLUMN IF NOT EXISTS goods_total numeric(12,2);
 -- 认领扫描
 CREATE INDEX IF NOT EXISTS idx_tasks_ready
     ON procure.tasks (buyer_env_id, created_at) WHERE status = 'ready';

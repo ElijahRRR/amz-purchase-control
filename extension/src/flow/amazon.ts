@@ -23,7 +23,8 @@ import {
   isTrackingUnavailable,
   isSignInUrl,
   readLoginState,
-  readOrderSummary, readPaymentLast4, readProductShipper, readTrackingEvents,
+  readGiftCardDeduction,
+  readOrderSummary, readPaymentLast4, readPaymentSlots, readProductShipper, readTrackingEvents,
   readTrackingNumber, readTrackingStatus,
   type LoginState, type OrderState,
 } from "./dom/parse.js";
@@ -437,10 +438,36 @@ export class AmazonDriver implements PageDriver {
     }
 
     const total = readGrandTotal(f.doc());
-    if (!total) {
-      // 读不到总额就绝不下单 —— 护栏比的就是这个数。
+    if (total === undefined) {
+      // 读不到总额就绝不下单。
       throw new DriverError("CHECKOUT_TIMEOUT", "结算页读不到订单总额");
     }
+    const gift = readGiftCardDeduction(f.doc());
+    // 礼品卡抵扣把「这张卡要扣多少」和「这一单要花多少」拆成了两个数。
+    // 护栏比的是后者 —— 全额抵扣时前者是 0.00,拿它比限价等于护栏不存在。
+    // 服务端会自己再算一遍并以自己的为准,这里算是为了两边不一致时看得见。
+    const goodsTotal = gift.applied && gift.amount !== undefined
+      ? (Number(total) + Number(gift.amount)).toFixed(2)
+      : (gift.applied ? undefined : total);
+
+    // **0 和负数在插件这一侧就挡掉。**
+    //
+    // 结算页金额还在 shimmer、或者那一格短暂显示 $0.00 时读到的就是这种数。
+    // 服务端也有同一道闸(price_guard 比的是货款,0 一律拒),但那一档报的是
+    // PLUGIN_INTERNAL、转异常;在这里挡住报 CHECKOUT_TIMEOUT —— 它本来就是
+    // 可重试的,shimmer 那种情况重试一次就好,不必为它开一张异常单。
+    //
+    // 判的是**货款**不是实付:礼品卡全额抵扣的单实付确实是 0.00,那是对的。
+    // 礼品卡认出来了但金额读不出来(goodsTotal 是 undefined)不在这里拦 ——
+    // 那一档要让服务端拒并留痕,插件自己吞掉的话运营看不见发生过什么。
+    const giftAmountUnknown = gift.applied && gift.amount === undefined;
+    if (!giftAmountUnknown && !(Number(goodsTotal) > 0)) {
+      throw new DriverError("CHECKOUT_TIMEOUT",
+                            `结算页货款读成 ${goodsTotal}(实付 ${total}` +
+                            `${gift.applied ? `,礼品卡抵扣 ${gift.amount}` : ""}),` +
+                            "这个数不可信,不下单");
+    }
+
     const summary = readOrderSummary(f.doc());
 
     // 有一个面板明确不是 Amazon 发货,整单就不是 FBA。
@@ -452,24 +479,36 @@ export class AmazonDriver implements PageDriver {
 
     return {
       actualTotal: total,
+      giftCard: { applied: gift.applied, amount: gift.amount },
+      goodsTotal,
       actualShipping: summary.shipping,
       actualTax: summary.tax,
       deliveryTexts: panels.map((p) => p.deliveryText as string),
       isFba,
       paymentLast4: readPaymentLast4(f.doc()),
+      // 槽位数与卡尾号是两个事实:后者只答得出第一个槽位里那张卡。
+      // 拆分支付(公司卡 + 另一张)时第一张对得上就放行,第二张刷了多少
+      // 这道闸完全不知道 —— 数出来交服务端裁决,插件自己不拦。
+      paymentSlots: readPaymentSlots(f.doc()),
       // 只报**读到的**单价。数量结算页上没读(报告说厂商那道数量校验是死代码,
       // 真正的数量比对在购物车页已经做过),所以不在这里编一个 1 出来。
       unitPrices: priced.map((p) => ({ asin: p.asin!, unit_price: p.unitPrice! })),
-      // **一个都没读到 ≠ 这单没有单价**,那是选择器坏了。
+      // **少读到一条 ≠ 这单只有一条**,那是选择器坏了。
       //
       // 原先这里只是 .filter 一下就过去了:Amazon 换个类名,unitPrices 静默
-      // 变成空数组,护栏照跑(它比的是 actual_total,走另一个选择器),
+      // 变成空数组,护栏照跑(它比的是整单金额,走另一个选择器),
       // 单子照下,只有运营台上「实付单价」那一列悄悄全空 —— 没有任何地方报错,
       // 等有人觉得不对已经是几百单之后。这和 deliveryTexts 那次是同一类问题。
       //
+      // 判据从「一个都没读到」放宽成「读到的条数 < 面板数」:实测两件商品的单
+      // 只有第一个面板的单价选择器还生效时,priced.length=1 不为 0,
+      // 这条告警**不触发**,而库里那一件的 actual_unit_price 就是 NULL,
+      // 运营台上「实付单价」半列空着,没有任何事件说明为什么。
+      // 半坏和全坏是同一件事(Amazon 改版),不该只有全坏时才说话。
+      //
       // 不中断下单:限价护栏不依赖单价,为一个展示字段掀翻一次采购更糟。
       // 但要让它在事件流里留下痕迹。
-      unitPriceSelectorBroken: panels.length > 0 && priced.length === 0,
+      unitPriceSelectorBroken: panels.length > 0 && priced.length < panels.length,
     };
   }
 

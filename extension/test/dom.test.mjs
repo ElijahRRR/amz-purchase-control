@@ -333,15 +333,70 @@ await withFixture("checkout.html", async (run) => {
   check("checkout 每个面板都有交期文案",
         panels.every((p) => p.deliveryText), JSON.stringify(panels.map((p) => p.deliveryText)));
 
-  check("checkout 读到订单总额", !!(await run("amzdom.readGrandTotal(document)")));
+  // **断到值,不是断「非空」。** 原先这几条是 `!!x` / `!== undefined` ——
+  // 干扰项 F 那个隐藏粘性底栏里的过期值($1,299.99)一样能过,而它正是这几个
+  // 选择器最可能读错的东西。「看起来有测试盯着」是本项目反复记着的那种缺陷。
+  eq("checkout 订单总额读的是 #checkout-pyo-button-block 里那个",
+     await run("amzdom.readGrandTotal(document)"), "2241.86");
 
   const summary = await run("amzdom.readOrderSummary(document)");
-  check("checkout 按 label 扫到运费", summary.shipping !== undefined, JSON.stringify(summary));
-  check("checkout 按 label 扫到税费", summary.tax !== undefined, JSON.stringify(summary));
+  eq("checkout 按 label 扫到运费", summary.shipping, "12.99");
+  eq("checkout 按 label 扫到税费", summary.tax, "180.38");
+  eq("checkout 按 label 扫到税前合计", summary.beforeTax, "2061.48");
+  // 这一条在收窄扫描范围之前是红的:全文档扫先命中 #checkout-sticky-summary
+  // (display:none,排在真表**之前**)里的过期值 1299.99。
+  eq("checkout 小结的 Order total 不是隐藏粘性底栏里的过期值",
+     summary.orderTotal, "2241.86");
+  // 干扰项确实存在:那个过期值真的在文档里、真的排在前面、真的是隐藏的
+  eq("checkout 隐藏粘性底栏确实排在真表前面且是隐藏的(干扰项确实存在)",
+     await run(`(() => {
+        const cells = [...document.querySelectorAll(".grand-total-cell")];
+        const first = cells[0];
+        return [cells.length, first.textContent.trim(),
+                first.closest("[style*='display:none']") !== null];
+     })()`), [2, "$1,299.99", true]);
 
-  // 夹具的支付文案里故意先出现别的 4 位数,取"第一个 4 位数字"的写法会当场露馅
+  // **「限容器」这半此前没有任何断言单独盯着。** 把 summaryTables 那个循环整个
+  // 删掉,全部断言照样绿(逐行 isHidden 一个人就把干扰项 F 兜住了)。于是往清单里
+  // 混进一条**根本不装小结行**的容器也没人会发现:#checkout-pyo-button-block
+  // 是下单按钮那个盒子,厂商拿它只取 .grand-total-cell(v2.5.3 :2473),
+  // 从不用来扫小结行。它一旦命中,root 就从「文档」收窄成「按钮盒」,
+  // 运费/税费对每一单都读成 undefined,落库 NULL,导出两列全空,还不报错 ——
+  // 一条本该防改版的措施,自己成了改版当天的单点。
+  //
+  // 这一条钉的就是它:两张 subtotals 表的 id 都被改掉时(正是收窄想防的那件事),
+  // 必须退回文档级、照样读得出来。
+  eq("checkout 小结表 id 被改掉时退回文档级,运费税费照样读得出",
+     await run(`(() => {
+        const t = document.querySelector("#subtotals-marketplace-table");
+        t.id = "subtotals-v2";
+        const got = amzdom.readOrderSummary(document);
+        t.id = "subtotals-marketplace-table";       // 原样放回,不影响后面的断言
+        return [got.shipping, got.tax, got.orderTotal];
+     })()`), ["12.99", "180.38", "2241.86"]);
+
+  // 夹具的支付文案里故意先出现别的 4 位数,取"第一个 4 位数字"的写法会当场露馅;
+  // 另有一个隐藏的同 id 副本(尾号 0000)排在真身前面,裸 querySelector 会读成 0000
   eq("checkout 卡后四位取的是 ending in 后面那个",
      await run("amzdom.readPaymentLast4(document)"), "4417");
+  eq("checkout 隐藏的同 id 支付副本确实排在前面(干扰项确实存在)",
+     await run(`(() => {
+        const all = [...document.querySelectorAll("#payment-option-text-default")];
+        return [all.length, /0000/.test(all[0].textContent),
+                all[0].closest("[style*='display:none']") !== null];
+     })()`), [2, true, true]);
+
+  // 这一单没用礼品卡,但页面自带一个**隐藏的小结模板**,里面有一条抵扣行
+  // (干扰项 F-2)。可见性判在 marker 上、或者干脆不判,这里就会判出
+  // 「用了礼品卡但读不出金额」—— 而那一档服务端是拒的,于是每张普通单都被拦下。
+  eq("checkout 隐藏模板里的礼品卡行不算数 → applied=false",
+     await run("amzdom.readGiftCardDeduction(document)"), { applied: false });
+  eq("checkout 隐藏模板里确实有一条抵扣标记(干扰项确实存在)",
+     await run(`(() => {
+        const m = document.querySelector(
+          'input[name="subtotalLineType"][value="SPECIAL_PAYMENTS_GIFT_CARD_BALANCE"]');
+        return [!!m, m.closest("[style*='display:none']") !== null];
+     })()`), [true, true]);
 
   // #submitOrderButtonId 里排在前面的是隐藏的 anti-csrftoken-a2z。
   // 后代选择器会选中它 —— click() 打在隐藏 input 上不报错也不跳转,
@@ -351,6 +406,106 @@ await withFixture("checkout.html", async (run) => {
      await run("amzdom.findSubmitOrderButton(document)?.type"), "submit");
   eq("checkout 下单按钮不带 name=anti-csrftoken-a2z",
      await run("amzdom.findSubmitOrderButton(document)?.getAttribute('name')"), null);
+});
+
+// 礼品卡抵扣的几个边界:用 DOMParser 现造,不值得为它们各建一张夹具。
+// 借 checkout.html 只是为了有个页面环境,断言与那张夹具的内容无关。
+await withFixture("checkout.html", async (run) => {
+  const MARK = '<input type="hidden" name="subtotalLineType" '
+             + 'value="SPECIAL_PAYMENTS_GIFT_CARD_BALANCE">';
+  const row = (amount) =>
+    `<table><tr class="order-summary-grid"><td class="order-summary-line-definition">`
+    + MARK + (amount === null ? "" : `<span class="aok-nowrap">${amount}</span>`)
+    + `</td></tr></table>`;
+  const gift = (html) =>
+    run(`amzdom.readGiftCardDeduction(
+           new DOMParser().parseFromString(${JSON.stringify(html)}, "text/html"))`);
+
+  // 抵扣额是个**量**,正负号是排版。两种写法都出现过,而 parseMoney 的正则
+  // 只认紧贴数字的负号:"-$5.09" 丢符号读成 5.09,"$-5.09" 读成 -5.09。
+  // 不显式取绝对值的话,后一种会把货款算**小**(0 + (-5.09) = -5.09)。
+  eq("礼品卡 负号在 $ 前", await gift(row("-$5.09")), { applied: true, amount: "5.09" });
+  eq("礼品卡 负号在 $ 后", await gift(row("$-5.09")), { applied: true, amount: "5.09" });
+
+  // **认出抵扣行却读不出金额时是 undefined,不是 "0"。**
+  // 返回 0 的话货款基数会等于实付,护栏又一次比错了数,而且这次连痕迹都没有。
+  eq("礼品卡 有标记读不到金额 → amount 是 undefined 而不是 0",
+     await gift(row(null)), { applied: true });
+
+  // 一张页面上可能有多条(礼品卡 + 账户余额),要累加而不是取第一条
+  eq("礼品卡 多条抵扣行累加",
+     await gift(row("-$5.09") + row("-$10.00")), { applied: true, amount: "15.09" });
+
+  eq("礼品卡 没有标记 → applied=false",
+     await gift("<table><tr><td>Order total: $10.00</td></tr></table>"), { applied: false });
+});
+
+// ── 结算页 · 礼品卡抵扣 ──────────────────────────────────────────────
+//
+// 这一节盯的是本项目最贵的那个缺陷:护栏比的那个数是不是**这一单的货款**。
+// 同一张页面上,「一张真值 2241.86、礼品卡全垫了的单」与「一张真值 0 的单」
+// 在 readGrandTotal 眼里长得一模一样 —— 两种不同的情况渲染出同一个结果。
+await withFixture("checkout-giftcard.html", async (run) => {
+  // 这张卡要扣的钱:0.00。这个数本身没错,错的是拿它当护栏基数。
+  eq("giftcard 实付读成 0.00(这正是缺陷的触发值)",
+     await run("amzdom.readGrandTotal(document)"), "0.00");
+
+  // 抵扣额:金额写成 "-$2,241.86"。parseMoney 的正则只认紧贴数字的负号,
+  // 这一格必须显式取绝对值 —— 指望 parseMoney 保号会拿到一个正数或负数,
+  // 取决于 Amazon 那天把 $ 放在负号前面还是后面。
+  eq("giftcard 认出抵扣并读出金额(负号在 $ 前面也要读对)",
+     await run("amzdom.readGiftCardDeduction(document)"),
+     { applied: true, amount: "2241.86" });
+
+  // 干扰项 F-2 / H:粘性底栏与隐藏模板里各有一条一模一样的抵扣行。
+  // 不判可见性就会把 500.00 / 0.00 一起算进去。
+  eq("giftcard 文档里一共有三条抵扣标记(干扰项确实存在)",
+     await run(`document.querySelectorAll(
+        'input[name="subtotalLineType"][value="SPECIAL_PAYMENTS_GIFT_CARD_BALANCE"]').length`), 3);
+  eq("giftcard 隐藏的那两条抵扣行没被算进金额",
+     await run(`(() => {
+        const rows = [...document.querySelectorAll('input[name="subtotalLineType"]')]
+          .map((m) => m.closest(".order-summary-grid"));
+        return rows.map((r) => r.closest("[style*='display:none']") !== null);
+     })()`), [true, true, false]);   // 文档顺序:粘性底栏 → 隐藏模板 → 真表
+
+  // 货款在小结的 "Order total" 行上,而 "Grand Total" 行是抵扣之后的 0.00。
+  // 合成一个 total 键就等于让「先命中谁」决定语义。
+  const summary = await run("amzdom.readOrderSummary(document)");
+  eq("giftcard 小结 Order total = 货款", summary.orderTotal, "2241.86");
+  eq("giftcard 小结 Grand Total = 抵扣后实付", summary.grandTotal, "0.00");
+  eq("giftcard 运费税费照常读", [summary.shipping, summary.tax], ["12.99", "180.38"]);
+
+  // 支付面板换成了 v2.5.3 的新结构,而且前面压着一个隐藏的同 id 副本
+  eq("giftcard 卡后四位仍然是 4417(不是隐藏副本的 0000)",
+     await run("amzdom.readPaymentLast4(document)"), "4417");
+
+  // **槽位数与卡尾号是两个事实。** 这张夹具的支付面板里有两个已选支付方式:
+  // 尾号 4417 的卡 + 礼品卡余额。readPaymentLast4 只答得出第一个,
+  // 拆分支付(公司卡 + 另一张卡)时第一张对得上就放行,第二张刷了多少
+  // 这道闸完全不知道 —— 所以要把个数数出来交服务端裁决。
+  // 该不该扣掉礼品卡那一个由服务端判(它才知道 gift_card.applied)。
+  eq("giftcard 数出两个已选支付槽位(卡 + 礼品卡余额)",
+     await run("amzdom.readPaymentSlots(document)"), 2);
+  // 隐藏的支付模板副本不能算进槽位数:算进去的话每一张普通单都会被判成拆分支付,
+  // 那种闸门等于没有。这里就地造一个隐藏槽位,个数必须不变。
+  eq("giftcard 隐藏的支付槽位不算数",
+     await run(`(() => {
+        const panel = [...document.querySelectorAll("#checkout-payment-option-panel")]
+          .find((p) => !p.closest("[style*='display:none']"));
+        const ghost = document.createElement("div");
+        ghost.id = "selected-payment-method-ghost";
+        ghost.style.display = "none";
+        panel.appendChild(ghost);
+        const n = amzdom.readPaymentSlots(document);
+        ghost.remove();
+        return n;
+     })()`), 2);
+
+  // 面板与下单按钮不受影响 —— 这张夹具只改了金额那几处
+  eq("giftcard 面板数 2", (await run("amzdom.readCheckoutPanels(document)")).length, 2);
+  eq("giftcard 下单按钮不是隐藏的 csrf input",
+     await run("amzdom.findSubmitOrderButton(document)?.type"), "submit");
 });
 
 await withFixture("checkout-thirdparty.html", async (run) => {

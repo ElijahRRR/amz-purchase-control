@@ -301,7 +301,10 @@ python cli.py task_retry
 | `AMZ_AUTO_RETRY_BATCH` | `20` | 一轮最多自动重几条。`0`/负数按 `1` 算,**不当成「关」**——关只有 `AMZ_AUTO_RETRY_MAX=0` 一个开关 |
 | `AMZ_SHIPMENT_RESYNC_MIN` | `360` | 同一条物流多久之后才值得再同步 |
 | `AMZ_SHIPMENT_BATCH` | `20` | 一次给插件多少条待同步的单 |
+| `AMZ_PRICE_CONSISTENCY_TOLERANCE_PCT` | `15` | `Σ单价×数量` 与货款差多少个百分点开始在事件流里记一笔。**这不是护栏,超了不拦单** —— 结算页单价是税前不含运费的,与货款天然有差。默认 15 而不是更紧:一条每单都出现的告警等于没有告警 |
 | （库里）`buyer_envs.daily_cap` | `0` | 该买家号一天最多拍几单，`0` = 不限。闸门在认领的那条 SQL 里 |
+| （库里）`buyer_envs.expected_card_last4` | 空 | 这个买家号该刷哪张卡的后四位。**留空 = 不校验**;填了之后结算页读到的尾号不符即 `PAYMENT_METHOD_UNEXPECTED`,在下单**之前**拦下。只校验、不替买家号切卡 —— 改支付配置是人的动作。运营台买家号那一页可就地改 |
+| （库里）`tasks.require_fba` | `true` | 这一单要不要求 Amazon 自营发货。**它现在真的是一列** —— 在此之前是 `GuardsOut` 里一个 `= True` 的默认值,路由不往 `adjudicate` 传,一道号称「可关」的闸恒为真 |
 | `AMZ_SERVER_HOST` / `AMZ_SERVER_PORT` | `127.0.0.1` / `8781` | HTTP 监听 |
 
 ## 接口
@@ -427,7 +430,7 @@ python cli.py task_retry
 | | |
 |---|---|
 | `CLAUDE.md` | 项目总纲与铁律,开工前必读 |
-| `docs/01-系统设计.md` | 架构、数据模型、**19 个错误码**、护栏、插件时序 |
+| `docs/01-系统设计.md` | 架构、数据模型、**错误码封闭集**、护栏、插件时序 |
 | `docs/db_schema.md` | 表结构唯一事实来源(改表先改它) |
 | `docs/02-schema-验证记录.md` | 建表与认领算法的实测记录 |
 | `docs/03-运营台字段对照.md` | 厂商面板 8 组字段 → 我们的库,逐条取舍 |

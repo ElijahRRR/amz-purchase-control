@@ -4,7 +4,7 @@
  * 那正是「看起来有护栏、实际防不住」的样子。
  */
 
-import { useEffect, useState } from "react";
+import { useCallback, useEffect, useState } from "react";
 import { CopyText } from "@/components/CopyText";
 import { Card, CardHead } from "@/components/ui/card";
 import { Tag, type Tone } from "@/components/ui/tag";
@@ -12,6 +12,57 @@ import { api } from "@/lib/api";
 import { useLabel } from "@/lib/meta";
 import { cn, shortTime } from "@/lib/utils";
 import type { InstanceRow } from "@/types";
+
+/** 「该刷哪张卡」这一格。留空 = 这个买家号不校验支付方式。
+ *
+ *  做成可改的而不是只读的:配错一位数的后果是这个买家号从此每一单都被
+ *  「支付卡不符」拦下,而运营看到那句话会去查买家号的支付方式、查不出问题。
+ *  能就地改掉,是这一格唯一说得过去的形态。
+ *
+ *  形状校验在服务端(services/instance.set_expected_card)。这里也拦一道,
+ *  但这一道是**便利**不是保证 —— 接口是公开的,curl 一下就绕过去了。 */
+function ExpectedCard({ row, onSaved }: { row: InstanceRow; onSaved: () => void }) {
+  const [v, setV] = useState(row.expected_card_last4 ?? "");
+  const [err, setErr] = useState<string | null>(null);
+  const [busy, setBusy] = useState(false);
+  // 别人改了库(或者别的标签页改了)时跟着刷新,但正在输入的时候不抢用户的光标
+  const [focused, setFocused] = useState(false);
+  useEffect(() => {
+    if (!focused) setV(row.expected_card_last4 ?? "");
+  }, [row.expected_card_last4, focused]);
+
+  const save = async () => {
+    const next = v.trim();
+    if (next === (row.expected_card_last4 ?? "")) return;
+    if (next && !/^\d{4}$/.test(next)) {
+      setErr("要 4 位数字,留空表示不校验");
+      return;
+    }
+    setBusy(true);
+    const r = await api.setExpectedCard(row.env_id, next);
+    setBusy(false);
+    if (r.ok) { setErr(null); onSaved(); }
+    else setErr(r.kind === "transport" ? "没说上话" : r.message);
+  };
+
+  return (
+    <span className="inline-flex items-center gap-1">
+      <input
+        value={v}
+        onChange={(e) => { setV(e.target.value.replace(/\D/g, "").slice(0, 4)); setErr(null); }}
+        onFocus={() => setFocused(true)}
+        onBlur={() => { setFocused(false); void save(); }}
+        onKeyDown={(e) => { if (e.key === "Enter") (e.target as HTMLInputElement).blur(); }}
+        disabled={busy}
+        placeholder="不校验"
+        className={cn("id text-xs+ w-16 px-1 py-0.5 rounded border bg-white",
+                      err ? "border-red-300 text-red-700"
+                          : "border-zinc-200 text-zinc-700 focus:border-sky-400")}
+      />
+      {err && <span className="text-2xs text-red-600">{err}</span>}
+    </span>
+  );
+}
 
 const LIVENESS: Record<InstanceRow["liveness"], { label: string; tone: Tone; dot: string }> = {
   online: { label: "在线", tone: "solid-emerald", dot: "bg-emerald-500" },
@@ -29,18 +80,19 @@ export default function InstancesPage() {
   const [stale, setStale] = useState<number>(0);
   const [err, setErr] = useState<string | null>(null);
 
+  const refresh = useCallback(async () => {
+    const r = await api.instances();
+    if (r.ok) { setRows(r.data.items); setStale(r.data.stale_seconds); setErr(null); }
+    else setErr(r.kind === "transport" ? `连不上服务端:${r.message}` : `${r.code} · ${r.message}`);
+  }, []);
+
   useEffect(() => {
     let alive = true;
-    const tick = async () => {
-      const r = await api.instances();
-      if (!alive) return;
-      if (r.ok) { setRows(r.data.items); setStale(r.data.stale_seconds); setErr(null); }
-      else setErr(r.kind === "transport" ? `连不上服务端:${r.message}` : `${r.code} · ${r.message}`);
-    };
+    const tick = async () => { if (alive) await refresh(); };
     void tick();
     const id = window.setInterval(tick, 10_000);
     return () => { alive = false; window.clearInterval(id); };
-  }, []);
+  }, [refresh]);
 
   // 还没回来 / 首次就失败时 rows 是 null。硬写 0 的话,「在线 0」跟
   // 「真的一台都没在线」长得一模一样 —— 而这两件事的处置完全不同。
@@ -66,14 +118,16 @@ export default function InstancesPage() {
         )}
         <Card className="overflow-hidden">
           <CardHead right={<span className="text-xs text-zinc-400">
-            派单只会派给「在线、未暂停、没到日上限、且还登着 Amazon」的买家号
+            派单只会派给「在线、未暂停、没到日上限、且还登着 Amazon」的买家号 ·
+            支付卡尾号留空表示不校验
           </span>}>买家号 · 实例</CardHead>
 
           <table className="w-full">
             <thead>
               <tr className="bg-zinc-50 border-b border-zinc-200">
                 {["买家号", "站点", "实例", "插件版本", "最后心跳", "队列待拍",
-                  "待人工", "今日已拍", "日上限", "状态", "登录态", "可派单"].map((h, i) => (
+                  "待人工", "今日已拍", "日上限", "支付卡尾号", "状态", "登录态",
+                  "可派单"].map((h, i) => (
                   <th key={h} className={cn(
                     "h-th px-3 text-2xs font-medium uppercase tracking-wider text-zinc-500 whitespace-nowrap",
                     // 只有数字列右对齐:数字右对齐是为了让位数对齐着看,
@@ -111,6 +165,11 @@ export default function InstancesPage() {
                       {/* 0 是「不限」,不是「一单都不许拍」。这两个意思差得远,
                           界面上写清楚,别让人去猜一个裸 0。 */}
                       {r.daily_cap === 0 ? "不限" : r.daily_cap}
+                    </td>
+                    <td className="px-3">
+                      {/* 留空 = 不校验。这一格与 daily_cap 的 0 是同一种表达:
+                          「不设限」得写出来,别让人对着一个空格去猜。 */}
+                      <ExpectedCard row={r} onSaved={() => void refresh()} />
                     </td>
                     <td className="px-3"><Tag tone={L.tone}>{L.label}</Tag></td>
                     <td className="px-3 whitespace-nowrap">
@@ -152,12 +211,12 @@ export default function InstancesPage() {
                 );
               })}
               {rows === null && (
-                <tr><td colSpan={13} className="h-20 text-center text-xs text-zinc-400">
+                <tr><td colSpan={14} className="h-20 text-center text-xs text-zinc-400">
                   {err ? "读不到买家号列表" : "读取中…"}
                 </td></tr>
               )}
               {rows?.length === 0 && (
-                <tr><td colSpan={13} className="h-20 text-center text-xs text-zinc-400">
+                <tr><td colSpan={14} className="h-20 text-center text-xs text-zinc-400">
                   还没有买家号 —— 先在库里建 procure.buyer_envs,再让插件连上来
                 </td></tr>
               )}

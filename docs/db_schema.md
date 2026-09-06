@@ -39,6 +39,7 @@
 | `amazon_customer_id` | text | 插件从页面提取，**仅作对账**，不作身份判定 |
 | `status` | text | `active` / `paused` / `blocked` / `retired`（封闭集） |
 | `daily_cap` | integer | 日单量上限，`0` = 不限 |
+| `expected_card_last4` | text | **这个买家号该刷哪张卡**的后四位。留空 = 这一道不校验（与 `tasks.require_fba` 同一形态：闸门可关，但关不关是库里的数据说了算，不是代码里的默认值）。填了之后，结算页读到的卡尾号与它不符即 `PAYMENT_METHOD_UNEXPECTED`，**在下单之前拦下**。只校验、不替买家号切卡——改支付配置是人的动作，不是拍单流程的动作。**改这一列不留痕**：`task_events` 挂在 `task_id` 上，这张表套不进去，而 `buyer_envs` 眼下整张表都没有审计流（`daily_cap`、`status` 同样没有），所以「谁在什么时候关掉了这个买家号的支付校验」目前答不出来 |
 | `note` | text | |
 | `created_at` / `updated_at` | timestamptz | |
 
@@ -86,12 +87,15 @@
 | `marketplace` | text | 首期恒为 `US` |
 | `status` | text | 见下方状态机（封闭集） |
 | `ship_*` | text | 收货信息，下发给插件填表 |
-| `price_cap` | numeric(12,2) | **限价**。由上游 ERP 算好下发，本系统只取用不计算。结算页实付超过即不下单 |
+| `price_cap` | numeric(12,2) | **限价**。由上游 ERP 算好下发，本系统只取用不计算。护栏拿**这一单的货款**（`goods_total`）跟它比，不是拿「这张卡实际扣了多少」比 |
 | `max_delivery_days` | smallint | 交期上限，默认 7 |
+| `require_fba` | boolean | 这一单要不要求 Amazon 自营发货，默认 `true`。**必须有这一列**：在此之前它只是 `GuardsOut` 里一个 `= True` 的默认值，路由压根没往 `price_guard.adjudicate` 传，于是「可关的闸」是个恒为真的常量——照文档去配置它的人会发现改哪儿都不生效，而界面上那道闸一直亮着 |
 | `claimed_by` | bigint FK | 在途：被哪个实例领走 |
 | `claimed_at` | timestamptz | 在途：领走时间，超时清扫依据 |
 | `amazon_order_no` | text | 回填的 Amazon 订单号 |
-| `actual_total` / `actual_shipping` / `actual_tax` | numeric(12,2) | 结算页实测金额 |
+| `actual_total` / `actual_shipping` / `actual_tax` | numeric(12,2) | 结算页实测金额。`actual_total` 是**这张卡要扣的钱**——礼品卡抵扣之后它会变小，甚至是 `0.00` |
+| `gift_card_amount` | numeric(12,2) | 结算页上礼品卡/余额抵扣掉的金额。`NULL` = 这一单没有礼品卡抵扣。**认出抵扣行却读不出金额时不写 0**——那会把「抵扣了 0 元」和「不知道抵扣了多少」渲染成同一个数，而后者根本不许下单 |
+| `goods_total` | numeric(12,2) | **这一单的货款** = `actual_total` + `gift_card_amount`。护栏比的就是它。服务端在 guard-check 那一步自己算一遍并落库，不采信插件算好的那个数 |
 | `payment_last4` | text | 支付卡后四位，对账用 |
 | `delivery_date` | date | 服务端解析后的交期 |
 | `delivery_raw` | text | Amazon 原始文案，**保留供复核**（解析失败时的唯一线索） |

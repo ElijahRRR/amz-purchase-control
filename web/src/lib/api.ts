@@ -115,6 +115,12 @@ export const api = {
   runs: () => call<RunsOut>("/v1/admin/runs"),
   instances: () => call<{ stale_seconds: number; items: InstanceRow[] }>("/v1/admin/instances"),
 
+  /** 配「这个买家号该刷哪张卡」。传空串 = 关掉这道闸。
+   *  只校验、不替买家号切卡 —— 改支付配置是人在 Amazon 后台做的动作。 */
+  setExpectedCard: (envId: number, last4: string) =>
+    act<{ id: number; code: string; expected_card_last4: string | null }>(
+      `/v1/admin/envs/${envId}/expected-card`, { last4 }),
+
   releaseTask: (id: number) => act<{ status: string }>(`/v1/admin/tasks/${id}/release`),
   resetTask: (id: number, acknowledged: boolean) =>
     act<{ status: string }>(`/v1/admin/tasks/${id}/reset`, { acknowledged }),
