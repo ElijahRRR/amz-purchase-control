@@ -98,6 +98,7 @@
 | `purchased_at` | timestamptz | |
 | `error_code` | text | 结构化错误码，见 `01-系统设计.md` §4 |
 | `error_detail` | text | |
+| `retry_count` | integer | **系统**自动重试过几次（`workflows/task_retry.py` 每重一次 +1）。人工重置不计数——那一下背后有人在看，不该占掉机器的自动次数；但也不清零——清零等于让下一个点重置的人不知不觉又送出 N 次自动重拍。上限是「这一单一生里被自动重拍几次」，不是每轮几次。默认 `0` |
 
 **索引：**
 
@@ -128,6 +129,12 @@
 >
 > **超时不退回 `ready` 而是转 `manual`**：插件可能已经在 Amazon 上真下了单，只是没来得及
 > 回传，自动重试就是重复下单。
+>
+> **`exception` → `ready` 有两条路，库里必须分得开**：人点的那一下走 `task_events.kind='admin'`，
+> 系统自动重的走 `kind='auto_retry'`，`retry_count` 只被后者加。分不开的后果是事后没人答得上
+> 「这一单是谁又放回队列的」——而这个问题在出现重复下单时是第一个要问的。
+> 自动重试默认关（`AMZ_AUTO_RETRY_MAX=0`），且只吃 `RETRYABLE` 那一组，
+> `POSSIBLY_ORDERED` 永远走不到这条路（见 `services/task_retry.py`）。
 
 ### `procure.task_products` — 商品行
 

@@ -69,14 +69,22 @@ BUSINESS_BLOCKED = frozenset({
     "ADDRESS_STATE_UNMATCHED", "ADDRESS_SUGGESTION_BLOCKED", "ADDRESS_NOT_APPLIED",
 })
 
-#: ⚠ RETRYABLE **目前没有任何自动重试在消费它**。
-#: 没有 workflow 把 exception 退回 ready —— task_sweep 只清扫 claimed 超时,
-#: 而且刻意不退回 ready(插件可能已经真下了单)。
-#: 所以这一组当下的含义是「人点一下重置基本能过」,不是「系统会自己再来」。
-#: 界面上的文案必须照这个事实写 —— 写成「系统自己会再试」就是在界面上撒谎,
-#: 运营会因此把一桶其实没人管的单晾在那儿。
-#: 要不要真做自动重试是产品决定,留给所有者;在做出来之前这条注释不许删。
-AUTO_RETRY_IMPLEMENTED = False
+#: RETRYABLE 现在**有东西在消费它**:workflows/task_retry.py 把这一组的 exception
+#: 退回 ready,走的是与人工重置同一个函数(services/task_admin.reset_to_queue)。
+#: 但它**默认关着**(AMZ_AUTO_RETRY_MAX=0),而且有界:同一张任务最多自动重那么多次,
+#: 每次之间还要隔 AMZ_AUTO_RETRY_BACKOFF_MIN 分钟。
+#:
+#: **这里不再留「做没做自动重试」的常量。** 它曾经是写死的
+#: `AUTO_RETRY_IMPLEMENTED = False`,界面照着它写文案 —— 那种写法只在
+#: 「功能不存在」的那段时间成立:功能一做出来,开没开就成了配置的事,
+#: 而一个写死的常量必然有一天与配置说的不是同一件事。两个方向都会出事:
+#: 关着却说「系统会自己再试」,运营把一桶没人管的单晾在那儿;
+#: 开着却说「需人工重置」,人会去点已经排着队要被自动重的单。
+#: 开没开只有一个出处:`services/task_retry.config()`,它读的就是配置本身,
+#: `/v1/admin/meta` 下发的也是它。
+#:
+#: POSSIBLY_ORDERED 与这一组**按定义不相交**,自动重试那条链每轮启动前还会再断一次 ——
+#: 一旦相交,自动重试就是自动重复下单。见 services/task_retry._retryable_codes()。
 
 
 def validate(code: str) -> str:

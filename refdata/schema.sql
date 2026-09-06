@@ -99,9 +99,17 @@ CREATE TABLE IF NOT EXISTS procure.tasks (
     error_code        text,                   -- 见 docs/01-系统设计.md §4
     error_detail      text,
 
+    -- 系统自动重试过几次(workflows/task_retry.py 每重一次 +1)。
+    -- 人工重置不计数,也不清零 —— 上限是「这一单一生里被机器自动重拍几次」。
+    retry_count       integer NOT NULL DEFAULT 0,
+
     created_at        timestamptz NOT NULL DEFAULT now(),
     updated_at        timestamptz NOT NULL DEFAULT now()
 );
+-- 已经建好的库不会因为上面那段 CREATE TABLE IF NOT EXISTS 长出新列 —— 那一句对
+-- 已存在的表是彻底的空操作。加列必须另起一句,否则「跑了 db_init 就是最新结构」
+-- 这个所有人都默认成立的前提,只对空库成立。
+ALTER TABLE procure.tasks ADD COLUMN IF NOT EXISTS retry_count integer NOT NULL DEFAULT 0;
 -- 认领扫描
 CREATE INDEX IF NOT EXISTS idx_tasks_ready
     ON procure.tasks (buyer_env_id, created_at) WHERE status = 'ready';

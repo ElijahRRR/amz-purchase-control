@@ -18,7 +18,7 @@ from registry import settings
 from server import schemas
 from server.deps import conn_ctx
 from services import (error_codes, instance, ops_query, task_admin, task_intake,
-                      task_query, vocab)
+                      task_query, task_retry, vocab)
 
 router = APIRouter(prefix="/v1/admin", tags=["admin"])
 
@@ -69,9 +69,13 @@ def meta() -> schemas.Envelope:
             "to_manual": sorted(error_codes.TO_MANUAL),
             "business_blocked": sorted(error_codes.BUSINESS_BLOCKED),
             "possibly_ordered": sorted(error_codes.POSSIBLY_ORDERED),
-            # 界面文案要照事实写:这一位是 False 时不许说「系统自己会再试」
-            "auto_retry_implemented": error_codes.AUTO_RETRY_IMPLEMENTED,
         },
+        # 自动重试开没开、最多几次、隔多久 —— 界面上关于 RETRYABLE 那一组的每一句话
+        # 都得跟着它走。**不下发一个写死的「做没做」布尔**:那种写法只在功能不存在的
+        # 那段时间成立,功能做出来之后它迟早与配置说的不是同一件事,而两个方向都会
+        # 让界面撒谎(关着说会自动重试 / 开着说要人工重置)。
+        # 读的是 services/task_retry.config() —— 与那条链选单时读的是同一份。
+        "auto_retry": task_retry.config(),
     })
 
 

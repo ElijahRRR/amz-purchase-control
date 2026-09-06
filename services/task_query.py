@@ -196,7 +196,13 @@ def search(
 
 _DETAIL_SQL = """
 SELECT t.*, e.code AS env_code, e.amazon_customer_id,
-       i.instance_uid AS claimed_by_uid
+       i.instance_uid AS claimed_by_uid,
+       -- 距上次变动过了多久,由**服务端**用库里的 now() 算好(照 instance 那条先例)。
+       -- 对 exception 的单,这就是「失败到现在多久」—— 自动重试的两道时间闸
+       -- (backoff / max_age)量的是同一把尺子。让前端拿浏览器时钟去减一个时间戳的话,
+       -- 减出来的东西与选单 SQL 用的不是同一把尺,而界面正是靠它决定说
+       -- 「系统还会再试」还是「太久了,系统不会碰它」—— 两句话的处置正好相反。
+       EXTRACT(EPOCH FROM (now() - t.updated_at))::bigint AS updated_age_seconds
   FROM procure.tasks t
   JOIN procure.buyer_envs e ON e.id = t.buyer_env_id
   LEFT JOIN procure.plugin_instances i ON i.id = t.claimed_by

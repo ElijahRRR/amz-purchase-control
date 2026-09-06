@@ -60,7 +60,7 @@ export interface SearchOut {
 
 export interface TaskEvent {
   kind: "claimed" | "step" | "guard_block" | "error" | "purchased"
-      | "released" | "assert_failed" | "admin" | "shipment";
+      | "released" | "assert_failed" | "admin" | "auto_retry" | "shipment";
   code: string | null;
   payload: Record<string, unknown>;
   created_at: string;
@@ -120,6 +120,15 @@ export interface TaskDetail extends Omit<TaskRow, "carrier" | "tracking_no" | "s
   shipment: Shipment | null;
   /** 这张任务对应上游(飞书)的哪几行。一张单在表里通常占几行。 */
   sources: TaskSource[];
+  /** **系统**自动重拍过几次。人点的重置不计数(那一下背后有人在看),
+   *  所以这个数是「机器替你试了几回」,配 meta.auto_retry.max 一起读。 */
+  retry_count: number;
+  /** 距上次变动过了多久(秒)。对 exception 的单,这就是「失败到现在多久」。
+   *
+   *  由**服务端**用库里的 now() 算好,不是前端拿浏览器时钟减出来的 ——
+   *  自动重试选单量的是同一把尺子,两把尺子对不上的话,界面就会在
+   *  「系统还会再试」和「太久了,系统不会碰它」之间说错话。 */
+  updated_age_seconds: number;
 }
 
 export interface InstanceRow {
@@ -187,9 +196,28 @@ export interface Meta {
     /** 「可能已经下单」—— 这一组的处置方式跟其它失败**相反**:
      *  不能直接退回队列重拍,得先去亚马逊看一眼。它是 to_manual 的子集。 */
     possibly_ordered: string[];
-    /** 有没有真的做了自动重试。为 false 时界面**不许**说「系统自己会再试」——
-     *  那会让运营把一桶其实没人管的单晾在那儿。 */
-    auto_retry_implemented: boolean;
+  };
+  /** 有界自动重试的现状。界面上凡是提到 RETRYABLE 那一组该怎么办的话,
+   *  都必须照这三个值写:
+   *   · `enabled=false` → 「需人工重置」。说「系统自己会再试」就是撒谎,
+   *     运营会把一桶其实没人管的单晾在那儿
+   *   · `enabled=true`  → 「系统最多自动重试 max 次」,再配上这一单已经试过几次
+   *
+   *  **前端不存副本、也不自己算「开没开」** —— 服务端读的是配置本身
+   *  (services/task_retry.config()),与那条定时链选单读的是同一份。 */
+  auto_retry: {
+    enabled: boolean;
+    max: number;
+    backoff_min: number;
+    /** 失败超过这么多分钟就**不再自动重**,交给人。
+     *
+     *  它决定的不是「什么时候重」,而是**会不会重** —— 所以凡是写着
+     *  「不点它也会被放回队列」的地方都得先过这道闸,否则界面会对着一张
+     *  系统永远不会碰的单许一个不会兑现的诺。 */
+    max_age_min: number;
+    /** 一轮最多重几条。只影响快慢(这一轮没轮到的下一轮还在),
+     *  **不影响「会不会被重」,所以界面不拿它写承诺**。 */
+    batch: number;
   };
 }
 

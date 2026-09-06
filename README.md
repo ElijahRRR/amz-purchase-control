@@ -40,7 +40,7 @@ python cli.py db_init
 
 # 2. 跑测试(需要一个可连的 PostgreSQL 17;连不上会整体 skip)
 export AMZ_TEST_ADMIN_DSN="dbname=postgres"
-python -m pytest -q                       # 247 条
+python -m pytest -q                       # 269 条
 
 # 3. 起服务
 python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
@@ -184,7 +184,7 @@ python cli.py feishu_writeback
 
 | | 状态 |
 |---|---|
-| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 247 条 pytest,跑在真 PostgreSQL 17 上 |
+| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 269 条 pytest,跑在真 PostgreSQL 17 上 |
 | 插件与服务端的时序(认领 → 执行 → 护栏 → 回填 → 失败清车) | ✅ 8 个场景实跑,跑的是插件自己的 `Loop`/`runTask` |
 | 物流同步时序 | ✅ 实跑 |
 | DOM 解析层(选择器是否按报告的语义在读) | ✅ 109 条断言,对着按报告造的夹具跑 |
@@ -210,16 +210,19 @@ python cli.py feishu_writeback
 
 插件默认是 `off` 档(只注册与心跳,不认领),就是为了不让人不小心跑起来。
 
-## 运维:有一条必须挂上定时
+## 运维:有一条无条件必须挂上定时
 
-`task_sweep` 是**唯一**一条必须被定时调起来的链。整套设计里 `CLAIM_TIMEOUT` 那条路
-全靠它:插件领走一单之后崩了/被关了/机器睡了,任务会一直停在 `claimed`,
-既不会自己回队列,也不会出现在任何一个人会去看的桶里 —— 它就那么**隐身**了。
+`task_sweep` 是**唯一一条无条件**必须被定时调起来的链 —— 下面另外三条都要看你开没开
+对应的功能(接了上游才需要拉单,开了回写才需要回写,开了自动重试才需要重试)。
+整套设计里 `CLAIM_TIMEOUT` 那条路全靠它:插件领走一单之后崩了/被关了/机器睡了,
+任务会一直停在 `claimed`,既不会自己回队列,也不会出现在任何一个人会去看的桶里 ——
+它就那么**隐身**了。
 
 ```cron
 */5  * * * *  cd /path/to/amz-purchase-control && python cli.py task_sweep  >> /var/log/amz/sweep.log 2>&1
 */10 * * * *  cd /path/to/amz-purchase-control && python cli.py feishu_sync >> /var/log/amz/feishu.log 2>&1
 2-59/10 * * * *  cd /path/to/amz-purchase-control && python cli.py feishu_writeback >> /var/log/amz/feishu.log 2>&1
+*/10 * * * *  cd /path/to/amz-purchase-control && python cli.py task_retry  >> /var/log/amz/retry.log 2>&1
 ```
 
 第三条只在开了回写时才需要挂;没开的话它每轮只是安静地跳过,
@@ -232,6 +235,20 @@ python cli.py feishu_writeback
 (默认 120 分钟)没跑就标红。**改成低频跑的话记得把这个值一起调大**,
 否则那一格会永远红着 —— 而一格永远红着的卡片会把人训练成忽略红色。
 
+第四条**只在开了自动重试时才挂**(`AMZ_AUTO_RETRY_MAX > 0`)。没开的话它每轮只会
+返回一句「跳过:自动重试没开」,运营台也不盯着它。开了就必须挂上 ——
+界面在开着的时候对运营承诺「系统最多自动重试 N 次」,这条链停了那句话就是假的,
+而那一桶单会安安静静地待在拍单异常里,谁也没在管。所以开着而太久没跑,
+工作流记录页会标红(阈值 2 小时,比推荐的 `*/10` 宽 12 倍)。
+比这还低频地跑,说明并不真指望它自动重 —— 那就把 `AMZ_AUTO_RETRY_MAX` 调回 0,
+界面会跟着改回「需人工重置」,而不是留一格永远红着的卡片。
+
+**第一次把 `AMZ_AUTO_RETRY_MAX` 从 0 改成 N 的那一轮,不会把库里积着的历史异常
+一次性全部重拍。** 挡着的是两道上界:只重最近 `AMZ_AUTO_RETRY_MAX_AGE_MIN`
+(默认 24 小时)内失败的,而且一轮最多 `AMZ_AUTO_RETRY_BATCH`(默认 20)条。
+`retry_count` 在这里帮不上忙 —— 那些陈年异常的 `retry_count` 全是 0,它界的是
+「同一张单重几次」,不是「一轮放几张单」。即便如此,还是先空跑一次看看会动到谁。
+
 跑之前先空跑一次看看会动到谁:
 
 ```bash
@@ -239,6 +256,12 @@ python cli.py task_sweep --dry-run
 #   dry-run:1 条任务超过 15 分钟未回传,将转 manual
 python cli.py task_sweep
 #   清扫完成:1 条超时任务转 manual (id: [30])
+
+python cli.py task_retry --dry-run
+#   dry-run:1 条够格自动重试(上限 2 次;失败后隔够 10 分钟、且不超过 1440 分钟;本轮最多 20 条)
+#       #1 UP-1 env-172 CHECKOUT_TIMEOUT 已试 0/2
+python cli.py task_retry
+#   1 条够格自动重试(上限 2 次;失败后隔够 10 分钟、且不超过 1440 分钟;本轮最多 20 条) → 已退回队列 1 条 (#1 第 1/2 次)
 ```
 
 超时的单转 **manual 而不是 ready** —— 插件那侧可能已经在 Amazon 上真下了单,
@@ -271,6 +294,10 @@ python cli.py task_sweep
 | `AMZ_HEARTBEAT_STALE_SEC` | `60` | 多久没心跳算离线(插件 20 秒一次,连续三次没到) |
 | `AMZ_LOGIN_RECHECK_MIN` | `10` | 插件多久重读一次页面判登录态。**只在这个买家号有单在等派时才读** —— 队列空着时读到的结论没人用得上 |
 | `AMZ_ADMIN_PAGE_SIZE_MAX` | `200` | 后台列表单页上限 |
+| `AMZ_AUTO_RETRY_MAX` | `0` | 同一张任务最多被**系统**自动重拍几次,**`0` = 关(默认)**。人工重置不占这个数 |
+| `AMZ_AUTO_RETRY_BACKOFF_MIN` | `10` | 失败后至少隔这么久才轮得到自动重试。立刻重拍只是拿同一个坏环境再撞一次 |
+| `AMZ_AUTO_RETRY_MAX_AGE_MIN` | `1440` | 失败超过这么久就**不再自动重**,交给人。拦的是「刚把开关从 0 改成 N,库里积着的历史异常被一次性全部重拍」 |
+| `AMZ_AUTO_RETRY_BATCH` | `20` | 一轮最多自动重几条。`0`/负数按 `1` 算,**不当成「关」**——关只有 `AMZ_AUTO_RETRY_MAX=0` 一个开关 |
 | `AMZ_SHIPMENT_RESYNC_MIN` | `360` | 同一条物流多久之后才值得再同步 |
 | `AMZ_SHIPMENT_BATCH` | `20` | 一次给插件多少条待同步的单 |
 | （库里）`buyer_envs.daily_cap` | `0` | 该买家号一天最多拍几单，`0` = 不限。闸门在认领的那条 SQL 里 |
@@ -291,7 +318,7 @@ python cli.py task_sweep
 | `POST /v1/admin/tasks/batch-reset` | 批量重置。**不接受 acknowledged** —— 可能已下单的原样报回来,让人逐条去看 |
 
 | `GET /v1/admin/instances` | 买家号与判活 |
-| `GET /v1/admin/meta` | 封闭集连中文标签下发。**前端不存副本** |
+| `GET /v1/admin/meta` | 封闭集连中文标签下发,外加 `auto_retry: {enabled, max, backoff_min, max_age_min, batch}`。**前端不存副本** |
 | `GET /v1/admin/summary` | 状态桶计数(跟着 env/时间筛选走;顶栏两个数字保持全局) |
 | `GET /v1/admin/error-stats` | 错误码分布:按码 / 按买家号 / 按天 |
 | `GET /v1/admin/runs` | 工作流运行记录 |
@@ -326,8 +353,14 @@ python cli.py task_sweep
 - pytest 曾**假通过**一条回滚 bug,因为测试夹具没有复刻 `pg_conn` 的事务语义
 - 19 个错误码看着是个三分的封闭分类,实际有 **7 个不在任何一组** —— 而且恰好是最常见的
   那几个(无货、非 FBA、地址不可投递)。照着分组建处置 SOP 的人会漏掉三分之一
-- `RETRYABLE` 这一组**没有任何自动重试在消费它**:没有 workflow 把 `exception` 退回 `ready`。
-  界面上因此不许写「系统自己会再试」—— 那会让人把一桶其实没人管的单晾在那儿
+- `RETRYABLE` 这一组曾经**没有任何自动重试在消费它**,而界面上那句「重置一下基本能过」
+  读起来像是系统会自己再来。现在它有了消费者(`task_retry`,**默认关**),
+  于是这条的教训换了个形状:**界面上关于它的每一句话都必须跟着配置走** ——
+  关着说「需人工重置」,开着说「系统最多自动重试 N 次(已试 k 次)」。
+  两个方向都会害人:关着却说会自动重试,一桶没人管的单被晾着;
+  开着却说要人工重置,人会去点已经排队等系统重的单。
+  所以那个写死的「做没做自动重试」的常量被删掉了,没有翻成 `True` —— 写死的那份
+  迟早与配置说的不是同一件事
 - `ops.runs` 曾是**只写不读**的:每跑一条 workflow 就写一行,全项目没有任何地方读它
 - 「可能已下单」那道二次确认闸曾按 `status` 判,而状态是**插件**在 `/fail` 里
   用自己算的布尔定的 —— 等于把闸门交给被管的一方;运营台上那条紫色警告
@@ -381,4 +414,5 @@ python cli.py task_sweep
 | P6 | 运营台 Web 前端:四页 + 点行弹出的订单详情 + 点击即复制 | ✅ |
 | P7 | 上游接入:定时从飞书多维表格拉单 + 结果回写 | ✅ 代码完成,**未对着真实表格跑过**(缺凭据) |
 | — | 登录态上报:被登出的买家号不再空转刷认领,运营台上看得见 | ✅ |
-| 下一步 | 自动重试:目前 `RETRYABLE` 那一组没有任何东西在消费它 | 待定 |
+| P8 | 有界自动重试:`RETRYABLE` 那一组终于有 `task_retry` 在消费它 | ✅ **默认关**(`AMZ_AUTO_RETRY_MAX=0`),开了才跑,界面文案跟着配置走 |
+| 下一步 | 在真实 Amazon 上跑第一单(P3 至今唯一没验过的那一格) | 待定 |

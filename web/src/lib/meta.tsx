@@ -27,6 +27,9 @@ const REQUIRED: Record<string, string[]> = {
   event_kind: ["labels", "tone"],
   login_state: ["labels", "tone"],
   error_code: ["labels", "retryable", "to_manual", "business_blocked", "possibly_ordered"],
+  // 自动重试的现状。少了它,「这一桶该谁管」那句话就没了依据 ——
+  // 而那句话写错任何一个方向都会让人做错事(见 types.ts 的 Meta.auto_retry)。
+  auto_retry: ["enabled", "max", "backoff_min"],
 };
 
 function missingKeys(m: unknown): string[] {

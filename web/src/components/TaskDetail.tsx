@@ -16,7 +16,7 @@ import { Dot, Tag } from "@/components/ui/tag";
 import { Input } from "@/components/ui/input";
 import { api, type ApiResult } from "@/lib/api";
 import { useLabel, useMeta } from "@/lib/meta";
-import { cn, fullTime, money, shortTime } from "@/lib/utils";
+import { cn, fullTime, minutesText, money, shortTime } from "@/lib/utils";
 import type { TaskDetail as TD } from "@/types";
 
 function Group({ title, note, right, children, last }: {
@@ -63,11 +63,17 @@ function eventText(e: { kind: string; code: string | null; payload: Record<strin
 
   // payload 里除了已经当正文用掉的那个键,剩下的按 k=v 铺开。
   // 不用 JSON.stringify:引号和花括号在一行里读起来比值本身还占地方。
+  // 自动重试那条,「第几次 / 上限几次」是唯一想第一眼看到的东西 ——
+  // 混在后面一串 k=v 里就得找。次数由服务端写进事件载荷,前端只负责排版。
+  const lead = e.kind === "auto_retry" && pl.attempt != null
+    ? `第 ${pl.attempt}/${pl.max} 次自动重试` : "";
+  const used = new Set(lead ? ["step", "attempt", "max"] : ["step"]);
+
   const rest = Object.entries(pl)
-    .filter(([k, v]) => k !== "step" && v !== null && v !== undefined && v !== "")
+    .filter(([k, v]) => !used.has(k) && v !== null && v !== undefined && v !== "")
     .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : String(v)}`);
 
-  return [head, ...rest].filter(Boolean).join(" · ");
+  return [lead, head, ...rest].filter(Boolean).join(" · ");
 }
 
 /** 可改的收货字段。与 services/task_admin._ADDRESS_FIELDS 一一对应 ——
@@ -201,6 +207,47 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
   /** 「可能已经下单」那一组的处置方式跟别的**相反**:不能直接退回队列重拍。
    *  这句话必须在按钮旁边说出来,而不是指望人记得住 19 个码分别属于哪一组。 */
   const maybeOrdered = !!t.error_code && meta.error_code.possibly_ordered.includes(t.error_code);
+
+  /** 这一单接下来**是等系统重、还是等人点**。
+   *
+   *  三种情况必须说成三句不一样的话:一句「重置一下基本能过」在这三种情况下
+   *  都不算错,但它同时也什么都没说 —— 而这三种的处置方式是不同的。
+   *  开没开、上限几次都从 meta 来(服务端读的是配置本身),前端不存副本、也不自己判。 */
+  /** 这一单**此刻**在不在自动重试的射程里 —— 「上限 N 次」那句承诺只对它成立。
+   *
+   *  条件与 services/task_retry.py 的选单一一对应,少判一条,界面就会替系统许一个
+   *  它不会兑现的诺:
+   *   · status 必须是 `exception`。`manual` + RETRYABLE 这种组合是**真实可达**的
+   *     (插件越过下单点之后抛 DriverError,码还在 RETRYABLE 那一组里,单却已经
+   *     转了待人工),这种单机器永远不会碰,要人**现在**去看
+   *   · 码必须在 RETRYABLE 那一组
+   *   · 失败不能太久 —— 超过 `max_age_min` 的交给人。年龄由服务端算好给出
+   *     (`updated_age_seconds`),前端不拿浏览器时钟去减,那把尺子跟选单的不是同一把
+   *
+   *  「已经重满 max 次」**不在这里判**:那时候「上限 N 次」这句话仍然成立,
+   *  而且正是要让人看见它已经用满了。 */
+  const autoRetryApplies =
+    meta.auto_retry.enabled
+    && t.status === "exception"
+    && !!t.error_code
+    && meta.error_code.retryable.includes(t.error_code)
+    && t.updated_age_seconds < meta.auto_retry.max_age_min * 60;
+
+  const retryHint = (() => {
+    if (t.status !== "exception" || !t.error_code) return null;
+    if (!meta.error_code.retryable.includes(t.error_code)) return null;
+    const { enabled, max, backoff_min, max_age_min } = meta.auto_retry;
+    if (!enabled) return "没开自动重试 —— 这一单只能人工重置,系统不会自己再试";
+    if (!autoRetryApplies)
+      return `失败已经超过 ${minutesText(max_age_min)},系统不再自动重它 —— `
+           + `接下来要人来点。攒太久的单往往在别处已经处置过了,不该由定时任务`
+           + `替人重新买一遍`;
+    if (t.retry_count >= max)
+      return `自动重试已经用满 ${max} 次,系统不会再动它 —— 接下来要人来点`;
+    return `系统最多自动重试 ${max} 次(已试 ${t.retry_count} 次),失败后至少隔 `
+         + `${backoff_min} 分钟。不点它也会被放回队列 —— 前提是 task_retry 那条定时链`
+         + `在跑,「工作流记录」页盯着它`;
+  })();
 
   return shell(
     <>
@@ -420,8 +467,34 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
                   </>
                 : <span className="text-zinc-400">—</span>}
             </KV>
+            {/* 已试几次:人点的重置**不计数**(那一下背后有人在看),
+                所以这个数只回答一个问题 —— 机器替这一单试过几回。
+
+                「上限 M 次」是一句**承诺**,只有这一单真的排着队等机器重的时候
+                才成立(autoRetryApplies)。无条件写出来的话,一张 status=manual、
+                error_code 在 RETRYABLE 里的单 —— 机器永远不会碰、要人现在就去
+                订单页看的那一种 —— 会和隔壁真排着队的单渲染出一模一样的
+                「已试 0 / 上限 2」,而运营刚在错误码分布页读过「重满了才要人进去点」,
+                自然得出「还没轮到我管」。两种处置相反的情况长成同一个样子就是缺陷。
+                不在射程里的只报事实(机器试过几回),绝不报上限。 */}
+            {(autoRetryApplies || t.retry_count > 0) && (
+              <KV k="自动重试">
+                {autoRetryApplies
+                  ? <span className="text-xs">
+                      已试 <span className="num text-zinc-900">{t.retry_count}</span>
+                      <span className="text-zinc-400"> / 上限 {meta.auto_retry.max} 次</span>
+                    </span>
+                  : <span className="text-xs text-zinc-500">
+                      已试 <span className="num text-zinc-700">{t.retry_count}</span> 次 ·{" "}
+                      {meta.auto_retry.enabled
+                        ? "这一单不在自动重试范围内"
+                        : "现在没开自动重试"}
+                    </span>}
+              </KV>
+            )}
             <KV k="创建时间"><span className="id text-xs">{fullTime(t.created_at)}</span></KV>
             <KV k="采购时间"><span className="id text-xs">{fullTime(t.purchased_at)}</span></KV>
+            {retryHint && <Hint>{retryHint}</Hint>}
             <Hint>没有「创建者」—— 单子由上游下发,不是人在这里建的</Hint>
           </Group>
         </div>

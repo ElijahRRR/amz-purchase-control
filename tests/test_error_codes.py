@@ -38,15 +38,48 @@ def test_possibly_ordered_is_a_subset_of_to_manual():
     assert e.POSSIBLY_ORDERED <= e.TO_MANUAL
 
 
-def test_retryable_does_not_claim_an_automation_that_does_not_exist():
-    """没有任何东西把 exception 自动退回 ready。
+def test_nothing_that_might_already_be_ordered_is_ever_auto_retryable():
+    """「可能已经下单」的码永远不许出现在「可自动重试」里。
 
-    这条测试盯的不是代码行为,是**文案与事实的一致性**:
-    只要 AUTO_RETRY_IMPLEMENTED 还是 False,界面就不许说「系统自己会再试」。
-    哪天真做了自动重试,把这个常量翻成 True,这条测试会提醒去改界面文案。
+    这两组相交的后果不是分类难看,是 workflows/task_retry.py 会把一批
+    **可能已经在亚马逊上下过单**的任务自动再拍一遍。
+    上面那条分组测试已经间接盖住了它(POSSIBLY_ORDERED ⊆ TO_MANUAL,而三组互不相交),
+    但间接成立的东西不该只靠间接成立 —— 那条测试哪天被改了口径,这条还在。
+    代码里也有一道同样的断言(services/task_retry._retryable_codes),它拦的是
+    「有人改了分组、测试还没跑到、而定时任务照跑」。
     """
     from services import error_codes as e
-    assert e.AUTO_RETRY_IMPLEMENTED is False, (
-        "自动重试做出来了?那就去把 web 的错误码分布页文案改掉 —— "
-        "现在那里写的是「目前没有自动重试,要人来点」"
+    overlap = e.RETRYABLE & e.POSSIBLY_ORDERED
+    assert not overlap, f"这些码既算可自动重试、又算可能已下单:{sorted(overlap)}"
+
+
+def test_the_ui_reads_auto_retry_from_config_not_from_a_hardcoded_constant(monkeypatch):
+    """RETRYABLE 这一组现在**有东西在消费它**了,而且开没开由配置说了算。
+
+    这条测试盯的不是代码行为,是**文案与事实的一致性**——只是那个「事实」变了:
+      · 旧事实:没有任何 workflow 把 exception 退回 ready,所以界面不许说
+        「系统自己会再试」。那时用一个写死的 AUTO_RETRY_IMPLEMENTED=False 来表达它。
+      · 新事实:workflows/task_retry.py 在消费这一组,但**默认关**
+        (AMZ_AUTO_RETRY_MAX=0),开没开是配置的事。
+
+    所以那个写死的常量必须消失,不能翻成 True 了事:功能做出来之后,一个写死的
+    布尔迟早与配置说的不是同一件事,而界面照着它写文案 —— 关着却说会自动重试,
+    一桶没人管的单被晾着;开着却说要人工重置,人会去点已经排队等系统重的单。
+    """
+    from registry import paths
+    from services import error_codes as e, task_retry
+
+    assert not hasattr(e, "AUTO_RETRY_IMPLEMENTED"), (
+        "别把这个常量加回来 —— 开没开去读 services/task_retry.config(),"
+        "它读的是配置本身,界面(/v1/admin/meta)拿到的也是它"
     )
+    assert (paths.repo_root() / "workflows" / "task_retry.py").exists(), \
+        "注释与文档都说 RETRYABLE 有自动重试在消费,那条链必须真的在"
+
+    for var in ("AMZ_AUTO_RETRY_MAX", "AMZ_AUTO_RETRY_BACKOFF_MIN",
+                "AMZ_AUTO_RETRY_MAX_AGE_MIN", "AMZ_AUTO_RETRY_BATCH"):
+        monkeypatch.delenv(var, raising=False)
+    assert task_retry.config()["enabled"] is False, "自动重试必须默认关"
+    monkeypatch.setenv("AMZ_AUTO_RETRY_MAX", "3")
+    assert task_retry.config() == {"enabled": True, "max": 3, "backoff_min": 10,
+                                   "max_age_min": 1440, "batch": 20}
