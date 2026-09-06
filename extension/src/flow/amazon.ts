@@ -27,10 +27,10 @@ import {
   readLoginState,
   readOrderSummary, readPaymentLast4, readProductShipper, readTrackingEvents,
   readTrackingNumber, readTrackingStatus,
-  type LoginState, type OrderState,
+  type CartLine, type LoginState, type OrderState,
 } from "./dom/parse.js";
 import type { ShipmentReader, TrackingRead } from "./shipment.js";
-import { DriverError, LoginLostError, type AddResult, type CheckoutReading, type OrderCard, type PageDriver } from "./driver.js";
+import { DriverError, LoginLostError, type AddResult, type CartReadReporter, type CheckoutReading, type OrderCard, type PageDriver } from "./driver.js";
 import type { Shipping } from "../core/types.js";
 
 const T = {
@@ -62,7 +62,7 @@ function setInput(el: Element | null, value: string): boolean {
   return true;
 }
 
-export class AmazonDriver implements PageDriver {
+export class AmazonDriver implements PageDriver, CartReadReporter {
   readonly name = "amazon";
   readonly ready = true;
 
@@ -292,13 +292,48 @@ export class AmazonDriver implements PageDriver {
   }
 
   // ── 回读购物车 ───────────────────────────────────────────────────
+  /** 上一次 verifyCart 读到的行,给 run.ts 写进 CART_MISMATCH 的现场用(CartReadReporter)。 */
+  private cartRead: CartLine[] = [];
+  lastCartRead(): CartLine[] { return this.cartRead; }
+
+  /** 车里的东西是不是恰好是本单的东西。
+   *
+   *  **这里不再等「行数 > 0」。** 原先那个等待条件把「车里一件都没有」
+   *  (商品加购后被 Amazon 判不可售自动移除 —— 库存刚被抢完时很常见)
+   *  变成一次 15 秒的 WaitTimeout,而 WaitTimeout 不是 DriverError,
+   *  run.ts 兜底成 PLUGIN_INTERNAL:真实原因是「购物车与本单不符」,
+   *  运营台上却写着「插件内部异常」,按错误码建的处置 SOP 会把它分给研发看插件,
+   *  而不是回上游重新报价。0 行本来就该走 cartMatches → false → CART_MISMATCH。
+   *
+   *  换成三种可分辨的结局:
+   *   · 读到行,或页面明说空车     → 立刻按 cartMatches 判(空车 = 不符)
+   *   · 容器在、就是 0 行          → 等满窗口后同样按 cartMatches 判(不符)
+   *   · 连容器带空车标志都没有     → 这一页压根没渲染,回读不算数 → PLUGIN_INTERNAL
+   */
   async verifyCart(expected: Array<{ asin: string; quantity: number }>): Promise<boolean> {
     this.checkout?.close();
     this.checkout = await openFrame(URLS.cart(this.origin), T.frameLoad);
-    await waitFor("购物车行渲染",
-                  () => readCartLines(this.checkout!.doc()).length > 0,
-                  { timeoutMs: 15_000 });
-    return cartMatches(readCartLines(this.checkout.doc()), expected);
+    const f = this.checkout;
+    this.cartRead = [];
+
+    const st = await waitFor("购物车回读", () => {
+      const got = readCartState(f.doc());
+      if (got.lines.length > 0) return got;
+      // 页面明说「车是空的」也是一种确定的读数,不必等满 15 秒。
+      if (SEL.cart.emptyMarkers.some((m) => f.doc().querySelector(m))) return got;
+      return null;
+    }, { timeoutMs: 15_000 }).catch(() => null);
+
+    const final = st ?? readCartState(f.doc());
+    if (!st && !final.scopeFound) {
+      await this.guardLogin(f, "回读购物车");
+      throw new DriverError(
+        "PLUGIN_INTERNAL",
+        `购物车页没渲染出商品区,回读不算数:` +
+        `${describeMiss(f.doc(), [SEL.cart.activeItems, ...SEL.cart.emptyMarkers])}`);
+    }
+    this.cartRead = final.lines;
+    return cartMatches(final.lines, expected);
   }
 
   // ── 去结算 ───────────────────────────────────────────────────────

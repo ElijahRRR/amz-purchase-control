@@ -14,7 +14,7 @@ import type { ErrorCode } from "../core/codes.js";
 import { toManual } from "../core/codes.js";
 import type { Log } from "../core/log.js";
 import type { Task } from "../core/types.js";
-import { DriverError, LoginLostError, type PageDriver } from "./driver.js";
+import { cartReadOf, DriverError, LoginLostError, type PageDriver } from "./driver.js";
 
 export type Outcome =
   | { kind: "purchased"; amazonOrderNo: string }
@@ -71,7 +71,19 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     }
 
     if (!(await driver.verifyCart(task.products))) {
-      throw new Abort("CART_MISMATCH", "购物车回读与本单不符");
+      // detail 里必须带上**实际读到的**是什么。只写「与本单不符」的话,
+      // 「车里少了一件(被 Amazon 判不可售自动移除)」「车里多了一件(上一单没清干净)」
+      // 「数量对不上」这三种处置完全不同的情况在运营台上长得一模一样,
+      // 唯一能做的事是自己登录买家号去开购物车看。
+      // 模拟驱动不具备这个能力(cartReadOf 返回 null),那就少写一段,别编。
+      const got = cartReadOf(driver);
+      const want = task.products.map((p) => `${p.asin}×${p.quantity}`).join(", ");
+      const has = got === null
+        ? ""                                        // 这个驱动不回报车里的行,那就别编
+        : got.length === 0
+          ? ",而车里一件都没有"
+          : `,车里是 ${got.map((l) => `${l.asin}×${l.quantity ?? "?"}`).join(", ")}`;
+      throw new Abort("CART_MISMATCH", `购物车回读与本单不符:本单要 ${want}${has}`);
     }
     await step("购物车核对通过");
 

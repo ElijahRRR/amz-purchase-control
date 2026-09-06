@@ -105,3 +105,25 @@ export interface PageDriver {
   /** 关掉所有 iframe。无论成败都会被调用,必须幂等。 */
   dispose(): Promise<void>;
 }
+
+// ── 可选能力:回读购物车的现场 ───────────────────────────────────────
+
+/** 上一次 `verifyCart` 实际从购物车页读到的行。
+ *
+ * 为什么要有它:`verifyCart` 返回 boolean,于是 CART_MISMATCH 的 detail 只能写
+ * 「购物车回读与本单不符」—— 运营看到这句话唯一能做的事是自己登录买家号去开购物车。
+ * 而「车里少了一件(被判不可售自动移除)」「车里多了一件(上一单没清干净)」
+ * 「车里数量不对」是三种完全不同的处置,它们今天渲染出同一句话。
+ *
+ * **做成可选而不是塞进 PageDriver**:模拟驱动没有购物车 DOM,不该被迫编一个;
+ * `run.ts` 拿不到就少写一段现场,判定本身不受影响。 */
+export interface CartReadReporter {
+  lastCartRead(): Array<{ asin: string; quantity: number | null }>;
+}
+
+/** 输入:任意驱动 → 输出:它上一次读到的购物车行,不具备这个能力就是 null。
+ *  `null`(不具备)与 `[]`(读到了、就是空车)是两件事,别合并。 */
+export function cartReadOf(d: unknown): Array<{ asin: string; quantity: number | null }> | null {
+  const fn = (d as Partial<CartReadReporter> | null)?.lastCartRead;
+  return typeof fn === "function" ? fn.call(d) : null;
+}
