@@ -905,6 +905,13 @@ await withFixture("address-form-async.html", async (run) => {
                 amzdom.readAppliedAddressText(document),
                 amzdom.readAddressSaveOutcome(document, null)];
      })()`), [true, null, "suggestion"]);
+  // 少传 before 要当场报错。少了这一条,从 JS 里漏传一个参数就会静默退回
+  // 缺陷前的行为(页面上有地址栏 = saved),而且照样返回一个看着正常的值。
+  eq("address-form readAddressSaveOutcome 少传 before 直接报错",
+     await run(`(() => {
+        try { amzdom.readAddressSaveOutcome(document); return "没抛"; }
+        catch (e) { return e.message.includes("before") ? "报错" : "抛了别的:" + e.message; }
+     })()`), "报错");
 });
 
 // ── 地址保存的「三轮对抗」:每一轮动作之后要等的是「状态真的变了」 ──────

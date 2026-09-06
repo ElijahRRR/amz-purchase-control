@@ -507,6 +507,13 @@ export function readAddressSaveOutcome(
   doc: Document,
   before: string | null,
 ): AddressSaveOutcome | null {
+  // 少传 before 时**当场报错**,不要静默按「页面上有地址栏 = saved」办。
+  // TS 那边这个参数是必填的,这一句拦的是从 JS 调进来的(domkit 就是给测试用的):
+  // 少传一个参数就退回缺陷前的行为、而且照样返回一个看着正常的值,
+  // 正是这条判据当初没被任何断言拦住的那种坏法。
+  if (before === undefined) {
+    throw new Error("readAddressSaveOutcome 缺第二个参数 before:保存前的收货地址栏文本(没有就传 null)");
+  }
   const now = readAppliedAddressText(doc);
   if (now !== null && now !== before) return "saved";
   for (const sel of SEL.address.validationAlerts) {
