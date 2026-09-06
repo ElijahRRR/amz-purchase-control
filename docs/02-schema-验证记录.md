@@ -168,12 +168,15 @@ createdb amz_fresh → cli.py db_init → 9 张表
 | 插件下一轮 | `{"kind":"signed-out"}` —— 自己就不认领了，不去刷服务端 |
 | 绕过插件直接认领 | HTTP 409 `INSTANCE_SIGNED_OUT`，**不是**「没有单」 |
 | `GET /v1/admin/instances` | `login_state=signed_out` / `login_blocks_dispatch=true` / `dispatchable=false`，而 `liveness` 仍是 `online` |
+| 之后再报一次 `unknown`（2026-09-06 复核补） | 库里仍是 `signed_out`、`login_checked_at` 不动，认领仍 409。**只有 `ok` 能解封** |
+| 之后切「模拟」档跑一轮（同上） | 模拟驱动报的是 `unknown`（它一次页面都没读过），库里仍是 `signed_out`，认领仍 409 |
 
-最后一行是这一整件事的要害：**心跳正常、机器却一单也跑不了**，这两条轴必须分开显示。
+`/v1/admin/instances` 那一行是这一整件事的要害：**心跳正常、机器却一单也跑不了**，这两条轴必须分开显示。
 
-pytest：**245 passed**（新增 13 条：心跳落库 / 不传不覆盖 / 封闭集 422 / 被登出仍可心跳 /
-认领被拒且不动任务 / 恢复后能派 / unknown 不拦 / 运营台与真闸一致 / 没有实例时归一成 unknown /
-复检节奏 / 三处封闭集一致 / meta 下发 / 「刻意不新增错误码」这个决定）。
+pytest：**247 passed**（新增 15 条：心跳落库 / 不传不覆盖 / **unknown 不许洗掉 signed_out** /
+**unknown 照样盖掉 ok** / 封闭集 422 / 被登出仍可心跳 / 认领被拒且不动任务 / 恢复后能派 /
+unknown 不拦 / 运营台与真闸一致 / 没有实例时归一成 unknown / 复检节奏 /
+**六处封闭集一致** / meta 下发 / 「刻意不新增错误码」这个决定）。
 
 ### DOM 断言「证明有用」的那一步
 
