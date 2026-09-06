@@ -78,6 +78,17 @@ class TaskOut(BaseModel):
     shipping: ShippingOut
     products: list[ProductOut]
     guards: GuardsOut
+    #: 领走这一单之后多久没回传会被 task_sweep 判成异常中断(分钟)。
+    #:
+    #: 为什么要下发给插件:插件在「点了下单、页面转到发卡行验证页」那一格要等人,
+    #: 而那个等待的上界**不能由插件自己拍脑袋** —— sweep 只看 claimed_at,
+    #: 插件发再多 step 事件也不会推迟清扫。等过了头的后果是所有结局里最坏的一个:
+    #: 任务先被转成 manual/CLAIM_TIMEOUT,之后操作员做完验证、订单真下成了、
+    #: 单号也读到了,complete 却拿回 409 TASK_NOT_HELD ——
+    #: **钱花了、货发了,系统里是一条没有单号的待人工**。
+    #: 插件拿它反推硬顶(还要再留几分钟余量),见 extension/src/flow/amazon.ts。
+    #: 值来自 registry.settings.claim_timeout_minutes(),改它不用发新插件版本。
+    claim_timeout_min: int
 
 
 # ── 执行期上报 ──────────────────────────────────────────────────────────
@@ -146,6 +157,11 @@ class FailReq(BaseModel):
     cart_cleared: bool = Field(
         False, description="是否已清空购物车。失败必清车,否则残留商品会污染下一单"
     )
+    #: 这一单**试没试过**清车。越过下单点(可能已下单)之后按规矩就不该再动购物车,
+    #: 那不是一次清车失败 —— 两者写成同一条 warning 的话,运营台上「清不动车」
+    #: 那一格会被每一单「可能已下单」刷满,而真正清不动的那台机器淹在里面。
+    #: 默认 True:老插件不传这一位,行为与以前完全一致。
+    cart_clear_attempted: bool = True
 
 
 class ReleaseReq(BaseModel):

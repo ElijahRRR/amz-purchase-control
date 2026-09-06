@@ -11,15 +11,12 @@
 import { Client } from "../core/client.js";
 import { loadConfig, saveConfig, type Config } from "../core/config.js";
 import { Log } from "../core/log.js";
+import { decideLease, type Lease } from "../core/lease.js";
 import { chromeStore } from "../core/store.chrome.js";
 import type { LoginState } from "../core/types.js";
 
 const VERSION = "0.1.0";
 const ALARM_HEARTBEAT = "amz.heartbeat";
-
-/** 执行租约的有效期。内容脚本每一轮认领前都要重新要一次,
- *  所以只要比认领轮询间隔宽裕一点就够 —— 标签页被关掉后,租约最多空转这么久。 */
-const LEASE_TTL_MS = 45_000;
 
 const store = chromeStore();
 const log = new Log();
@@ -29,9 +26,48 @@ let client: Client | null = null;
 let registered = false;
 
 /** 谁在跑单。同一浏览器里可能开着好几个 amazon.com,
- *  不发租约的话两个标签页会各领一单,在同一个买家号上并行拍两单。 */
-let leaseTabId: number | null = null;
-let leaseUntil = 0;
+ *  不发租约的话两个标签页会各领一单,在同一个买家号上并行拍两单。
+ *
+ *  **存在 chrome.storage.session 里,不存在模块级变量里。** MV3 的 service worker
+ *  空闲约 30 秒就被回收,任何一次唤醒(心跳 alarm、一条消息)都会重跑顶层脚本 ——
+ *  模块级变量随之归零,而原先那句 `leaseTabId === null` 对**任何**标签页都成立:
+ *  租约在 SW 每次重启后都会被第一个来问的标签页拿走,哪怕另一个标签页正跑到一半。
+ *  storage.session 随浏览器会话存活、跨 SW 重启不丢,而且不落盘。
+ *
+ *  裁决规则本身在 core/lease.ts(纯函数,Node 里验得了);这里只负责读写与
+ *  「持有者那个标签页还在不在」这一条要问 chrome.tabs 的事实。 */
+const LEASE_KEY = "amz.lease";
+
+async function readLease(): Promise<Lease | null> {
+  try {
+    const got = await chrome.storage.session.get(LEASE_KEY);
+    return (got?.[LEASE_KEY] as Lease | undefined) ?? null;
+  } catch {
+    // 读不到就当没有租约。**不是**「谁都别想拿」——那样一次存储抖动就能让
+    // 整个浏览器再也拍不了单。
+    return null;
+  }
+}
+
+async function writeLease(l: Lease | null): Promise<void> {
+  try {
+    if (l === null) await chrome.storage.session.remove(LEASE_KEY);
+    else await chrome.storage.session.set({ [LEASE_KEY]: l });
+  } catch {
+    // 写不进去:这一轮的租约只在内存里有效,下一轮重新裁决。不阻断认领。
+  }
+}
+
+/** 持有者那个标签页还在不在。查不了就当它还在 ——
+ *  「不知道」不该变成「可以抢」(抢错的代价是两单并行动同一个购物车)。 */
+async function holderAlive(tabId: number): Promise<boolean> {
+  try {
+    const tab = await chrome.tabs.get(tabId);
+    return !!tab;
+  } catch {
+    return false;   // chrome.tabs.get 对不存在的标签页是**明确**抛错,这一条是硬事实
+  }
+}
 
 /** 内容脚本刚读到、还没送出去的登录态。
  *
@@ -153,18 +189,38 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
 
   if (msg?.type === "amz.acquireRunner") {
     const tabId = sender.tab?.id;
-    const now = Date.now();
     if (tabId === undefined) { respond({ granted: false }); return false; }
-    if (leaseTabId === null || leaseTabId === tabId || now > leaseUntil) {
-      leaseTabId = tabId;
-      leaseUntil = now + LEASE_TTL_MS;
-      // 顺路把服务端那句「该复检登录态了」捎回去。租约本来就每轮要一次,
-      // 搭在这上面比再开一条广播少一条要维护的消息路径。
-      respond({ granted: true, loginCheckDue });
-    } else {
-      respond({ granted: false, heldBy: leaseTabId });
-    }
-    return false;
+    void (async () => {
+      const cur = await readLease();
+      const v = decideLease(cur, {
+        tabId,
+        busy: !!msg.busy,
+        now: Date.now(),
+        // 只有「过期了、而持有者说自己在跑单」那一格才需要问这一句,
+        // 其余情况别去打扰 chrome.tabs。
+        holderAlive: cur && cur.tabId !== tabId && cur.busy
+          ? await holderAlive(cur.tabId)
+          : true,
+      });
+      if (v.granted && v.next) {
+        await writeLease(v.next);
+        if (v.reason === "taken-over" || v.reason === "holder-gone") {
+          log.info(`执行租约换手到标签页 ${tabId}` +
+                   (v.reason === "holder-gone" ? "(原持有者的标签页已经不在了)" : ""));
+        }
+        // 顺路把服务端那句「该复检登录态了」捎回去。租约本来就每轮要一次,
+        // 搭在这上面比再开一条广播少一条要维护的消息路径。
+        respond({ granted: true, loginCheckDue });
+        return;
+      }
+      if (v.reason === "held-busy") {
+        // 说出来:否则「另一个标签页正跑着单、续租迟到了」看起来就是
+        // 「租约莫名其妙拿不到」,而两者该做的事完全不同(前者等着就行)。
+        log.dim(`租约过期了,但持有它的标签页 ${cur?.tabId} 报告正在跑单 —— 不换手`);
+      }
+      respond({ granted: false, heldBy: cur?.tabId ?? null });
+    })();
+    return true;   // 异步应答:通道要保持打开
   }
 
   if (msg?.type === "amz.loginState") {
@@ -181,9 +237,15 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
   return false;
 });
 
-// 拿着租约的标签页被关掉时立刻释放,不用等 TTL 到期
+// 拿着租约的标签页被关掉时立刻释放,不用等 TTL 到期。
+// 这条兜底正是 TTL 敢放到 5 分钟的原因:持有者真没了的那一刻就释放,
+// 而不是靠一个短 TTL 去猜 —— 短 TTL 猜错的代价是把租约从一个正在拍单的
+// 标签页手里抢走。
 chrome.tabs.onRemoved.addListener((tabId) => {
-  if (tabId === leaseTabId) { leaseTabId = null; leaseUntil = 0; }
+  void (async () => {
+    const cur = await readLease();
+    if (cur && cur.tabId === tabId) await writeLease(null);
+  })();
 });
 
 void boot();

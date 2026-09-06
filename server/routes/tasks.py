@@ -6,6 +6,7 @@ from zoneinfo import ZoneInfo
 from fastapi import APIRouter, Depends, HTTPException
 from fastapi.responses import JSONResponse
 
+from registry import settings
 from server import schemas
 from server.deps import conn_ctx, require_instance, require_task_owned
 from services import order_backfill, price_guard, task_event, task_queue
@@ -57,6 +58,9 @@ def claim(req: schemas.ClaimReq, conn=Depends(conn_ctx)) -> schemas.Envelope:
             price_cap=task["price_cap"],
             max_delivery_days=task["max_delivery_days"],
         ),
+        # 插件那边所有「等下去」的上界都要按它反推,别让 sweep 在插件还在等的时候
+        # 把单收走(见 schemas.TaskOut.claim_timeout_min)。
+        claim_timeout_min=settings.claim_timeout_minutes(),
     ))
 
 
@@ -209,9 +213,15 @@ def fail(task_id: int, req: schemas.FailReq, conn=Depends(conn_ctx)) -> schemas.
     require_task_owned(conn, task_id, inst)
 
     if not req.cart_cleared:
-        # 不阻断上报(失败必须记下来),但留痕:清车没做,下一单可能被残留商品污染
-        task_event.record(conn, task_id, "step", instance_id=inst["id"],
-                          payload={"step": "fail", "warning": "cart_not_cleared"})
+        # 不阻断上报(失败必须记下来),但留痕。**分两种写**:
+        #   试了没清动 → warning=cart_not_cleared,这台机器清不动购物车,
+        #                下一单会被残留商品污染,运营台实例页那一格数的就是它;
+        #   压根没试   → 越过下单点之后按规矩不动购物车(见 flow/run.finish),
+        #                规矩被遵守了不是异常,不该跟上面那种长成一个样子。
+        payload = ({"step": "fail", "warning": "cart_not_cleared"}
+                   if req.cart_clear_attempted
+                   else {"step": "fail", "cart": "not_touched_after_order_point"})
+        task_event.record(conn, task_id, "step", instance_id=inst["id"], payload=payload)
 
     ok = task_queue.fail(conn, task_id, req.error_code, instance_id=inst["id"],
                          detail=req.detail, to_manual=req.to_manual)

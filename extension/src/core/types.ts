@@ -39,6 +39,12 @@ export interface Task {
   shipping: Shipping;
   products: Product[];
   guards: Guards;
+  /** 服务端下发的认领超时(分钟)。插件所有「等下去」的上界都要按它反推 ——
+   *  自己拍一个的话,task_sweep 会在我们还在等的时候把单收走,
+   *  之后连「单下成了」都报不上去(见 flow/amazon.orderHardCapMs)。
+   *
+   *  可选是为了兼容旧服务端:收不到就退回插件自己的硬顶(更短,是安全的那一侧)。 */
+  claim_timeout_min?: number;
 }
 
 /** 买家号浏览器里的 Amazon 登录态。判定在 flow/dom/parse.readLoginState。

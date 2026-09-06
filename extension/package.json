@@ -8,7 +8,8 @@
     "build": "vite build --mode background && vite build --mode content && node tools/copy-static.mjs",
     "build:node": "tsc -p tsconfig.node.json",
     "smoke": "npm run build:node && node tools/smoke.mjs",
-    "test:dom": "vite build --mode domkit && node test/dom.test.mjs"
+    "test:unit": "npm run build:node && node test/unit.test.mjs",
+    "test:dom": "vite build --mode domkit && node test/dom.test.mjs && npm run test:unit"
   },
   "devDependencies": {
     "@types/chrome": "^0.0.287",

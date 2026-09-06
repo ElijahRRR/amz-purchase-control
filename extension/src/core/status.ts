@@ -18,6 +18,10 @@ export type Phase =
   | "claimed"    // 领到一单,还没动页面
   | "running"    // 正在跑
   | "confirm"    // 护栏放行,停在下单前等人按
+  /** 点了下单,Amazon 转到发卡行验证页,**此刻正在等这个人动手**。
+   *  与 running 分开:running 是「机器在跑,你不用管」,verify 是「轮到你了」;
+   *  与 blocked 分开:blocked 是「已经定了要人工处理」,这一格还救得回来。 */
+  | "verify"
   | "blocked"    // 被护栏拦下,已上报
   | "signed-out" // 这个浏览器被登出了,暂停认领 —— 要人去重新登录
   | "done";      // 这一单完了
@@ -28,6 +32,7 @@ export const PHASE_LABEL: Record<Phase, string> = {
   claimed: "已认领",
   running: "执行中",
   confirm: "下单确认",
+  verify: "等待人工验证",
   blocked: "护栏拦截",
   // 与「待命」必须是两个词:待命是"没单可跑",已登出是"跑不了,要人管"。
   // 渲染成同一句话的话,一台其实已经废掉的机器看起来一切正常。

@@ -26,6 +26,7 @@ LABELS: dict[str, str] = {
     "DELIVERY_UNPARSEABLE": "交期无法解析",
     "CHECKOUT_TIMEOUT": "结算页跳转超时",
     "ORDER_CONFIRM_TIMEOUT": "下单后未见确认页",
+    "PAYMENT_VERIFICATION_TIMEOUT": "发卡行验证未在时限内完成",
     "ORDER_NO_AMBIGUOUS": "无法确定哪个单号属于本单",
     "CAPTCHA_ENCOUNTERED": "命中验证码/风控",
     "CLAIM_TIMEOUT": "认领超时未回传",
@@ -44,7 +45,8 @@ RETRYABLE = frozenset({
 #: 前三个的共同点是**可能已经在 Amazon 上真下了单**,重试就是重复下单;
 #: 其余是护栏拦截与风控,重试多少次结果都一样,要人来裁决。
 TO_MANUAL = frozenset({
-    "ORDER_CONFIRM_TIMEOUT", "ORDER_NO_AMBIGUOUS", "CLAIM_TIMEOUT",
+    "ORDER_CONFIRM_TIMEOUT", "PAYMENT_VERIFICATION_TIMEOUT",
+    "ORDER_NO_AMBIGUOUS", "CLAIM_TIMEOUT",
     "PRICE_CAP_EXCEEDED", "DELIVERY_TOO_LATE", "DELIVERY_UNPARSEABLE",
     "CAPTCHA_ENCOUNTERED",
 })
@@ -52,8 +54,12 @@ TO_MANUAL = frozenset({
 
 #: 「可能已经在 Amazon 上真下了单」的那一类。重置回队列前必须有人先去买家号里
 #: 确认过 —— 直接重置就是让下一个实例把同一单再买一遍。
+#: PAYMENT_VERIFICATION_TIMEOUT 是这一组里最确凿的一个:它的现场是
+#: 「订单已经提交、正卡在发卡行验证页」,不是「没点动按钮」——
+#: 钱很可能已经扣了,重置之前必须有人去买家号里看一眼。
 POSSIBLY_ORDERED = frozenset({
-    "ORDER_CONFIRM_TIMEOUT", "ORDER_NO_AMBIGUOUS", "CLAIM_TIMEOUT",
+    "ORDER_CONFIRM_TIMEOUT", "PAYMENT_VERIFICATION_TIMEOUT",
+    "ORDER_NO_AMBIGUOUS", "CLAIM_TIMEOUT",
 })
 
 #: 业务性拦截:重试多少次结果都一样,但也不涉及「可能已经下单」的风险。

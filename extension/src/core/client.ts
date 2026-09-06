@@ -93,6 +93,10 @@ export class Client {
     detail?: string;
     to_manual: boolean;
     cart_cleared: boolean;
+    /** 这一单**试没试过**清车。越过下单点之后按规矩不清(不是一次失败),
+     *  与「试了没清动」必须分开 —— 后者才是运营台上那一格要数的东西。
+     *  不传按 true 算(老插件的行为不变)。 */
+    cart_clear_attempted?: boolean;
   }): Promise<ApiResult<{ task_id: number; status: string }>> {
     return post("/v1/tasks/" + taskId + "/fail", {
       instance_uid: this.instanceUid,

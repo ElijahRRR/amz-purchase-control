@@ -74,6 +74,23 @@ export interface CheckoutReading {
   paymentLast4?: string;
 }
 
+/** 点下单之后那一段要用的东西:一个来自服务端的上界,两个说给外面听的回调。
+ *
+ *  为什么回调而不是让驱动自己去发事件:驱动只管「怎么点 Amazon 的 DOM」,
+ *  和服务端说话是 runTask 的事(见本文件头)。跨过这条线的话,SimulatedDriver
+ *  也得会发事件,离线自检就跑不动了。 */
+export interface PlaceOrderHooks {
+  /** 服务端在 claim 响应里下发的认领超时(分钟)。等待的硬顶按它反推 ——
+   *  插件自己拍一个上界的话,task_sweep 会在我们还在等的时候把单收走,
+   *  之后连「单下成了」都报不上去。null = 服务端没给,退回插件自己的硬顶。 */
+  claimTimeoutMin?: number | null;
+  /** 页面落进了不透明源(发卡行 3DS 验证页),窗口已经露出来等人动手。
+   *  `deadlineMs` 是这一段的到期时刻(epoch 毫秒),面板拿它跑倒计时。 */
+  onManualVerification?(info: { deadlineMs: number }): void | Promise<void>;
+  /** 从验证页回到了读得到的页面(验证做完了,或者被拒了)。 */
+  onVerificationDone?(): void | Promise<void>;
+}
+
 export interface OrderCard {
   amazonOrderNo: string;
   /** 订单卡上解析出的 ASIN。服务端拿它跟本单断言,不符就拒绝回填。 */
@@ -99,8 +116,13 @@ export interface PageDriver {
   proceedToCheckout(): Promise<void>;
   fillAddress(shipping: Shipping): Promise<void>;
   readCheckout(): Promise<CheckoutReading>;
-  /** 真花钱的一步。调用之前上层会先把「可能已下单」置位。 */
-  placeOrder(): Promise<void>;
+  /** 真花钱的一步。调用之前上层会先把「可能已下单」置位,并上报一条 step 事件。
+   *
+   *  实现必须是**有界**的:三段分开计时(等确认页 / 等人做发卡行验证 / 验证之后),
+   *  再压一道由 hooks.claimTimeoutMin 反推出来的硬顶。绝不允许「一直等下去」——
+   *  在我们的架构里那不是耐心,是一个等不到任何人的死循环:iframe 在屏幕外,
+   *  服务端 15 分钟后把这条任务判成 CLAIM_TIMEOUT,而这个标签页的单飞闸永不复位。 */
+  placeOrder(hooks?: PlaceOrderHooks): Promise<void>;
   readOrderCard(): Promise<OrderCard>;
   /** 关掉所有 iframe。无论成败都会被调用,必须幂等。 */
   dispose(): Promise<void>;
