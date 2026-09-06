@@ -335,6 +335,22 @@ await withFixture("cart.html", async (run) => {
   eq("cart 多一件时不匹配",
      await run(`amzdom.cartMatches(amzdom.readCartLines(document),
        [{asin:"B0FB3VS68J",quantity:1}])`), false);
+
+  // ── 空车标志的**取法**:裸 querySelector vs pickFirstRendered ────────
+  //
+  // 这一页车里有两件在售商品,同时挂着一个隐藏的空车提示模板(干扰项 A-2)。
+  // 「车是空的」这个结论由 emptyMarkers 下:clearCart 的正面证据、
+  // verifyCart 的空车早退都用它。选择器**内容**对不对之前先有一个问题 ——
+  // 用什么方式取。裸 querySelector 会被这个没画出来的模板满足。
+  eq("cart 上确实摆着一个空车标志节点(前提:干扰项存在)",
+     await run(`amzdom.SEL.cart.emptyMarkers.some((m) => !!document.querySelector(m))`), true);
+  eq("cart 那个空车标志只靠 CSS 类隐藏(前提:isHidden 这一档看不见它)",
+     await run(`(() => { const el = document.querySelector("#sc-empty-cart");
+        return [el.hasAttribute("hidden"), el.hasAttribute("aria-hidden"),
+                el.style.display === "", el.closest('[hidden],[aria-hidden="true"]') === null];
+     })()`), [false, false, true, true]);
+  eq("车里有货时,走 pickFirstRendered 的空车标志一条都不成立",
+     await run(`amzdom.pickFirstRendered(document, amzdom.SEL.cart.emptyMarkers) === null`), true);
 });
 
 await withFixture("cart-empty.html", async (run) => {
@@ -342,6 +358,59 @@ await withFixture("cart-empty.html", async (run) => {
   // 「车是空的」要有正面证据:容器在、就是 0 行。
   eq("cart-empty 的 0 行是「容器在、没有行」", await run("amzdom.readCartState(document)"),
      { lines: [], scopeFound: true });
+});
+
+// ── 清车那道闸:让 AmazonDriver 真的走一遍 ───────────────────────────
+//
+// 上面那些断言验的是纯函数。纯函数对不对,与 amazon.ts **用哪种方式取判据**
+// 是两件事 —— 而这一档缺陷恰恰全在取法上:选择器数组的内容有断言盯着,
+// 「裸 querySelector 还是 pickFirstRendered」一条都没有。
+//
+// 这里把购物车夹具挂在真实的购物车 URL 上,让驱动开自己的 iframe、走自己的
+// 渲染门、下自己的结论。transform 就地造出「Amazon 改版了」的那几种页面。
+async function withDriverOnCart(fixture, transform, fn) {
+  const body = transform(readFileSync(join(here, "fixtures", fixture), "utf8"));
+  const page = await browser.newPage();
+  await page.route("**/*", (route) => {
+    const url = route.request().url();
+    if (url.includes("/gp/cart/view.html")) {
+      return route.fulfill({ contentType: "text/html; charset=utf-8", body });
+    }
+    return route.fulfill({ contentType: "text/html; charset=utf-8", body: "<h1>amazon</h1>" });
+  });
+  await page.goto("https://www.amazon.com/checkout/p/p-1");
+  await page.addScriptTag({ path: KIT });
+  try {
+    await fn((expr) => page.evaluate(expr));
+  } finally {
+    await page.close();
+  }
+}
+
+/** 返回 [错误码或"没抛", 错误文案]。 */
+const CLEAR_CART_DRILL = `(async () => {
+  const driver = new amzdom.AmazonDriver("https://www.amazon.com");
+  try { await driver.clearCart(); return ["没抛", ""]; }
+  catch (e) { return [e.code ?? e.constructor.name, String(e.message ?? "").slice(0, 160)]; }
+})()`;
+
+// 场景:Amazon 把 [data-name="Active Items"] 改名,车里还留着上一单的两件商品,
+// 而页面上挂着那个隐藏的空车提示模板(干扰项 A-2)。
+// 裸 querySelector 的「正面证据」被模板满足 → clearCart 直接 return「已清空」,
+// 残留被带进下一单;走 pickFirstRendered 才会认下「我们读不懂这一页」。
+await withDriverOnCart("cart.html",
+  (html) => html.replaceAll('data-name="Active Items"', 'data-name="Active Cart Items"'),
+  async (run) => {
+    const [code, msg] = await run(CLEAR_CART_DRILL);
+    eq("容器改名 + 隐藏的空车模板 → clearCart 不许判「已清空」", code, "PLUGIN_INTERNAL");
+    check("这条错误说的是「没有正面证据」", msg.includes("正面证据"), msg);
+  });
+
+// 反面:真空车页必须能顺利返回。少了这一条,上面那条断言可能只是
+// 「clearCart 现在总是抛」——那是另一种坏法。
+await withDriverOnCart("cart-empty.html", (html) => html, async (run) => {
+  const [code] = await run(CLEAR_CART_DRILL);
+  eq("真空车页 → clearCart 正常返回", code, "没抛");
 });
 
 // ── 「车是空的」与「行容器的选择器坏了」 ─────────────────────────────

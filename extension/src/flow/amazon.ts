@@ -170,10 +170,14 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
       // 先确认购物车页真的渲染出来了。「车是空的」和「车还没渲染」看起来一样
       // (都是 0 行),分不开的话会在一张没加载完的页面上报「已清空」,
       // 而车里那件上一单的残留会被带进这一单。
+      //
+      // 两组标志都走 pickFirstRendered:Amazon 把空车提示的模板留在 DOM 里
+      // (与购物车行模板同一个做法),裸 querySelector 会被那个没画出来的壳子
+      // 满足 —— 那就等于这道渲染门只要页面**发过来**就成立,而不是**画出来**才成立。
       try {
         await waitFor("购物车页渲染", () =>
-          SEL.cart.cartRendered.some((m) => f.doc().querySelector(m)) ||
-          SEL.cart.emptyMarkers.some((m) => f.doc().querySelector(m)),
+          pickFirstRendered(f.doc(), SEL.cart.cartRendered) !== null ||
+          pickFirstRendered(f.doc(), SEL.cart.emptyMarkers) !== null,
           { timeoutMs: 20_000 });
       } catch {
         await this.guardLogin(f, "清空购物车");
@@ -195,7 +199,13 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
           //
           // 正面证据是两条之一:容器在(容器在而 0 行 = 真的空了),
           // 或者页面上有确凿的空车标志(.sc-your-amazon-cart-is-empty / #sc-empty-cart)。
-          const emptyMarker = SEL.cart.emptyMarkers.some((m) => f.doc().querySelector(m));
+          //
+          // 空车标志**必须走 pickFirstRendered**:裸 querySelector 的话,一个
+          // display:none 的空车提示模板(Amazon 的常态,见 cart.html 夹具里那份
+          // 靠 CSS 类隐藏的 #sc-empty-cart)就能满足这条「正面证据」,
+          // 于是容器改名的那一单被判成「已清空」返回 —— 这道闸要堵的洞原样开着,
+          // 而它看起来在。下结论用的判据一律看布局,不看「节点在不在」。
+          const emptyMarker = pickFirstRendered(f.doc(), SEL.cart.emptyMarkers) !== null;
           if (st.scopeFound || emptyMarker) return;
           throw new DriverError(
             "PLUGIN_INTERNAL",
@@ -335,7 +345,10 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
       const got = readCartState(f.doc());
       if (got.lines.length > 0) return got;
       // 页面明说「车是空的」也是一种确定的读数,不必等满 15 秒。
-      if (SEL.cart.emptyMarkers.some((m) => f.doc().querySelector(m))) return got;
+      // 同样走 pickFirstRendered:openFrame 只等到 readyState !== loading,
+      // 购物车行常是客户端渲染的 —— 这一拍页面上很可能只有那个还没画出来的
+      // 空车模板。认它就等于每一单都在 t≈0 拿一份空读数去判 CART_MISMATCH。
+      if (pickFirstRendered(f.doc(), SEL.cart.emptyMarkers) !== null) return got;
       return null;
     }, { timeoutMs: 15_000 }).catch(() => null);
 
