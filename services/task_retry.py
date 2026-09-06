@@ -126,9 +126,17 @@ def candidates(conn, *, cfg: dict[str, Any] | None = None) -> list[dict[str, Any
 def retry_one(conn, task_id: int, *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     """输入:任务 id → 输出:{task_id, attempt, max, was_error_code};不够格抛 AdminRefused。
 
-    条件在这里**再判一遍**,不信任调用方递过来的那一行:选单和执行之间隔着一段
-    时间,期间插件可能已经把这条任务领走了,人也可能已经手工处置过。
+    选单那六条在这里**一条不少地再判一遍**,不信任调用方递过来的那一行:选单和执行
+    之间隔着一段时间,期间插件可能已经把这条任务领走了,人也可能已经手工处置过。
     照着一份过期快照去重置,重的就是另一条任务的状态。
+
+    **两道时间闸(backoff / max_age)也在这里判**,不是只活在选单 SQL 里。
+    这个函数是个带完整 docstring 的公开积木,下一个人给运营台加「立即重试」按钮时
+    会照着这句话直接调它 —— 那条路上要是没有 backoff,现象就是「刚失败就立刻拿
+    同一个坏环境再撞一次」,还会把错误码分布刷成一片同样的码。
+    两个比较都交给 SQL 的 `now()` 去做,不用 Python 时钟:同一个事务里 `now()`
+    是固定的,所以选单放行的那一条,到这里必定还放行 —— 复判不会反过来添乱;
+    换成两把不同的尺子,差的就是时区与时钟漂移。
 
     `acknowledged` 恒为 False,而且 `by="auto"` 时 task_admin 会直接拒绝带回执 ——
     自动重试遇到「可能已下单」必须**被拒**,不是绕过。
@@ -139,8 +147,13 @@ def retry_one(conn, task_id: int, *, cfg: dict[str, Any] | None = None) -> dict[
     codes = set(_retryable_codes())
 
     row = conn.execute(
-        "SELECT id, status, error_code, retry_count FROM procure.tasks WHERE id = %s",
-        (task_id,),
+        """SELECT id, status, error_code, retry_count,
+                  -- 与 _CANDIDATE_SQL 的 ⑤⑥ 互为反面,边界要对齐:
+                  -- 那边放行的是 backoff 之前、max_age 之后,这两个就是它们的否定。
+                  updated_at >= now() - make_interval(mins => %(backoff)s) AS too_fresh,
+                  updated_at <= now() - make_interval(mins => %(max_age)s) AS too_old
+             FROM procure.tasks WHERE id = %(id)s""",
+        {"id": task_id, "backoff": cfg["backoff_min"], "max_age": cfg["max_age_min"]},
     ).fetchone()
     if row is None:
         raise task_admin.AdminRefused("TASK_NOT_FOUND", f"任务 {task_id} 不存在")
@@ -160,6 +173,16 @@ def retry_one(conn, task_id: int, *, cfg: dict[str, Any] | None = None) -> dict[
         raise task_admin.AdminRefused(
             "RETRY_EXHAUSTED",
             f"已经自动重试过 {row['retry_count']} 次,到上限 {cfg['max']} 了,该人来看了")
+    if row["too_fresh"]:
+        raise task_admin.AdminRefused(
+            "BACKOFF_NOT_MET",
+            f"刚失败不到 {cfg['backoff_min']} 分钟,还不到自动重的时候 —— "
+            "立刻重拍只是拿同一个坏环境再撞一次")
+    if row["too_old"]:
+        raise task_admin.AdminRefused(
+            "TOO_OLD",
+            f"失败已经超过 {cfg['max_age_min']} 分钟,不再自动重,交给人 —— "
+            "攒这么久的单多半已经在别处处置过了")
 
     attempt = row["retry_count"] + 1
     task_admin.reset_to_queue(

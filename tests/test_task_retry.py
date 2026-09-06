@@ -262,6 +262,57 @@ def test_stops_at_the_ceiling(conn, seed, on):
     assert exc.value.code == "RETRY_EXHAUSTED"
 
 
+def test_retry_one_re_judges_the_two_time_gates_by_itself(conn, seed, on):
+    """两道时间闸不能只活在选单 SQL 里 —— 直接调 retry_one 的那条路也得挡住。
+
+    retry_one 是个带完整 docstring 的公开积木,docstring 明说自己会把条件再判一遍。
+    下一个人给运营台加「立即重试」按钮时会照着这句话直接调它:那条路上要是漏了
+    backoff,现象就是「刚失败就立刻拿同一个坏环境再撞一次」,还会把错误码分布
+    刷成一片同样的码 —— 而选单那份 SQL 一个字都不会拦到它。
+    """
+    env_id, _inst, tasks = seed
+    fresh = tasks[0]
+    _fail(conn, fresh, "CHECKOUT_TIMEOUT", minutes_ago=1)               # backoff=10
+    stale = _mk(conn, env_id, "k-ancient")
+    _fail(conn, stale, "CHECKOUT_TIMEOUT", minutes_ago=120 * 24 * 60)   # 120 天前
+    conn.commit()
+
+    # 选单本来就不会给出这两条,所以下面走的是「有人绕过选单直接调」那条路
+    assert task_retry.candidates(conn) == []
+
+    with pytest.raises(task_admin.AdminRefused) as exc:
+        task_retry.retry_one(conn, fresh)
+    assert exc.value.code == "BACKOFF_NOT_MET"
+
+    with pytest.raises(task_admin.AdminRefused) as exc:
+        task_retry.retry_one(conn, stale)
+    assert exc.value.code == "TOO_OLD"
+
+    for tid in (fresh, stale):
+        assert _row(conn, tid)["status"] == "exception"
+        assert _row(conn, tid)["retry_count"] == 0
+
+
+def test_the_second_judgement_never_refuses_what_the_first_one_passed(conn, seed, on):
+    """复判是第二道闸,不是一道会跟第一道打架的闸。
+
+    两处都用 SQL 的 now(),同一个事务里它是固定的 —— 所以选单放行的那一条,
+    到 retry_one 必定还放行。换成 Python 时钟就会在边界上抖:选出来一批、
+    转头自己拒掉一批,摘要里报「N 条够格 → 已退回 0 条」,而谁也说不清为什么。
+    """
+    _env, _inst, tasks = seed
+    # 卡在 backoff 边界上(backoff=10,这条正好 10 分钟前失败)
+    _fail(conn, tasks[0], "CHECKOUT_TIMEOUT", minutes_ago=10)
+    conn.commit()
+
+    picked = [r["id"] for r in task_retry.candidates(conn)]
+    summary = wf.run({"dry_run": False})
+
+    assert "中途被拒" not in summary, summary
+    for tid in picked:
+        assert _row(conn, tid)["status"] == "ready"
+
+
 # ── 「可能已下单」那一组:永远不动 ──────────────────────────────────────
 
 def test_possibly_ordered_never_moves_even_if_someone_puts_it_in_retryable(
