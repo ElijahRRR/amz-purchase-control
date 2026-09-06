@@ -22,6 +22,7 @@ LABELS: dict[str, str] = {
     "ADDRESS_SUGGESTION_BLOCKED": "Amazon 提示地址不可投递",
     "ADDRESS_NOT_APPLIED": "地址填了但没生效",
     "PRICE_CAP_EXCEEDED": "实付超限价",
+    "PAYMENT_METHOD_UNEXPECTED": "支付卡不符",
     "DELIVERY_TOO_LATE": "交期超限",
     "DELIVERY_UNPARSEABLE": "交期无法解析",
     "CHECKOUT_TIMEOUT": "结算页跳转超时",
@@ -67,6 +68,12 @@ POSSIBLY_ORDERED = frozenset({
 BUSINESS_BLOCKED = frozenset({
     "OUT_OF_STOCK", "QTY_UNAVAILABLE", "BUNDLE_PRODUCT", "NOT_FBA",
     "ADDRESS_STATE_UNMATCHED", "ADDRESS_SUGGESTION_BLOCKED", "ADDRESS_NOT_APPLIED",
+    # PAYMENT_METHOD_UNEXPECTED 归这里而不是 RETRYABLE / TO_MANUAL,理由:
+    #   · 不是 RETRYABLE —— 卡不对是配置或买家号后台的状态,再拍一次还是同一张卡;
+    #   · 不是 POSSIBLY_ORDERED —— 这道闸在 guard-check 里,**下单之前**,
+    #     没有任何"可能已经买了"的风险,不该让人白跑一趟买家号订单页去核;
+    #   · 处置和 NOT_FBA / 地址不可投递一模一样:改配置或改单,然后重放。
+    "PAYMENT_METHOD_UNEXPECTED",
 })
 
 #: RETRYABLE 现在**有东西在消费它**:workflows/task_retry.py 把这一组的 exception

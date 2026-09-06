@@ -1,4 +1,4 @@
-/** 18 个错误码 —— 封闭集,与 docs/01-系统设计.md §4 一字不差。
+/** 错误码封闭集,与 docs/01-系统设计.md §4 一字不差。
  *
  * 写成联合类型而不是 string:拼错的码编译期就炸,不会等到服务端拒收。
  * 厂商那套 18 处失败全写成 status=99 加一句自由中文,没法按原因统计、
@@ -17,6 +17,7 @@ export const ERROR_CODES = [
   "ADDRESS_SUGGESTION_BLOCKED",
   "ADDRESS_NOT_APPLIED",
   "PRICE_CAP_EXCEEDED",
+  "PAYMENT_METHOD_UNEXPECTED",
   "DELIVERY_TOO_LATE",
   "DELIVERY_UNPARSEABLE",
   "CHECKOUT_TIMEOUT",
@@ -42,6 +43,7 @@ export const ERROR_LABEL: Record<ErrorCode, string> = {
   ADDRESS_SUGGESTION_BLOCKED: "Amazon 提示地址不可投递",
   ADDRESS_NOT_APPLIED: "地址填了但没生效",
   PRICE_CAP_EXCEEDED: "实付超限价",
+  PAYMENT_METHOD_UNEXPECTED: "支付卡不符",
   DELIVERY_TOO_LATE: "交期超限",
   DELIVERY_UNPARSEABLE: "交期无法解析",
   CHECKOUT_TIMEOUT: "结算页跳转超时",
