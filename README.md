@@ -40,7 +40,7 @@ python cli.py db_init
 
 # 2. 跑测试(需要一个可连的 PostgreSQL 17;连不上会整体 skip)
 export AMZ_TEST_ADMIN_DSN="dbname=postgres"
-python -m pytest -q                       # 269 条
+python -m pytest -q                       # 278 条
 
 # 3. 起服务
 python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
@@ -186,7 +186,7 @@ python cli.py feishu_writeback
 
 | | 状态 |
 |---|---|
-| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 269 条 pytest,跑在真 PostgreSQL 17 上 |
+| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 278 条 pytest,跑在真 PostgreSQL 17 上 |
 | 插件与服务端的时序(认领 → 执行 → 护栏 → 回填 → 失败清车) | ✅ 8 个场景实跑,跑的是插件自己的 `Loop`/`runTask` |
 | 物流同步时序 | ✅ 实跑 |
 | DOM 解析层(选择器是否按报告的语义在读) | ✅ 109 条断言,对着按报告造的夹具跑 |
