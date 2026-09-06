@@ -29,11 +29,20 @@ export class SimulatedDriver implements PageDriver {
 
   async dispose(): Promise<void> { this.mark("dispose"); }
 
-  /** 模拟档永远是"登录着的" —— 这条流本来就不碰 Amazon。
-   *  login_lost 场景在执行到一半时才抛,模拟的是「认领时还在、跑着跑着掉了」。 */
+  /** 模拟档**一次页面都没读过,所以只能说"不知道"**。
+   *
+   *  这里返回 "ok" 是很自然的写法,也很危险:这一位会随心跳上到服务端,
+   *  而 ok 是唯一能解封 signed_out 的信号(services/instance._KEEPS_OLD_LOGIN_STATE)。
+   *  于是运营在面板上点一下「模拟」,就能把一台确实被登出、库里已经记着
+   *  signed_out 的机器洗成绿色的「已登录 · 刚刚检查过」,认领闸随之打开 ——
+   *  「从没检查过」与「真读过页面、登录着」渲染成同一个结果,
+   *  正是这一列存在的理由的反面。
+   *
+   *  unknown 不拦认领,所以模拟档该跑的闭环照样跑得通;login_lost 场景在执行到
+   *  一半时才抛 LoginLostError,模拟的是「认领时还在、跑着跑着掉了」,也不受影响。 */
   async readLoginState(): Promise<LoginState> {
     this.mark("readLoginState");
-    return "ok";
+    return "unknown";
   }
 
   async clearCart(): Promise<void> {

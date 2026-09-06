@@ -47,6 +47,17 @@ console.log("  心跳", hb.ok ? "ok" : "失败");
 // 驱动每轮现取一个:一单一个实例,加购过的东西留在实例里,
 // 回读购物车和造订单卡都从那里来,不需要外部再喂 ASIN。
 const driver = new SimulatedDriver(scenario);
+
+// 模拟驱动自己也得守规矩:它**一次页面都没读过**,能说的只有 unknown。
+// 报 ok 的话,运营在面板上切一下模拟档就能把一台确实被登出的机器洗成绿色
+// ——ok 是唯一能解封 signed_out 的信号(services/instance._KEEPS_OLD_LOGIN_STATE)。
+{
+  const said = await new SimulatedDriver(scenario).readLoginState();
+  if (said !== "unknown") {
+    console.error(`  模拟驱动报了 login_state=${said} —— 它没读过任何页面,只能报 unknown`);
+    process.exit(2);
+  }
+}
 // 登录态:真插件里是内容脚本读到 → 交给 service worker → 挂在下一次心跳上。
 // 这里没有 SW,先收在手边,跑完补发一次心跳 —— 验的是同一条链。
 let reportedLogin = null;
