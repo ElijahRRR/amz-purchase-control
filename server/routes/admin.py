@@ -62,6 +62,7 @@ def meta() -> schemas.Envelope:
         "task_status": {"labels": vocab.STATUS_LABELS, "tone": vocab.STATUS_TONE},
         "shipment_status": {"labels": vocab.SHIPMENT_LABELS, "tone": vocab.SHIPMENT_TONE},
         "event_kind": {"labels": vocab.EVENT_LABELS, "tone": vocab.EVENT_TONE},
+        "login_state": {"labels": vocab.LOGIN_STATE_LABELS, "tone": vocab.LOGIN_STATE_TONE},
         "error_code": {
             "labels": error_codes.LABELS,
             "retryable": sorted(error_codes.RETRYABLE),

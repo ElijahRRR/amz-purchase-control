@@ -30,8 +30,21 @@ CREATE TABLE IF NOT EXISTS procure.plugin_instances (
     instance_uid   text NOT NULL UNIQUE,              -- 插件首次启动生成并持久化
     plugin_version text,
     last_seen_at   timestamptz,
+    login_state    text NOT NULL DEFAULT 'unknown',
+                                  -- ok / signed_out / unknown(封闭集)
+                                  -- 浏览器 profile 里那个 Amazon 账号此刻还在不在登录态。
+                                  -- 插件读导航栏判定后随心跳上报,**不读 Cookie**。
+                                  -- unknown ≠ ok:读不到导航栏就是读不到,不许当成"应该没问题"
+    login_checked_at timestamptz,  -- 上一次真的读过页面判定登录态的时刻
     created_at     timestamptz NOT NULL DEFAULT now()
 );
+-- 老库补列:CREATE TABLE IF NOT EXISTS 对**已存在**的表什么都不做,
+-- 只写在上面那段里的话,已经建过库的环境跑完 db_init 仍然没有这两列,
+-- 然后服务端在第一条心跳上炸 UndefinedColumn —— 而现象是"升级完插件就连不上了"。
+ALTER TABLE procure.plugin_instances
+    ADD COLUMN IF NOT EXISTS login_state text NOT NULL DEFAULT 'unknown';
+ALTER TABLE procure.plugin_instances
+    ADD COLUMN IF NOT EXISTS login_checked_at timestamptz;
 CREATE INDEX IF NOT EXISTS idx_plugin_instances_env
     ON procure.plugin_instances (buyer_env_id);
 

@@ -35,6 +35,13 @@ class RegisterReq(BaseModel):
 
 class HeartbeatReq(BaseModel):
     instance_uid: str
+    #: 这一轮读页面读到的登录态。**不传 = 这一轮没有新消息**,服务端原样保留库里
+    #: 那一位;不是「不知道」。传 unknown 才是「读了,但读不出来」。
+    #:
+    #: 值从哪来:插件在工作 frame 里开一张 Amazon 页面读导航栏
+    #: (extension/src/flow/dom/parse.readLoginState)。**不读 Cookie** ——
+    #: 插件根本没申请 cookies 权限,登录态留在浏览器 profile 里。
+    login_state: Literal["ok", "signed_out", "unknown"] | None = None
 
 
 # ── 认领 ────────────────────────────────────────────────────────────────

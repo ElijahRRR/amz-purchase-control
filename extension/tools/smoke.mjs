@@ -47,11 +47,32 @@ console.log("  心跳", hb.ok ? "ok" : "失败");
 // 驱动每轮现取一个:一单一个实例,加购过的东西留在实例里,
 // 回读购物车和造订单卡都从那里来,不需要外部再喂 ASIN。
 const driver = new SimulatedDriver(scenario);
-const loop = new Loop({ client, log, config: () => ({ mode: "simulate" }), driver: () => driver });
+// 登录态:真插件里是内容脚本读到 → 交给 service worker → 挂在下一次心跳上。
+// 这里没有 SW,先收在手边,跑完补发一次心跳 —— 验的是同一条链。
+let reportedLogin = null;
+const loop = new Loop({
+  client, log,
+  config: () => ({ mode: "simulate" }),
+  driver: () => driver,
+  reportLogin: (state) => { reportedLogin = state; },
+});
 
 const r = await loop.tickOnce();
 
 console.log("\n  结果:", JSON.stringify(r.kind === "ran" ? { kind: r.kind, task: r.task.task_id, outcome: r.outcome } : r));
+
+// 登录态失效那条路走完之后,还要验后半截:这一位真的会到服务端,
+// 而服务端据此**拒绝**下一次认领 —— 拒得说得出名字,不是回一个"没有单"。
+if (reportedLogin) {
+  const hb2 = await client.heartbeat(reportedLogin);
+  console.log(`  上报登录态 ${reportedLogin} → 服务端记下`,
+              hb2.ok ? hb2.data.login_state : "(心跳失败)");
+  const again = await loop.tickOnce();
+  console.log("  插件自己这一轮:", JSON.stringify(again));
+  const denied = await client.claim();
+  console.log("  绕过插件直接认领:",
+              denied.ok ? "放行(不对!)" : `${denied.kind === "business" ? denied.code : denied.kind} ${denied.message}`);
+}
 
 // 物流同步是独立一条流,跑在 purchased 之后。--ship 指定场景就顺带跑一轮。
 const shipScenario = arg("ship", null);
