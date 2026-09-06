@@ -25,6 +25,7 @@ const REQUIRED: Record<string, string[]> = {
   task_status: ["labels", "tone"],
   shipment_status: ["labels", "tone"],
   event_kind: ["labels", "tone"],
+  login_state: ["labels", "tone"],
   error_code: ["labels", "retryable", "to_manual", "business_blocked", "possibly_ordered"],
 };
 
@@ -50,7 +51,7 @@ export function useMeta(): Meta {
 /** 状态 / 物流状态 → 标签 + 色调。查不到的键**原样显示**,不吞。
  *  服务端加了新状态而前端还没发版时,界面上出现一个陌生英文词是对的 ——
  *  比静默映射成「未知」要好,后者会让人以为库里真有个叫「未知」的状态。 */
-export function useLabel(kind: "task_status" | "shipment_status" | "event_kind") {
+export function useLabel(kind: "task_status" | "shipment_status" | "event_kind" | "login_state") {
   const meta = useMeta();
   return (key: string | null | undefined): { label: string; tone: Tone } => {
     if (!key) return { label: "—", tone: "dashed-zinc" };
