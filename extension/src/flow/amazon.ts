@@ -68,22 +68,25 @@ const REVEAL_BANNER =
   "Amazon 把这一单转到了发卡行的验证页。请在下面的窗口里完成验证," +
   "完成前不要关闭或刷新本页 —— 超时后这一单会转为待人工,而订单可能已经提交。";
 
-/** 输入:服务端下发的认领超时(分钟,没有就是 null)→ 输出:placeOrder 的总硬顶。
+/** 输入:服务端会把这条判成认领超时的**绝对时刻**(没有就是 null)+ 此刻
+ *  → 输出:placeOrder 这一段还能等多久。
  *
  *  为什么上界不能由插件自己拍脑袋:服务端的 task_sweep 只看 claimed_at,
  *  插件发再多 step 事件也不会推迟清扫。等过了头的后果是所有结局里最坏的一个 ——
  *  第 15 分钟任务被转成 manual/CLAIM_TIMEOUT,第 16 分钟操作员做完验证、
  *  订单真下成了、单号也读到了,complete 却拿回一个 409 TASK_NOT_HELD,
  *  **钱花了、货发了,系统里是一条没有单号的待人工**。
- *  所以永远给服务端留 T.orderServerMargin 的余量,保证 fail/complete 一定发生在
- *  任务还是 claimed 的时候。服务端那个值配得特别小的时候这里会算出 0 ——
- *  那就只探一次立刻超时,这是对的:那种配置下本来就没有等的余地。 */
-function orderHardCapMs(claimTimeoutMin: number | null): number {
+ *
+ *  入参是绝对时刻而不是「认领超时几分钟」:后者会让这本账从点下单那一刻起算,
+ *  而清车/加购/填地址前面那几步(上界加起来能到五六分钟)同样记在服务端的
+ *  claimed_at 上。起点由 run.ts 在认领之后取,这里只做减法。
+ *
+ *  服务端那个值配得特别小、或者前面几步已经把预算吃光的时候这里会算出 0 ——
+ *  那就只探一次立刻超时,这是对的:那种情况下本来就没有等的余地。 */
+function orderHardCapMs(claimDeadlineMs: number | null, now: number): number {
   const own = T.orderHardCap;
-  if (claimTimeoutMin === null || !Number.isFinite(claimTimeoutMin) || claimTimeoutMin <= 0) {
-    return own;
-  }
-  return Math.max(0, Math.min(own, claimTimeoutMin * 60_000 - T.orderServerMargin));
+  if (claimDeadlineMs === null || !Number.isFinite(claimDeadlineMs)) return own;
+  return Math.max(0, Math.min(own, claimDeadlineMs - T.orderServerMargin - now));
 }
 
 /** 输入:一次 urlState 读数 → 输出:写进 detail 的中文。
@@ -542,7 +545,8 @@ export class AmazonDriver implements PageDriver {
   // 这一段是整条流水线上唯一「已经花过钱」的地方,所以它的形状与别处不同:
   // **有界、分段、可见、上报**,四件缺一不可。
   //
-  //  · 有界:三段各有预算,再压一道硬顶(还要给服务端的认领超时留余量)。
+  //  · 有界:三段各有预算,再压一道硬顶 —— 它按**服务端的认领超时**反推,
+  //          而那本账是从认领那一刻开始记的,不是从点下单开始记的。
   //          绝不 while(true) —— 厂商 v2.5.3 把两处结算导航的 maxWaitTime 改成 0,
   //          于是「跨域后回到别的页面」「一直停在跨域页」两格变成永不返回,
   //          连带把他们的全局锁焊死,整个插件不再接受新的拍单请求。
@@ -566,7 +570,7 @@ export class AmazonDriver implements PageDriver {
     }
 
     const startedAt = Date.now();
-    const hardCapMs = orderHardCapMs(hooks.claimTimeoutMin ?? null);
+    const hardCapMs = orderHardCapMs(hooks.claimDeadlineMs ?? null, startedAt);
     let phase: OrderWaitPhase = "normal";
     let phaseStartedAt = startedAt;
     let revealed = false;

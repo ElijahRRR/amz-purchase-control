@@ -80,10 +80,15 @@ export interface CheckoutReading {
  *  和服务端说话是 runTask 的事(见本文件头)。跨过这条线的话,SimulatedDriver
  *  也得会发事件,离线自检就跑不动了。 */
 export interface PlaceOrderHooks {
-  /** 服务端在 claim 响应里下发的认领超时(分钟)。等待的硬顶按它反推 ——
+  /** 服务端会在这个时刻把这条判成认领超时(epoch 毫秒)。等待的硬顶按它反推 ——
    *  插件自己拍一个上界的话,task_sweep 会在我们还在等的时候把单收走,
-   *  之后连「单下成了」都报不上去。null = 服务端没给,退回插件自己的硬顶。 */
-  claimTimeoutMin?: number | null;
+   *  之后连「单下成了」都报不上去。null = 服务端没给,退回插件自己的硬顶。
+   *
+   *  **是一个绝对时刻,不是一段时长。** 原先传的是 claim_timeout_min(分钟),
+   *  于是这本账从「点了下单那一刻」开始算 —— 而清车/加购/填地址那几步花掉的
+   *  五六分钟同样记在服务端的 claimed_at 上。两边的起点不一样,插件算出来的
+   *  「还剩多久」就一直是偏大的。起点由 run.ts 在**认领之后**取。 */
+  claimDeadlineMs?: number | null;
   /** 页面落进了不透明源(发卡行 3DS 验证页),窗口已经露出来等人动手。
    *  `deadlineMs` 是这一段的到期时刻(epoch 毫秒),面板拿它跑倒计时。 */
   onManualVerification?(info: { deadlineMs: number }): void | Promise<void>;

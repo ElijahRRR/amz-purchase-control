@@ -72,6 +72,19 @@ class Abort extends Error {
 export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
   const { client, driver, log } = deps;
 
+  // 服务端会在这个时刻把这条判成认领超时(task_sweep 只看 claimed_at)。
+  // **起点在这里取,不在 placeOrder 里取**:清车/加购/填地址那几步的上界加起来
+  // 就有五六分钟,它们同样记在服务端那本账上。少了这一段的话,插件算出来的
+  // 「还能等多久」永远偏大,最坏的一格是:第 15 分钟服务端把单转成待人工,
+  // 第 16 分钟这边订单下成了、单号也读到了,complete 拿回 409 TASK_NOT_HELD。
+  // 这里比服务端的 claimed_at 晚一个 HTTP 来回(claim 的响应刚回来),
+  // 偏乐观的那点由 orderServerMargin 兜着。
+  const claimMin = task.claim_timeout_min;
+  const claimDeadlineMs =
+    typeof claimMin === "number" && Number.isFinite(claimMin) && claimMin > 0
+      ? Date.now() + claimMin * 60_000
+      : null;
+
   // 点下单那一刻起就是 true。注意置位时机在 placeOrder **之前** ——
   // 如果在点击过程中崩了,我们同样不知道单下没下成。
   let mayHaveOrdered = false;
@@ -201,7 +214,7 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     await step("点击下单按钮", { may_have_ordered: true });
     await driver.placeOrder({
       // 上界由服务端给,不让插件自己拍。见 flow/amazon.orderHardCapMs。
-      claimTimeoutMin: task.claim_timeout_min ?? null,
+      claimDeadlineMs,
       onManualVerification: async ({ deadlineMs }) => {
         deps.onPhase?.("verify");
         deps.onVerifyWindow?.(deadlineMs);

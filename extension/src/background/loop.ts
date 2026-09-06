@@ -240,6 +240,14 @@ export class Loop {
         return { kind: "no-task" };
       }
 
+      // 服务端从这一刻起数认领超时(task_sweep 只看 claimed_at)。
+      // 比库里那个 claimed_at 晚一个 HTTP 来回,余量兜得住。
+      const sweepAtMs = typeof task.claim_timeout_min === "number" &&
+                        Number.isFinite(task.claim_timeout_min) &&
+                        task.claim_timeout_min > 0
+        ? Date.now() + task.claim_timeout_min * 60_000
+        : null;
+
       this.deps.log.ok(`认领 task_id=${task.task_id} · ${task.products.map((p) => p.asin).join(",")}`);
       this.phase("claimed", task);
 
@@ -263,16 +271,11 @@ export class Loop {
       // runTask 因为某个原因不返回,busy 闸永不复位,这个标签页从此安静地什么都不干,
       // 面板停在「执行中」,而服务端 15 分钟后把这条判成 CLAIM_TIMEOUT。
       // 厂商的 purchaseBatchInProgress 死法就是这个形状,只是我们的锁叫 busy。
-      // 配置里没有(旧存档、自检脚本给的桩)或者被人填坏了,就用默认值。
-      // **绝不允许算出 0**:那样看门狗会在每一单刚开跑时就触发,
-      // 而它的表现是「这一单跑了超过 0 分钟」—— 一道兜底网变成了绞索。
-      const capMs = Number.isFinite(cfg.taskHardCapMs) && cfg.taskHardCapMs > 0
-        ? cfg.taskHardCapMs
-        : DEFAULTS.taskHardCapMs;
+      const capMs = this.watchdogCapMs(cfg, task);
       const cap = hardCap(capMs);
       const outcome = await Promise.race([running, cap.race]).finally(cap.cancel);
       if (outcome === HARD_CAP) {
-        return await this.giveUp(task, running, driver, capMs);
+        return await this.giveUp(task, running, driver, capMs, sweepAtMs);
       }
 
       this.noteCart(outcome);
@@ -285,6 +288,29 @@ export class Loop {
     }
   }
 
+  /** 输入:配置 + 这一单 → 输出:看门狗的硬顶(毫秒)。
+   *
+   *  两个上界取更紧的那个:插件自己的 `cfg.taskHardCapMs`,以及**服务端的认领
+   *  超时**减去留给服务端的余量。后者原先没算进来 —— 默认 20 分钟的硬顶比默认
+   *  15 分钟的认领超时还长,于是看门狗触发的时候任务在服务端**必然已经不是
+   *  claimed 了**,它那条「插件放弃这一单」的 step 事件会被 TASK_NOT_HELD 拒掉,
+   *  事件流里再也没有任何地方说过「是插件这边先放弃的」,而日志还写着
+   *  「任务在服务端仍是拍单中」。
+   *
+   *  **绝不允许算出 0**:那样看门狗会在每一单刚开跑时就触发,而它的表现是
+   *  「这一单跑了超过 0 分钟」—— 一道兜底网变成了绞索。所以:配置里没有这一项
+   *  (旧存档、自检脚本给的桩)或被人填坏了就用默认值;认领窗口本身比余量还小的
+   *  极端配置下,退一步取认领窗口本身(赶在清扫那一刻,不再往前留)。 */
+  private watchdogCapMs(cfg: Config, task: Task): number {
+    const own = posOr(cfg.taskHardCapMs, DEFAULTS.taskHardCapMs);
+    const min = task.claim_timeout_min;
+    if (typeof min !== "number" || !Number.isFinite(min) || min <= 0) return own;
+    const window = min * 60_000;
+    const margin = posOr(cfg.timeouts?.orderServerMargin, DEFAULTS.timeouts.orderServerMargin);
+    const room = window - margin;
+    return Math.min(own, room > 0 ? room : window);
+  }
+
   /** 一单跑过了硬顶:强行收尾,把这件事说出去,然后**不再等它**。
    *
    *  注意这里没有「取消」——JavaScript 的 Promise 取消不了。能做的是把驱动
@@ -295,10 +321,16 @@ export class Loop {
     running: Promise<Outcome>,
     driver: PageDriver,
     capMs: number,
+    sweepAtMs: number | null,
   ): Promise<TickResult> {
     const mins = Math.round(capMs / 60_000);
+    // 「任务在服务端仍是拍单中」不许写死成一句话:硬顶被配得比认领超时还长时
+    // 它就是假的,而那恰恰是最需要看日志的一格。按此刻的钟说话。
+    const stillClaimed = sweepAtMs === null || Date.now() < sweepAtMs;
     this.deps.log.err(`这一单跑了超过 ${mins} 分钟仍未结束 —— 强制关掉页面收尾。` +
-                      `任务在服务端仍是「拍单中」,交给超时清扫转待人工`);
+                      (stillClaimed
+                        ? `任务在服务端还是「拍单中」,交给认领超时清扫转待人工`
+                        : `服务端的认领超时已经过了,这条多半已经被清扫成待人工`));
     this.zombies += 1;
     void running.finally(() => {
       this.zombies -= 1;
@@ -307,11 +339,18 @@ export class Loop {
     try { await driver.dispose(); } catch { /* 关不掉也得往下走 */ }
     // 事件流里要留下这一条:否则运营台上只看到任务停在「拍单中」然后被清扫,
     // 没有任何地方说过「是插件这边先放弃的」。
-    await this.deps.client.events(task.task_id, [{
+    const noted = await this.deps.client.events(task.task_id, [{
       kind: "step",
       payload: { step: "插件放弃这一单", state: "plugin_hard_cap",
                  cap_ms: capMs, note: "超过单笔硬顶,已强制关闭页面" },
     }]);
+    if (!noted.ok) {
+      // 写不进去要说出来。默默吞掉的话,运营台上这一单看起来就是「领走了、
+      // 停在拍单中、被清扫」,而「是插件先放弃的」这件事谁也不知道。
+      this.deps.log.warn(
+        "「插件放弃这一单」这条留痕没写进事件流:" +
+        (noted.kind === "business" ? `${noted.code} ${noted.message}` : noted.message));
+    }
     this.phase("idle", null);
     return { kind: "hard-cap", task };
   }

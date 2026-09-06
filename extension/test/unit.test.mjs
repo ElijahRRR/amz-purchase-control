@@ -19,6 +19,7 @@ import { SingleFlight } from "../build/core/singleflight.js";
 import { Serial } from "../build/core/serial.js";
 import { decideLease, LEASE_DEFAULTS } from "../build/core/lease.js";
 import { Loop } from "../build/background/loop.js";
+import { runTask } from "../build/flow/run.js";
 import { DriverError } from "../build/flow/driver.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -478,6 +479,90 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
 
   finish();
   await first;
+}
+
+// ── 硬顶从**认领**那一刻起算(R3) ──────────────────────────────────────
+//
+// 服务端的 task_sweep 只看 claimed_at。原先 placeOrder 收到的是
+// claim_timeout_min(一段时长),于是这本账从「点了下单那一刻」才开始记 ——
+// 而清车(上界 350s)/ 加购 / checkoutNav(45s)/ 地址(60s)那几步同样在
+// 服务端那本账上。默认配置下前面走掉五六分钟、placeOrder 再等满 10 分钟,
+// 总计超过 15 分钟的认领超时:任务已经被扫成 manual/CLAIM_TIMEOUT,
+// 这时才发 complete —— 钱花了、货发了,系统里是一条没有单号的待人工。
+{
+  const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
+  let seen = null;
+  let elapsedAtOrder = 0;
+  const client = fakeClient(1);
+  const t0 = Date.now();
+  const driver = {
+    name: "fake", ready: true,
+    readLoginState: async () => "unknown",
+    clearCart: async () => { await sleep(80); },        // 前面几步故意慢一点
+    addProduct: async () => ({ shipperIsAmazon: null }),
+    verifyCart: async () => true,
+    proceedToCheckout: async () => {},
+    fillAddress: async () => {},
+    readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
+                                 unitPrices: [] }),
+    placeOrder: async (hooks) => { seen = hooks ?? {}; elapsedAtOrder = Date.now() - t0; },
+    readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
+    dispose: async () => {},
+  };
+  const out = await runTask(fakeTask(1), { client, driver, log: silentLog });
+  eq("这一单正常跑完", out.kind, "purchased");
+  check("交给驱动的是一个绝对时刻,不是「还剩几分钟」",
+        typeof seen.claimDeadlineMs === "number" && seen.claimTimeoutMin === undefined,
+        JSON.stringify(Object.keys(seen)));
+  check("前面几步确实花掉了时间", elapsedAtOrder >= 80, `只用了 ${elapsedAtOrder}ms`);
+  const drift = seen.claimDeadlineMs - (t0 + 15 * 60_000);
+  check("那个时刻是「认领时刻 + claim_timeout_min」,不跟着前面几步往后挪",
+        drift >= -50 && drift < 60, `偏了 ${drift}ms(挪了就说明账是从点下单起算的)`);
+}
+
+{
+  // 看门狗的硬顶也要钳进服务端的认领窗口:默认 20 分钟比默认 15 分钟的认领超时
+  // 还长,那样它触发时任务**必然**已经被扫成待人工,它那条「插件放弃这一单」
+  // 的留痕会被 TASK_NOT_HELD 拒掉 —— 事件流里再没有地方说过是插件先放弃的。
+  const client = fakeClient(10);
+  // 服务端说这一单的认领超时只有 1 分钟。
+  const claimed1min = client.claim;
+  client.claim = async () => {
+    const r = await claimed1min();
+    if (r.data) r.data.claim_timeout_min = 1;
+    return r;
+  };
+  let releaseHang;
+  const hang = new Promise((r) => { releaseHang = r; });
+  const driver = {
+    name: "fake", ready: true,
+    readLoginState: async () => "unknown",
+    clearCart: async () => { await hang; throw new DriverError("PLUGIN_INTERNAL", "收尾"); },
+    addProduct: async () => ({ shipperIsAmazon: null }),
+    verifyCart: async () => true,
+    proceedToCheckout: async () => {},
+    fillAddress: async () => {},
+    readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
+                                 unitPrices: [] }),
+    placeOrder: async () => {},
+    readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
+    dispose: async () => {},
+  };
+  const loop = new Loop({
+    client, log: silentLog,
+    // 认领窗口 1 分钟、余量 59.95 秒 → 看门狗只剩 50ms,
+    // 插件自己那个 20 分钟被钳掉。不钳的话这一格要等 20 分钟才返回。
+    config: () => ({ mode: "simulate", taskHardCapMs: 20 * 60_000,
+                     timeouts: { orderServerMargin: 59_950 } }),
+    driver: () => driver,
+  });
+  const t0 = Date.now();
+  const first = await loop.tickOnce();
+  const took = Date.now() - t0;
+  eq("看门狗按钳过的硬顶触发", first.kind, "hard-cap");
+  check("硬顶被钳进了服务端的认领窗口", took < 5_000, `等了 ${took}ms`);
+  releaseHang();
+  await new Promise((r) => setTimeout(r, 20));
 }
 
 // ── 接线本身(只验得到源码这一层,说清楚) ──────────────────────────────
