@@ -332,6 +332,18 @@ class BatchResetReq(BaseModel):
     operator: str | None = None
 
 
+class ExpectedCardReq(BaseModel):
+    """给一个买家号配「该刷哪张卡」。
+
+    形状校验放 services/instance.set_expected_card(回一个带名字的业务码),
+    不放这里的 pattern:留空是合法的(= 关掉这道闸),而 `pattern` 表达
+    「四位数字或者空」既绕又会把「手滑少打一位」和「故意留空」回成同一个 422。
+    """
+
+    last4: str | None = None
+    operator: str | None = None
+
+
 class AsinReq(BaseModel):
     old_asin: str
     new_asin: str

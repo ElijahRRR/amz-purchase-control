@@ -716,6 +716,88 @@ def test_export_marks_the_rows_that_went_over_the_cap(client, conn, seed):
     assert len(over) == 1 and "是" in over[0]
 
 
+def test_export_over_cap_is_three_valued(client, conn, seed):
+    """「核过没超」与「压根没核过」不许在 CSV 里都是空格。
+
+    原先这一列是 `"是" if over else ""`,于是三种完全不同的单都渲染成空:
+      · 核过、没超
+      · 强制回填的单(actual_total 是 NULL,那道护栏一次都没跑过)
+      · 实付读成 0.00(礼品卡全额抵扣、或者金额还在 shimmer)
+    拿这张表去对账的人分不出后两种,而它们恰恰是最该被看一眼的。
+    """
+    _env, _inst, tasks = seed
+    _set(conn, tasks[0], status="purchased", amazon_order_no="111-0000001-0000001",
+         actual_total="9.99")                    # price_cap 12.50 → 没超
+    _set(conn, tasks[1], status="purchased", amazon_order_no="111-0000002-0000002",
+         actual_total=None)                      # 强制回填:压根没核过
+    _set(conn, tasks[2], status="purchased", amazon_order_no="111-0000003-0000003",
+         actual_total="0.00")                    # 读成 0:不是一次真做过的比较
+    conn.commit()
+
+    lines = client.post("/v1/admin/tasks/export", json={}).text.splitlines()
+    def cell(order_no):
+        ln = next(x for x in lines if order_no in x)
+        return [c.strip() for c in ln.split(",")]
+    assert "否" in cell("111-0000001-0000001")
+    assert "未核" in cell("111-0000002-0000002")
+    assert "未核" in cell("111-0000003-0000003")
+
+
+def test_export_over_cap_uses_goods_total_not_what_the_card_was_charged(client, conn, seed):
+    """礼品卡全额抵扣:实付 0.00,货款 99.99 —— 这一单是超了限价的。"""
+    _env, _inst, tasks = seed
+    _set(conn, tasks[0], status="purchased", amazon_order_no="111-0000004-0000004",
+         actual_total="0.00")
+    conn.execute("UPDATE procure.tasks SET gift_card_amount='99.99', goods_total='99.99' "
+                 "WHERE id=%s", (tasks[0],))
+    conn.commit()
+
+    ln = next(x for x in client.post("/v1/admin/tasks/export", json={}).text.splitlines()
+              if "111-0000004-0000004" in x)
+    assert "是" in [c.strip() for c in ln.split(",")]
+    assert "99.99" in ln
+
+
+# ── 买家号:该刷哪张卡 ──────────────────────────────────────────────────
+
+def test_expected_card_round_trip(client, conn, seed):
+    env, _inst, _tasks = seed
+    r = client.post(f"/v1/admin/envs/{env}/expected-card", json={"last4": "4417"})
+    assert r.status_code == 200, r.text
+    assert r.json()["data"]["expected_card_last4"] == "4417"
+
+    # 留空 = 关掉这道闸,库里存 NULL 而不是空串:留一个空串的话,
+    # 「配过、配成了空」与「没配过」在库里长成两个值,读的人得猜
+    r = client.post(f"/v1/admin/envs/{env}/expected-card", json={"last4": ""})
+    assert r.json()["data"]["expected_card_last4"] is None
+    row = conn.execute("SELECT expected_card_last4 FROM procure.buyer_envs WHERE id=%s",
+                       (env,)).fetchone()
+    assert row["expected_card_last4"] is None
+
+
+def test_expected_card_rejects_a_wrong_shape(client, seed):
+    """手滑少打一位的后果是这个买家号从此每一单都被「支付卡不符」拦下,
+    而运营看到那句话会去查买家号的支付方式、查不出任何问题。"""
+    env, _inst, _tasks = seed
+    r = client.post(f"/v1/admin/envs/{env}/expected-card", json={"last4": "441"})
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "BAD_CARD_LAST4"
+
+
+def test_expected_card_unknown_env_404(client, seed):
+    r = client.post("/v1/admin/envs/999999/expected-card", json={"last4": "4417"})
+    assert r.status_code == 404 and r.json()["error"]["code"] == "ENV_NOT_FOUND"
+
+
+def test_instances_list_shows_the_expected_card(client, conn, seed):
+    """界面上得看得见这一格 —— 一道看不见的闸,被它拦下时没人猜得到原因。"""
+    env, _inst, _tasks = seed
+    conn.execute("UPDATE procure.buyer_envs SET expected_card_last4='4417' WHERE id=%s", (env,))
+    conn.commit()
+    rows = client.get("/v1/admin/instances").json()["data"]["items"]
+    assert rows[0]["expected_card_last4"] == "4417"
+
+
 # ── 批量重置 ────────────────────────────────────────────────────────────
 
 def test_batch_reset_refuses_to_acknowledge_on_everyones_behalf(client, conn, seed):

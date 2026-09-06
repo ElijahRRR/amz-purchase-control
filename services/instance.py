@@ -190,6 +190,7 @@ SELECT e.id            AS env_id,
        e.status        AS env_status,
        e.amazon_customer_id,
        e.daily_cap,
+       e.expected_card_last4,
        i.instance_uid,
        i.plugin_version,
        i.last_seen_at,
@@ -269,3 +270,39 @@ def list_with_liveness(conn, *, stale_seconds: int) -> list[dict]:
         row["dispatchable"] = liveness == "online" and not capped and not signed_out
         out.append(row)
     return out
+
+
+class EnvRefused(Exception):
+    """一个说得出名字的拒绝(与 task_admin.AdminRefused 同一个形态)。"""
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def set_expected_card(conn, env_id: int, last4: str | None) -> dict:
+    """输入:连接 + 买家号 id + 四位数字(或空 = 关掉这道闸)→ 输出:改后的那一行。
+
+    **形状在这里校验,不在路由里。** 一个 "441"(手滑少打一位)存进去的后果是
+    这个买家号从此每一单都被 PAYMENT_METHOD_UNEXPECTED 拦下 ——
+    而运营看到的是「支付卡不符」,会去查买家号的支付方式,查不出任何问题。
+
+    空串与 None 都是「关掉这道闸」,统一存成 NULL:留一个空串在库里,
+    `if expected_card_last4:` 那种判断照样是假,但下一个来读库的人会以为
+    「配过、只是配成了空」——两种不同的情况不该长成两个值。
+    """
+    v = (last4 or "").strip()
+    if v and not (len(v) == 4 and v.isdigit()):
+        raise EnvRefused("BAD_CARD_LAST4",
+                         f"卡尾号得是 4 位数字,收到 {last4!r};留空表示这个买家号不校验支付方式")
+    row = conn.execute(
+        """UPDATE procure.buyer_envs
+              SET expected_card_last4 = %s, updated_at = now()
+            WHERE id = %s
+        RETURNING id, code, expected_card_last4""",
+        (v or None, env_id),
+    ).fetchone()
+    if row is None:
+        raise EnvRefused("ENV_NOT_FOUND", f"买家号不存在:{env_id}")
+    return dict(row)

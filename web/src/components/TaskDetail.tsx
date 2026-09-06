@@ -16,7 +16,7 @@ import { Dot, Tag } from "@/components/ui/tag";
 import { Input } from "@/components/ui/input";
 import { api, type ApiResult } from "@/lib/api";
 import { useLabel, useMeta } from "@/lib/meta";
-import { cn, fullTime, minutesText, money, shortTime } from "@/lib/utils";
+import { capVerdict, cn, fullTime, minutesText, money, shortTime } from "@/lib/utils";
 import type { TaskDetail as TD } from "@/types";
 
 function Group({ title, note, right, children, last }: {
@@ -194,6 +194,10 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
 
   const s = statusLabel(t.status);
   const bought = !!t.amazon_order_no;
+  // 限价这一条核没核过、核出什么 —— 判据只有一处(lib/utils.capVerdict),
+  // 着色与文案共用它。以前上面用 `t.actual_total &&`(字符串真值)、
+  // 下面用 `=== null`,两套判据迟早说出两句不一样的话。
+  const verdict = capVerdict(t);
   const addressBlock =
     `${t.ship_name}\n${t.ship_phone}\n${t.ship_line1}\n${t.ship_city}, ${t.ship_state} ${t.ship_postcode}\n${t.ship_country}`;
 
@@ -362,28 +366,46 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
                     <span className="num ml-auto">{money(v)}</span>
                   </div>
                 ))}
+                {/* 礼品卡抵扣单独一行:没有它的话,「实付 $0.00」这一格看起来
+                    就像这单没花钱,而实际上货款一分不少,只是被余额垫了。 */}
+                {t.gift_card_amount !== null && (
+                  <div className="flex items-center h-[26px] text-sm-">
+                    <span className="text-zinc-500">礼品卡抵扣</span>
+                    <span className="num ml-auto text-zinc-700">
+                      -{money(t.gift_card_amount)}
+                    </span>
+                  </div>
+                )}
                 <div className="flex items-center h-[26px] text-sm- border-t border-zinc-100">
-                  <span className="text-zinc-900">总计</span>
-                  <span className={cn("num ml-auto", t.actual_total
-                    && Number(t.actual_total) > Number(t.price_cap)
-                    ? "text-red-600 font-medium" : "text-zinc-900")}>
-                    {money(t.actual_total)}
+                  <span className="text-zinc-900">
+                    实付{t.gift_card_amount !== null && (
+                      <span className="ml-1 text-2xs text-zinc-400">这张卡扣的</span>
+                    )}
                   </span>
+                  <span className="num ml-auto text-zinc-900">{money(t.actual_total)}</span>
                 </div>
-                {/* 「没有这个数」不能渲染成「未超」。
-                    actual_total 为 null 时(强制回填的单必然如此,插件也可能没回传),
-                    原先整个表达式是假值 → 落进 else → 画绿点写「未超」。
-                    那是一个**从来没算过的护栏结论**,而它长得跟真算过的一模一样。 */}
+                {/* 货款才是护栏比过的那个数。只在它与实付真的不同时才多显示一行 ——
+                    没有礼品卡的单两个数一样,多一行只会让人以为它们可能不一样。 */}
+                {t.goods_total !== null && t.goods_total !== t.actual_total && (
+                  <div className="flex items-center h-[26px] text-sm-">
+                    <span className="text-zinc-900">
+                      货款<span className="ml-1 text-2xs text-zinc-400">护栏比的就是这个数</span>
+                    </span>
+                    <span className={cn("num ml-auto", verdict.state === "over"
+                      ? "text-red-600 font-medium" : "text-zinc-900")}>
+                      {money(t.goods_total)}
+                    </span>
+                  </div>
+                )}
+                {/* 「没有这个数」和「不是这单货款的那个数」都不能渲染成「未超」。
+                    这一格栽过两次:第一次的触发值是 null(强制回填的单必然如此),
+                    第二次是 "0.00" —— 礼品卡全额抵扣的单在结算页上就长这样,
+                    它落进 else 分支,画绿点写「未超」,而货款可能超了一倍。
+                    判据现在收成一处(lib/utils.capVerdict),着色与文案共用它,
+                    免得像以前那样上面一套判据、下面另一套。 */}
                 <div className="flex items-center gap-1.5 mt-0.5">
-                  <Dot tone={t.actual_total === null ? "amber-hollow"
-                             : Number(t.actual_total) > Number(t.price_cap) ? "red" : "emerald"} />
-                  <span className="text-xs+ text-zinc-600">
-                    {t.actual_total === null
-                      ? `实付金额没回传,限价 ${money(t.price_cap)} 这一条没法核`
-                      : Number(t.actual_total) > Number(t.price_cap)
-                        ? `超限价 ${money(String(Number(t.actual_total) - Number(t.price_cap)))}`
-                        : `限价 ${money(t.price_cap)},未超`}
-                  </span>
+                  <Dot tone={verdict.tone} />
+                  <span className="text-xs+ text-zinc-600">{verdict.text}</span>
                 </div>
               </>
             ) : (

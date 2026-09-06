@@ -12,6 +12,65 @@ export function money(v: string | number | null | undefined): string {
   return /^-?\d+(\.\d+)?$/.test(s) ? Number(s).toFixed(2) : s;
 }
 
+/** 限价这一条到底核过没有、核出什么结果 —— **界面上唯一的定义处**。
+ *
+ * 这个项目已经在同一个坑里栽过两次,两次都是「两种不同的情况渲染出同一个结果」:
+ *
+ *   第一次(已修):`actual_total` 是 null 时整个表达式是假值,落进 else 分支,
+ *   画绿点写「未超」。那是一个**从来没算过的护栏结论**,长得跟真算过的一模一样。
+ *
+ *   第二次(这次):`actual_total` 是 "0.00" 时照样落进那个分支。而 0.00 正是
+ *   礼品卡全额抵扣的单在结算页上的样子 —— 一张货款 2241.86、限价 1000 的单,
+ *   详情页会写「总计 $0.00 · 限价 $1,000.00,未超」并配一个绿点。
+ *
+ * 所以判据收成一处,四态:
+ *   · 没有任何数可比            → 没法核(空心琥珀)
+ *   · 有数,但 ≤ 0              → 没法核(空心琥珀)。金额还在 shimmer,或者读错了格子
+ *   · 有礼品卡抵扣              → 照常判超没超,但文案必须把两个数都说出来
+ *   · 其余                      → 照常
+ *
+ * 比的是**货款**(goods_total,服务端在护栏那一步真正比过的那个数),
+ * 没有它才退回 actual_total —— 强制回填的单和这一列落库之前的历史单没有它。
+ * 服务端那边的同一套判据在 services/task_query.over_cap / cap_basis。
+ */
+export type CapVerdict = {
+  state: "unknown" | "over" | "within";
+  tone: "amber-hollow" | "red" | "emerald";
+  /** 真正拿去跟限价比的那个数;没法核时是 null。 */
+  basis: string | null;
+  text: string;
+};
+
+export function capVerdict(t: {
+  price_cap: string;
+  actual_total: string | null;
+  goods_total?: string | null;
+  gift_card_amount?: string | null;
+}): CapVerdict {
+  const raw = t.goods_total ?? t.actual_total;
+  const cap = Number(t.price_cap);
+  if (raw === null || raw === undefined || raw === "") {
+    return { state: "unknown", tone: "amber-hollow", basis: null,
+             text: `实付金额没回传,限价 ${money(t.price_cap)} 这一条没法核` };
+  }
+  const basis = Number(raw);
+  if (!Number.isFinite(basis) || basis <= 0) {
+    return { state: "unknown", tone: "amber-hollow", basis: raw,
+             text: `实付读成 ${money(raw)},这个数不可信 —— 限价这一条没法核` };
+  }
+  const gift = t.gift_card_amount;
+  const withGift = gift !== null && gift !== undefined && gift !== ""
+    ? `货款 ${money(raw)}(其中礼品卡抵扣 ${money(gift)}),限价 ${money(t.price_cap)}`
+    : null;
+  if (basis > cap) {
+    return { state: "over", tone: "red", basis: raw,
+             text: withGift ? `${withGift},超 ${money(String(basis - cap))}`
+                            : `超限价 ${money(String(basis - cap))}` };
+  }
+  return { state: "within", tone: "emerald", basis: raw,
+           text: withGift ? `${withGift},未超` : `限价 ${money(t.price_cap)},未超` };
+}
+
 /** 分钟数说成人话:90 → 「90 分钟」,1440 → 「24 小时」,4320 → 「3 天」。
  *
  * 只在整除时才换单位 —— 「1.5 天」这种说法要人在脑子里再算一次,

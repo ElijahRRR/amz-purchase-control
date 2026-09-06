@@ -29,9 +29,18 @@ export interface TaskRow {
   ship_state: string;
   ship_postcode: string;
   price_cap: string;
+  /** **这张卡要扣的钱。** 礼品卡垫过之后它比货款小,全额抵扣时就是 "0.00"。
+   *  **不要拿它跟 price_cap 比** —— 那正是这一列曾经把超限价单渲染成
+   *  「未超」的原因。要比就比 goods_total(见 lib/money.capVerdict)。 */
   actual_total: string | null;
   actual_shipping: string | null;
   actual_tax: string | null;
+  /** 礼品卡/余额抵扣额。null = 这一单没有礼品卡抵扣。 */
+  gift_card_amount: string | null;
+  /** **这一单的货款** = 实付 + 礼品卡抵扣。服务端在护栏那一步自己算出来、
+   *  真正拿去跟限价比的就是它。null = 那一步没跑过(强制回填的单、
+   *  或者这一列落库之前完成的历史单)。 */
+  goods_total: string | null;
   payment_last4: string | null;
   delivery_date: string | null;
   amazon_order_no: string | null;
@@ -138,6 +147,10 @@ export interface InstanceRow {
   env_status: string;
   amazon_customer_id: string | null;
   daily_cap: number;
+  /** 这个买家号该刷哪张卡的后四位。null = 这一道不校验(闸是可关的)。
+   *  配上之后,结算页读到的尾号与它不符即 PAYMENT_METHOD_UNEXPECTED,
+   *  **在下单之前**拦下。只校验、不替买家号切卡。 */
+  expected_card_last4: string | null;
   instance_uid: string | null;
   plugin_version: string | null;
   last_seen_at: string | null;

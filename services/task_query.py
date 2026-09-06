@@ -28,6 +28,9 @@ SELECT t.id, t.line_key, t.upstream_order_no, t.marketplace, t.status,
        t.ship_name, t.ship_phone, t.ship_line1,
        t.ship_city, t.ship_state, t.ship_postcode,
        t.price_cap, t.actual_total, t.actual_shipping, t.actual_tax,
+       -- 护栏真正比过的那个数 + 它的另一半。少了这两列,界面就只能拿
+       -- actual_total 去跟限价比,而礼品卡抵扣过的单那个数是「卡扣了多少」
+       t.gift_card_amount, t.goods_total,
        t.payment_last4, t.delivery_date, t.amazon_order_no,
        t.error_code, t.error_detail,
        t.created_at, t.purchased_at,
@@ -427,6 +430,43 @@ def error_stats(conn, *, date_from: date, date_to: date) -> dict[str, Any]:
     }
 
 
+def cap_basis(task) -> Any:
+    """输入:任务行 → 输出:该拿哪个数去跟 price_cap 比;比不了返回 None。
+
+    **这个函数是「拿哪个数比」的唯一定义处。** 导出那一列与运营台详情弹窗
+    照着同一套判据渲染 —— 分叉过一次就够了(daily_cap 那次:界面自己算一遍
+    「可派单」,算法与真闸不一样,于是界面上绿着、实际派不出)。
+
+    优先 goods_total(服务端在 guard-check 那一步算出来、真正比过的那个数);
+    没有它才退回 actual_total —— 强制回填的单、以及 goods_total 落库之前
+    完成的历史单都没有这一列。
+    """
+    basis = task.get("goods_total")
+    if basis is None:
+        basis = task.get("actual_total")
+    if basis is None:
+        return None
+    return basis
+
+
+def over_cap(task) -> str:
+    """输入:任务行 → 输出:「是」/「否」/「未核」。
+
+    三值而不是两值:原先是 `"是" if over else ""`,于是「核过、没超」与
+    「压根没核过」在 CSV 里都是空格。0.00 也落进"没超"那一档 ——
+    而那正是礼品卡全额抵扣的单的样子。
+
+    「未核」盖两种:没有任何金额可比(强制回填的单),以及金额 ≤ 0
+    (金额还在 shimmer,或者选择器读错了格子)。两者都不是一次真做过的比较,
+    不许渲染成「否」。
+    """
+    basis = cap_basis(task)
+    cap = task.get("price_cap")
+    if basis is None or cap is None or basis <= 0:
+        return "未核"
+    return "是" if basis > cap else "否"
+
+
 #: 导出的列。顺序照运营台「详细」那一行的 8 组字段 —— 导出来的表和界面上看到的
 #: 是同一个东西,才不用在两边之间对着找。
 EXPORT_COLUMNS: list[tuple[str, str]] = [
@@ -444,6 +484,8 @@ EXPORT_COLUMNS: list[tuple[str, str]] = [
     ("actual_shipping", "运费"),
     ("actual_tax", "税费"),
     ("actual_total", "实付总计"),
+    ("gift_card_amount", "礼品卡抵扣"),
+    ("goods_total", "货款(护栏比的就是这个数)"),
     ("over_cap", "是否超限价"),
     ("amazon_order_no", "AMZ 单号"),
     ("env_code", "买家号"),
@@ -491,13 +533,12 @@ def export_rows(conn, *, page_size: int, **filters) -> Any:
         for t in got["items"]:
             products = t.get("products") or [{}]
             for p in products:
-                over = (t["actual_total"] is not None
-                        and t["actual_total"] > t["price_cap"])
                 yield {
                     **{k: t.get(k) for k in (
                         "upstream_order_no", "marketplace", "status", "error_code",
                         "error_detail", "price_cap", "actual_shipping", "actual_tax",
-                        "actual_total", "amazon_order_no", "env_code",
+                        "actual_total", "gift_card_amount", "goods_total",
+                        "amazon_order_no", "env_code",
                         "amazon_customer_id", "payment_last4", "ship_name", "ship_phone",
                         "ship_line1", "ship_city", "ship_state", "ship_postcode",
                         "carrier", "tracking_no", "delivery_date",
@@ -511,7 +552,7 @@ def export_rows(conn, *, page_size: int, **filters) -> Any:
                     "asin": p.get("asin"),
                     "quantity": p.get("quantity"),
                     "actual_unit_price": p.get("actual_unit_price"),
-                    "over_cap": "是" if over else "",
+                    "over_cap": over_cap(t),
                 }
         # 游标 = 这一页最后那条的 id。不管这期间前面增删了多少行,
         # 下一页永远接着它往下走 —— 不漏也不重。
