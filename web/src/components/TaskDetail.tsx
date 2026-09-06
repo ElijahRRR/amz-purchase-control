@@ -468,17 +468,30 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
                 : <span className="text-zinc-400">—</span>}
             </KV>
             {/* 已试几次:人点的重置**不计数**(那一下背后有人在看),
-                所以这个数只回答一个问题 —— 机器替这一单试过几回。 */}
-            <KV k="自动重试">
-              {meta.auto_retry.enabled
-                ? <span className="text-xs">
-                    已试 <span className="num text-zinc-900">{t.retry_count}</span>
-                    <span className="text-zinc-400"> / 上限 {meta.auto_retry.max} 次</span>
-                  </span>
-                : <span className="text-xs text-zinc-500">
-                    没开{t.retry_count > 0 && ` · 此前自动重过 ${t.retry_count} 次`}
-                  </span>}
-            </KV>
+                所以这个数只回答一个问题 —— 机器替这一单试过几回。
+
+                「上限 M 次」是一句**承诺**,只有这一单真的排着队等机器重的时候
+                才成立(autoRetryApplies)。无条件写出来的话,一张 status=manual、
+                error_code 在 RETRYABLE 里的单 —— 机器永远不会碰、要人现在就去
+                订单页看的那一种 —— 会和隔壁真排着队的单渲染出一模一样的
+                「已试 0 / 上限 2」,而运营刚在错误码分布页读过「重满了才要人进去点」,
+                自然得出「还没轮到我管」。两种处置相反的情况长成同一个样子就是缺陷。
+                不在射程里的只报事实(机器试过几回),绝不报上限。 */}
+            {(autoRetryApplies || t.retry_count > 0) && (
+              <KV k="自动重试">
+                {autoRetryApplies
+                  ? <span className="text-xs">
+                      已试 <span className="num text-zinc-900">{t.retry_count}</span>
+                      <span className="text-zinc-400"> / 上限 {meta.auto_retry.max} 次</span>
+                    </span>
+                  : <span className="text-xs text-zinc-500">
+                      已试 <span className="num text-zinc-700">{t.retry_count}</span> 次 ·{" "}
+                      {meta.auto_retry.enabled
+                        ? "这一单不在自动重试范围内"
+                        : "现在没开自动重试"}
+                    </span>}
+              </KV>
+            )}
             <KV k="创建时间"><span className="id text-xs">{fullTime(t.created_at)}</span></KV>
             <KV k="采购时间"><span className="id text-xs">{fullTime(t.purchased_at)}</span></KV>
             {retryHint && <Hint>{retryHint}</Hint>}
