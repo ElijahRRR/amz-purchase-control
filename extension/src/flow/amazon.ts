@@ -460,12 +460,10 @@ export class AmazonDriver implements PageDriver {
     // 判的是**货款**不是实付:礼品卡全额抵扣的单实付确实是 0.00,那是对的。
     // 礼品卡认出来了但金额读不出来(goodsTotal 是 undefined)不在这里拦 ——
     // 那一档要让服务端拒并留痕,插件自己吞掉的话运营看不见发生过什么。
-    const basis = goodsTotal ?? total;
-    if (gift.applied && gift.amount === undefined) {
-      // 不拦,交给服务端裁决;下面那道 <= 0 用实付判会误伤,所以这里跳过
-    } else if (!(Number(basis) > 0)) {
+    const giftAmountUnknown = gift.applied && gift.amount === undefined;
+    if (!giftAmountUnknown && !(Number(goodsTotal) > 0)) {
       throw new DriverError("CHECKOUT_TIMEOUT",
-                            `结算页货款读成 ${basis}(实付 ${total}` +
+                            `结算页货款读成 ${goodsTotal}(实付 ${total}` +
                             `${gift.applied ? `,礼品卡抵扣 ${gift.amount}` : ""}),` +
                             "这个数不可信,不下单");
     }
