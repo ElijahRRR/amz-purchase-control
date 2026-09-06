@@ -51,6 +51,26 @@ export function parseMoney(s: string | null | undefined): string | undefined {
  *  **unknown 不是 ok。** 上层(认领闸、运营台)必须把这两个分开对待。 */
 export type LoginState = "ok" | "signed_out" | "unknown";
 
+/** 输入:一个页面/frame 的 URL → 输出:它是不是 Amazon 的登录页。
+ *
+ *  **这条判据的唯一定义处。** 用它的地方有五处:readLoginState 的第一句、
+ *  账户入口 href 那一条、AmazonDriver.readLoginState 的等待条件与结论、guardLogin。
+ *  它是可信度最高的那一条 —— 落到 /ap/signin 就是被登出了,DOM 怎么长都不改变
+ *  这个结论。
+ *
+ *  为什么要单独拎出来:散成五处 `url.includes(URLS.signIn)` 的话,它就成了
+ *  「没有任何测试盯着、改一处不会转红、改错方向最坏」的那种判据 ——
+ *  写成 `startsWith`、挪个位置、改 `URLS.signIn`,五处一起失灵而测试全绿,
+ *  失灵的方向恰好是把被登出的页面读成 ok。收成一处之后,盯住这一处就够了
+ *  (test/dom.test.mjs 的 isSignInUrl 那几条),和 `task_queue.login_blocks_claim`
+ *  是同一个做法:闸门的判断只有一处定义。
+ *
+ *  读不到 URL(跨域、文档还没就绪)时传进来的是空串 → `false`:
+ *  **「读不到」不是「不在登录页」,只是这条判据这次用不上**,由别的判据接着说。 */
+export function isSignInUrl(url: string | null | undefined): boolean {
+  return !!url && url.includes(URLS.signIn);
+}
+
 /** 输入:一张 Amazon 页面 → 输出:这个浏览器此刻的登录态。
  *
  * **不读 Cookie** —— 插件没申请 `cookies` 权限,登录态留在浏览器 profile 里,
@@ -80,7 +100,9 @@ export function readLoginState(doc: Document): LoginState {
   } catch {
     url = "";   // 跨域/文档还没就绪时读不到,当作没有这条判据
   }
-  if (url.includes(URLS.signIn)) return "signed_out";
+  // 最硬的一条:落在登录页上就是被登出了,DOM 里长什么样都不改变这个结论
+  // （被登出的 /ap/signin 页面上照样可能挂着一整套"已登录"的导航栏模板）。
+  if (isSignInUrl(url)) return "signed_out";
 
   // 隐藏副本不算数:Amazon 常把整套导航模板塞进 display:none 的壳里,
   // 里面那句 "Hello, sign in" 在一张登录着的页面上照样在 DOM 里。
@@ -94,7 +116,7 @@ export function readLoginState(doc: Document): LoginState {
   if (!link && !greet && !signOut) return "unknown";   // 这页没有导航栏
 
   const href = link?.getAttribute("href") ?? "";
-  if (href.includes(URLS.signIn)) return "signed_out";
+  if (isSignInUrl(href)) return "signed_out";
 
   // 文案在这里既是判据也是**否决票**:问候语明写着 sign in 时,
   // 哪怕页面上还留着个 signout 节点(模板残留),也按已登出算。

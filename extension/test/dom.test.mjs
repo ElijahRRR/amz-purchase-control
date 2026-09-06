@@ -61,6 +61,32 @@ async function withFixture(file, fn) {
   }
 }
 
+/** 把夹具**当作某个 URL 上的页面**打开。
+ *
+ *  上面那个 withFixture 用的是 setContent,页面的 URL 永远是 about:blank ——
+ *  于是 readLoginState 的第一条判据(URL 落在 /ap/signin)在夹具里根本走不到。
+ *  这里用 route 拦截把请求就地回掉:不联网,但页面真的落在给定的 URL 上。 */
+async function withUrl(url, file, fn) {
+  const path = join(here, "fixtures", file);
+  let html;
+  try {
+    html = readFileSync(path, "utf8");
+  } catch {
+    failures.push(`夹具缺失:${file}`);
+    return;
+  }
+  const page = await browser.newPage();
+  await page.route("**/*", (route) =>
+    route.fulfill({ contentType: "text/html; charset=utf-8", body: html }));
+  await page.goto(url);
+  await page.addScriptTag({ path: KIT });
+  try {
+    await fn((expr) => page.evaluate(expr));
+  } finally {
+    await page.close();
+  }
+}
+
 // ── 导航栏:登录态 ────────────────────────────────────────────────────
 //
 // 这一节盯的是「被登出」不再和「页面慢」长得一样。判错的两个方向代价不对等:
@@ -97,6 +123,27 @@ await withFixture("nav-signed-out.html", async (run) => {
      await run(`/sign in/i.test(document.querySelector(".sc-recommendations").textContent)`), true);
 });
 
+// **URL 判据**:落在 /ap/signin 上就是被登出了,页面里长什么样都不改变这个结论。
+//
+// 这一条被注释和文档称作"最硬",却曾经一条断言都没有:把它反过来写成
+// `return "ok"`,97 条断言全绿(2026-09-06 复核实测)。原因是夹具全部走
+// setContent,URL 永远是 about:blank,这条判据在测试里根本走不到。
+// 现在它收成了一处定义(parse.isSignInUrl),下面两条盯着它 ——
+// 一条盯"命中时不许被 DOM 翻案",一条盯"不命中时别乱判"(免得上面那条
+// 是因为 route 或夹具本身坏了才变红,那样它证明不了任何事)。
+await withUrl("https://www.amazon.com/ap/signin?openid.pape=x&ref_=nav_signin",
+              "nav-signed-in.html", async (run) => {
+  eq("URL 落在 /ap/signin → signed_out(哪怕 DOM 是一整套已登录导航栏)",
+     await run("amzdom.readLoginState(document)"), "signed_out");
+  // 这张夹具确实是"已登录"的那一张 —— 干扰项得真的在
+  eq("这张页面的 DOM 确实是已登录的样子(干扰项确实存在)",
+     await run(`!!document.querySelector("#nav-item-signout")`), true);
+});
+await withUrl("https://www.amazon.com/gp/cart/view.html",
+              "nav-signed-in.html", async (run) => {
+  eq("同一张夹具放在购物车 URL 上 → ok", await run("amzdom.readLoginState(document)"), "ok");
+});
+
 // **读不到导航栏 = unknown,不是 ok。** 判不出来时兜底成"应该登录着吧",
 // 这道闸就等于不存在,而界面上还会写着"已登录"。
 await withFixture("cart.html", async (run) => {
@@ -129,6 +176,22 @@ await withFixture("cart-empty.html", async (run) => {
      await parse('<a id="nav-link-accountList" href="/gp/css/homepage.html?ref_=nav_ya"></a>'), "ok");
   eq("nav 账户入口指向 /ap/signin → signed_out",
      await parse('<a id="nav-link-accountList" href="/ap/signin?openid.pape=0"></a>'), "signed_out");
+
+  // 判据本身:URL 那一条收成了一处定义(parse.isSignInUrl),用它的有五处
+  // (readLoginState 两处、AmazonDriver.readLoginState 两处、guardLogin)。
+  // 那四处开 iframe、要真页面,离线验不了;能验的是它们共用的这一处。
+  const is = (u) => run(`amzdom.isSignInUrl(${JSON.stringify(u)})`);
+  eq("isSignInUrl 命中(带查询串)",
+     await is("https://www.amazon.com/ap/signin?openid.pape=x"), true);
+  eq("isSignInUrl 命中(登录页的子路径)",
+     await is("https://www.amazon.com/ap/signin/attempt"), true);
+  eq("isSignInUrl 不把购物车页当登录页",
+     await is("https://www.amazon.com/gp/cart/view.html"), false);
+  // 读不到 URL(跨域、文档没就绪)时 frame.url() 给的是空串。
+  // **「读不到」不是「不在登录页」** —— 这条判据这一次用不上而已,
+  // 判成 true 会把每一次读不到都说成"被登出了"。
+  eq("isSignInUrl 空串不算命中", await is(""), false);
+  eq("isSignInUrl null 不算命中", await run("amzdom.isSignInUrl(null)"), false);
 });
 
 // ── 商品页 ──────────────────────────────────────────────────────────

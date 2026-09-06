@@ -58,7 +58,7 @@ python tools/mock_plugin.py --scenario wrong_asin  # 订单卡 ASIN 不符,转�
 # 6. 插件侧
 cd extension && npm install
 npm run typecheck && npm run build        # → dist/,可加载进 Chrome
-npm run test:dom                          # 97 条 DOM 解析断言(不需要服务端)
+npm run test:dom                          # 105 条 DOM 解析断言(不需要服务端)
 npm run smoke                             # 用插件自己的 Loop/runTask 跑闭环
 node tools/smoke.mjs --scenario happy --ship in_transit
 node tools/smoke.mjs --scenario login_lost         # 跑到一半被登出:退回队列,不记异常
@@ -187,7 +187,7 @@ python cli.py feishu_writeback
 | 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 245 条 pytest,跑在真 PostgreSQL 17 上 |
 | 插件与服务端的时序(认领 → 执行 → 护栏 → 回填 → 失败清车) | ✅ 8 个场景实跑,跑的是插件自己的 `Loop`/`runTask` |
 | 物流同步时序 | ✅ 实跑 |
-| DOM 解析层(选择器是否按报告的语义在读) | ✅ 97 条断言,对着按报告造的夹具跑 |
+| DOM 解析层(选择器是否按报告的语义在读) | ✅ 105 条断言,对着按报告造的夹具跑 |
 | 登录态(被登出 → 拒绝派单 → 重新登录后自愈) | ✅ 心跳落库/认领被拒/恢复/unknown 的 pytest,加一轮 `--scenario login_lost` 实跑 |
 | 运营台前端 | ✅ 真库 + 真服务 + 真浏览器跑过四页、详情弹窗、改地址、剪贴板、NEEDS_ACK 流程 |
 | **真实 Amazon 页面** | ❌ **从未跑过**。这里没有可登录的买家号 |

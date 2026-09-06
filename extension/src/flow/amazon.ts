@@ -21,6 +21,7 @@ import {
   pickQuantitySelect, readCarrier, readCartLines, readCheckoutPanels,
   readDeliveryPromise, readGrandTotal, readInStock, readOrderCards, readOrderState,
   isTrackingUnavailable,
+  isSignInUrl,
   readLoginState,
   readOrderSummary, readPaymentLast4, readProductShipper, readTrackingEvents,
   readTrackingNumber, readTrackingStatus,
@@ -88,7 +89,7 @@ export class AmazonDriver implements PageDriver {
       // 所以两个条件里任一成立就算"读到了",不必干等满超时。
       try {
         await waitFor("导航栏渲染",
-                      () => f.url().includes(URLS.signIn) ||
+                      () => isSignInUrl(f.url()) ||
                             readLoginState(f.doc()) !== "unknown",
                       { timeoutMs: T.loginProbe, everyMs: 300 });
       } catch {
@@ -96,7 +97,7 @@ export class AmazonDriver implements PageDriver {
         // 判不出来时放行是这道闸最容易被写坏的地方。
         return "unknown";
       }
-      if (f.url().includes(URLS.signIn)) return "signed_out";
+      if (isSignInUrl(f.url())) return "signed_out";
       return readLoginState(f.doc());
     }, T.frameLoad);
   }
@@ -106,7 +107,7 @@ export class AmazonDriver implements PageDriver {
    *  抛 LoginLostError 而不是 DriverError —— 上层据此**退回队列**(而不是记异常),
    *  并把这台机器的登录态标成 signed_out 上报。见 flow/driver.LoginLostError 的注释。 */
   private guardLogin(f: Frame, where: string): void {
-    let out = f.url().includes(URLS.signIn);
+    let out = isSignInUrl(f.url());
     if (!out) {
       try {
         out = readLoginState(f.doc()) === "signed_out";

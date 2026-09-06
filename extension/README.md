@@ -44,7 +44,7 @@ python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
 真实 Amazon 页面拿不到，所以 DOM 解析对着 `test/fixtures/` 里按逆向报告造的页面跑：
 
 ```bash
-npm run test:dom     # 65 条断言
+npm run test:dom     # 105 条断言
 ```
 
 夹具里塞满了干扰项——隐藏的同 id 副本、Saved for later、推荐位、`<template>` 模板节点、
