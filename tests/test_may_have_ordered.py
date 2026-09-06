@@ -109,6 +109,27 @@ def test_the_event_row_and_the_column_land_together(client, conn, seed):
     assert _flag(conn, tasks[0]) is True
 
 
+def test_the_response_field_says_the_task_state_not_this_batch(client, conn, seed):
+    """`may_have_ordered` 回的是**这条任务此刻的状态**,不是这一批里有没有那条 step。
+
+    原先回的是后者:先报「点击下单按钮」(true),再报一条普通的「等待确认页」,
+    第二次就回 false —— 而库里那一列是 true。字段名会被照字面理解成任务的状态
+    (插件想据此决定还能不能 release、下一个写运营台或重放工具的人),
+    于是「从没越过下单点」与「上一次请求已经越过了」渲染成同一个 false。
+    """
+    _env, _inst, tasks = seed
+    _claim(client, conn, tasks[0])
+    first = client.post(f"/v1/tasks/{tasks[0]}/events",
+                        json={"instance_uid": "inst-A", "events": [CROSS_EVENT]})
+    assert first.json()["data"]["may_have_ordered"] is True
+
+    second = client.post(f"/v1/tasks/{tasks[0]}/events", json={
+        "instance_uid": "inst-A",
+        "events": [{"kind": "step", "payload": {"step": "等待确认页"}}]})
+    assert second.json()["data"]["may_have_ordered"] is True
+    assert _flag(conn, tasks[0]) is True
+
+
 # ── 插件自己退回队列那条路(/release) ──────────────────────────────────
 
 def test_release_is_refused_after_the_order_line(client, conn, seed):

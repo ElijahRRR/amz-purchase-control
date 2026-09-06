@@ -81,8 +81,18 @@ def events(task_id: int, req: schemas.EventsReq, conn=Depends(conn_ctx)) -> sche
         conn.execute(
             "UPDATE procure.tasks SET may_have_ordered = true "
             " WHERE id = %s AND NOT may_have_ordered", (task_id,))
-    return schemas.Envelope(ok=True, data={"recorded": len(req.events),
-                                           "may_have_ordered": crossed})
+    # 回的是**这条任务此刻的状态**,不是「这一批里有没有那条 step」。
+    #
+    # 原先回的是后者,于是同一条已经越过下单点的任务,下一次报「等待确认页」时
+    # 拿到的是 false —— 而库里那一列是 true。字段名叫 may_have_ordered,
+    # 读的人(插件想据此决定还能不能 release、下一个写运营台或重放工具的人)
+    # 会照字面理解成任务的状态,于是「从没越过下单点」与「上一次请求已经越过了」
+    # 渲染成同一个 false。这一列只会 false → true,所以旧值取或就是新值,
+    # 不必为此再查一次库。
+    return schemas.Envelope(ok=True, data={
+        "recorded": len(req.events),
+        "may_have_ordered": bool(task["may_have_ordered"]) or crossed,
+    })
 
 
 @router.post("/{task_id}/guard-check")
