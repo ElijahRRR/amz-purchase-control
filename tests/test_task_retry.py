@@ -104,7 +104,17 @@ def test_off_means_off_even_when_asked_by_hand(conn, seed, monkeypatch):
 # ── 开着:只动够格的 ────────────────────────────────────────────────────
 
 def test_moves_only_the_ones_that_meet_every_condition(conn, seed, on):
-    """五个条件是「全部满足」,不是「满足一个就行」。"""
+    """六个条件是「全部满足」,不是「满足一个就行」。
+
+    这里**直接断 candidates()**,不只看「谁最后被动了」。只看结局的话,
+    选单 SQL 的条件被改宽也照样绿:retry_one 会把多选出来的那几条再拒一次,
+    任务确实没被动 —— 但**空跑变了**。`--dry-run` 会把一批 manual 的、
+    以及已经重满的单列进「这一轮会动到谁」,摘要里那个「N 条够格」也跟着虚高,
+    而 CLAUDE.md 要求「改完代码第一次必须先 --dry-run,人眼确认输出再跑真的」:
+    空跑输出正是所有者拿来做决定的那份东西。
+    (实测过:把 SQL 的 status 放宽到 IN ('exception','manual')、或者把
+    retry_count 那一行整行删掉,全套测试都还是全绿。)
+    """
     env_id, _inst, tasks = seed
     good = tasks[0]
     _fail(conn, good, "CHECKOUT_TIMEOUT")                       # ✓ 够格
@@ -118,22 +128,42 @@ def test_moves_only_the_ones_that_meet_every_condition(conn, seed, on):
     waiting = _mk(conn, env_id, "k-waiting")                    # ✗ status=manual:
     _fail(conn, waiting, "CLAIM_TIMEOUT", status="manual")      #    manual 的含义就是等人
 
+    # ✗ status=manual,**但码在 RETRYABLE 那一组里**。这一条是专门盯条件 ① 的:
+    # 上面那条 CLAIM_TIMEOUT 挡不住 status 被改宽,因为它的码本来就不在这一组。
+    # 而 manual + PLUGIN_INTERNAL 是真实可达的组合:插件越过下单点之后抛
+    # DriverError('PLUGIN_INTERNAL'),码还在 RETRYABLE 里,单却已经因为
+    # mayHaveOrdered 转了待人工(extension/src/flow/run.ts)。
+    # 这种单机器**永远**不许碰 —— 它正是「可能已经在亚马逊上下过单」的那一类。
+    waiting_retryable = _mk(conn, env_id, "k-waiting-retryable")
+    _fail(conn, waiting_retryable, "PLUGIN_INTERNAL", status="manual")
+
+    # ✗ 重满了。专门盯条件 ④ —— 删掉 SQL 里那一行,这一条就会混进候选
+    exhausted = _mk(conn, env_id, "k-exhausted")
+    _fail(conn, exhausted, "CHECKOUT_TIMEOUT", retry_count=2)   # 上限 2
+
     queued = tasks[1]                                           # ✗ 还在队列里,没失败过
     conn.commit()
+
+    # 选单本身只该给出一条。这一句才是真正盯着那六个条件的 ——
+    # 底下那些「谁没被动过」的断言,兜底的是 retry_one 的复判,不是选单。
+    assert [r["id"] for r in task_retry.candidates(conn)] == [good]
 
     summary = wf.run({"dry_run": False})
 
     assert _row(conn, good) == {"status": "ready", "error_code": None, "retry_count": 1}
     assert _kinds(conn, good) == ["auto_retry"]
     assert f"#{good}" in summary and "1/2" in summary
+    assert summary.startswith("1 条够格自动重试"), f"摘要里的条数不许虚高:{summary}"
 
-    expect = {business: ("exception", "OUT_OF_STOCK"),
-              to_manual: ("exception", "CAPTCHA_ENCOUNTERED"),
-              waiting: ("manual", "CLAIM_TIMEOUT"),
-              queued: ("ready", None)}
-    for other, (status, code) in expect.items():
+    expect = {business: ("exception", "OUT_OF_STOCK", 0),
+              to_manual: ("exception", "CAPTCHA_ENCOUNTERED", 0),
+              waiting: ("manual", "CLAIM_TIMEOUT", 0),
+              waiting_retryable: ("manual", "PLUGIN_INTERNAL", 0),
+              exhausted: ("exception", "CHECKOUT_TIMEOUT", 2),
+              queued: ("ready", None, 0)}
+    for other, (status, code, n) in expect.items():
         assert _row(conn, other) == {"status": status, "error_code": code,
-                                     "retry_count": 0}, f"任务 {other} 不该被动过"
+                                     "retry_count": n}, f"任务 {other} 不该被动过"
         assert "auto_retry" not in _kinds(conn, other)
 
 
@@ -240,12 +270,19 @@ def test_a_negative_config_never_widens_the_gate(monkeypatch):
 
 
 def test_stops_at_the_ceiling(conn, seed, on):
-    """重满了就交给人 —— 「有界」全靠这个数。"""
+    """重满了就交给人 —— 同一张单重几次,全靠这个数。"""
     _env, _inst, tasks = seed
     used_up, one_left = tasks[0], tasks[1]
     _fail(conn, used_up, "PLUGIN_INTERNAL", retry_count=2)     # 上限 2,用完了
     _fail(conn, one_left, "PLUGIN_INTERNAL", retry_count=1)    # 还剩一次
     conn.commit()
+
+    # 空跑清单里也不许有它。这一句盯的是选单 SQL 那一行:少了它,重满的单
+    # 照样会被列进「这一轮会动到谁」—— 真跑时 retry_one 会拒掉,任务确实没动,
+    # 但所有者是照着空跑那份输出做决定的,那份输出错了没人会发现。
+    preview = wf.run({"dry_run": True})
+    assert f"#{one_left}" in preview and f"#{used_up}" not in preview, preview
+    assert preview.startswith("dry-run:1 条够格自动重试"), preview
 
     wf.run({"dry_run": False})
 
