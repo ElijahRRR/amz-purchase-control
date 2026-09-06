@@ -122,6 +122,127 @@ def test_guard_block_is_recorded_as_event(client, conn, seed):
     assert row == {"kind": "guard_block", "code": "PRICE_CAP_EXCEEDED"}
 
 
+def test_require_fba_really_comes_from_the_column_not_from_a_default(client, conn, seed):
+    """把库里那一列改成 false,NOT_FBA 就不该再拦。
+
+    在此之前这道闸是个恒为真的常量:refdata/schema.sql 里没有这一列,
+    server/routes/tasks.py 调 adjudicate 时也不传 require_fba,走的是
+    services/price_guard.adjudicate 签名里的默认 True。
+    也就是说文档和 GuardsOut 里那个"可关的闸"改哪儿都不生效,而界面上它一直亮着。
+    这条测试盯的就是「它现在真的从库里那一列来」。
+    """
+    _register(client)
+    conn.execute("UPDATE procure.tasks SET require_fba = false")
+    t = _claim(client)
+    assert t["guards"]["require_fba"] is False      # 下发给插件的也得是库里那个值
+    r = client.post(f"/v1/tasks/{t['task_id']}/guard-check", json={
+        "instance_uid": UID, "actual_total": "1.00",
+        "delivery_raw": "Tomorrow", "is_fba": False,
+    })
+    assert r.json()["data"]["allow"] is True
+
+    # 反方向:默认(true)那条路照旧拦得住 —— 免得这条测试是靠"闸整个没了"通过的
+    conn.execute("UPDATE procure.tasks SET require_fba = true, status='ready', "
+                 "claimed_by=NULL, claimed_at=NULL")
+    t2 = _claim(client)
+    assert t2["guards"]["require_fba"] is True
+    r2 = client.post(f"/v1/tasks/{t2['task_id']}/guard-check", json={
+        "instance_uid": UID, "actual_total": "1.00",
+        "delivery_raw": "Tomorrow", "is_fba": False,
+    })
+    assert r2.json()["data"]["error_code"] == "NOT_FBA"
+
+
+def test_guard_compares_goods_total_not_what_the_card_gets_charged(client, conn, seed):
+    """礼品卡全额抵扣:实付 0.00 ≤ 限价 12.50,但货款 99.00 超了。
+
+    修之前这一单会被放行,库里落 actual_total=0.00,运营台画绿点写「未超」。
+    """
+    _register(client)
+    t = _claim(client)
+    r = client.post(f"/v1/tasks/{t['task_id']}/guard-check", json={
+        "instance_uid": UID, "actual_total": "0.00",
+        "gift_card": {"applied": True, "amount": "99.00"},
+        "goods_total": "99.00",
+        "delivery_raw": "Tomorrow", "is_fba": True,
+    })
+    d = r.json()["data"]
+    assert d["allow"] is False and d["error_code"] == "PRICE_CAP_EXCEEDED"
+    assert d["goods_total"] == "99.00"
+    # 被拦下的单同样要能答出「当时护栏比的是哪个数」
+    row = conn.execute("SELECT goods_total, gift_card_amount FROM procure.tasks WHERE id=%s",
+                       (t["task_id"],)).fetchone()
+    assert str(row["goods_total"]) == "99.00"
+    assert str(row["gift_card_amount"]) == "99.00"
+
+
+def test_server_recomputes_goods_total_and_ignores_the_plugin_number(client, conn, seed):
+    """插件报了个假的货款,服务端不采信 —— 护栏裁决在服务端。
+
+    插件说 goods_total=1.00(小于限价),服务端自己算 0.00 + 99.00 = 99.00 → 拦。
+    """
+    _register(client)
+    t = _claim(client)
+    r = client.post(f"/v1/tasks/{t['task_id']}/guard-check", json={
+        "instance_uid": UID, "actual_total": "0.00",
+        "gift_card": {"applied": True, "amount": "99.00"},
+        "goods_total": "1.00",                       # ← 插件报的,故意与事实不符
+        "delivery_raw": "Tomorrow", "is_fba": True,
+    })
+    assert r.json()["data"]["error_code"] == "PRICE_CAP_EXCEEDED"
+    assert r.json()["data"]["goods_total"] == "99.00"
+
+
+def test_zero_total_no_longer_slips_through(client, seed):
+    """实付 0.00、没有礼品卡 —— 这是「金额还在 shimmer」的样子,不许放行。"""
+    _register(client)
+    t = _claim(client)
+    r = client.post(f"/v1/tasks/{t['task_id']}/guard-check", json={
+        "instance_uid": UID, "actual_total": "0.00",
+        "delivery_raw": "Tomorrow", "is_fba": True,
+    })
+    d = r.json()["data"]
+    assert d["allow"] is False and d["error_code"] == "PLUGIN_INTERNAL"
+
+
+def test_expected_card_gate_is_off_until_the_env_has_one(client, conn, seed):
+    _register(client)
+    t = _claim(client)
+    body = {"instance_uid": UID, "actual_total": "10.79", "payment_last4": "9021",
+            "delivery_raw": "Tomorrow", "is_fba": True}
+    assert client.post(f"/v1/tasks/{t['task_id']}/guard-check", json=body
+                       ).json()["data"]["allow"] is True
+
+    conn.execute("UPDATE procure.buyer_envs SET expected_card_last4 = '4417'")
+    d = client.post(f"/v1/tasks/{t['task_id']}/guard-check", json=body).json()["data"]
+    assert d["allow"] is False and d["error_code"] == "PAYMENT_METHOD_UNEXPECTED"
+
+    body["payment_last4"] = "4417"
+    assert client.post(f"/v1/tasks/{t['task_id']}/guard-check", json=body
+                       ).json()["data"]["allow"] is True
+
+
+def test_guard_check_event_carries_the_numbers_the_guard_actually_used(client, conn, seed):
+    """事件流是「不拦但要留痕」那类信号的去处 —— 自洽记录写在这里。"""
+    _register(client)
+    t = _claim(client)
+    client.post(f"/v1/tasks/{t['task_id']}/guard-check", json={
+        "instance_uid": UID, "actual_total": "8.00",
+        "gift_card": {"applied": True, "amount": "2.00"},
+        "line_items": [{"asin": "B0FB3VS68J", "unit_price": "1.00", "quantity": 1}],
+        "delivery_raw": "Tomorrow", "is_fba": True,
+    })
+    row = conn.execute(
+        "SELECT kind, payload FROM procure.task_events WHERE task_id=%s ORDER BY id DESC LIMIT 1",
+        (t["task_id"],),
+    ).fetchone()
+    assert row["kind"] == "step"
+    assert row["payload"]["goods_total"] == "10.00"
+    assert row["payload"]["gift_card_amount"] == "2.00"
+    # Σ单价×数量 = 1.00 vs 货款 10.00,差 90% —— 远超默认阈值,该记一笔
+    assert row["payload"]["consistency_note"]
+
+
 # ── 完成与断言 ──────────────────────────────────────────────────────────
 
 def test_complete_backfills(client, conn, seed):
