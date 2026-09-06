@@ -240,6 +240,18 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
         // 商品页是这一单第一张要读的页。被登出时它照样打得开(商品页不需要登录),
         // 但导航栏会明说 —— 在这里就发现,比拖到结算页超时省 45 秒。
         await this.guardLogin(f, "打开商品页");
+        // **「页面上没有加购按钮」与「按钮在、但一直点不动」是两件事。**
+        // 后者(disabled / aria-disabled 一直没解除,或页面上只有隐藏副本)
+        // 是这一单买不成,该报 ADD_TO_CART_FAILED;而裸抛 WaitTimeout 会被
+        // run.ts 兜成 PLUGIN_INTERNAL —— 那是「插件自己出毛病了」的意思,
+        // 会把一单商品侧的问题送到研发那里去。
+        if (e instanceof WaitTimeout &&
+            SEL.product.addToCart.some((sel) => f.doc().querySelector(sel))) {
+          throw new DriverError(
+            "ADD_TO_CART_FAILED",
+            `${asin} 商品页上有加购按钮,但 ${T.frameLoad}ms 内一直没变成可点状态` +
+            `(disabled / aria-disabled 没解除,或页面上只有隐藏副本)`);
+        }
         throw e;
       }
 
