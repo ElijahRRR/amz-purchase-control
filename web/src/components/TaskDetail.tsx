@@ -194,6 +194,14 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
 
   const s = statusLabel(t.status);
   const bought = !!t.amazon_order_no;
+  // 「费用信息」那一组的闸不是 bought,是**有没有任何金额可答**。
+  // 服务端在 guard-check 那一步就把 gift_card_amount / goods_total 落库了,
+  // **不管放不放行** —— 就是为了让被拦下的单也能答出「当时护栏比的是哪个数」。
+  // 拿 bought 当闸的话,一张 PRICE_CAP_EXCEEDED 的单(amazon_order_no 为 null)
+  // 会走进 else,界面上写「这几格空着是对的,不是没同步上」,而库里那两个数
+  // 明明有 —— 这批单恰恰是最需要看这两个数的。
+  const hasMoney = t.goods_total !== null || t.actual_total !== null
+                   || t.gift_card_amount !== null;
   // 限价这一条核没核过、核出什么 —— 判据只有一处(lib/utils.capVerdict),
   // 着色与文案共用它。以前上面用 `t.actual_total &&`(字符串真值)、
   // 下面用 `=== null`,两套判据迟早说出两句不一样的话。
@@ -358,7 +366,7 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
           </Group>
 
           <Group title="费用信息">
-            {bought ? (
+            {hasMoney ? (
               <>
                 {([["运费", t.actual_shipping], ["税费", t.actual_tax]] as const).map(([k, v]) => (
                   <div key={k} className="flex items-center h-[26px] text-sm-">
@@ -411,6 +419,14 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
             ) : (
               <div className="text-sm- text-zinc-500 leading-relaxed">
                 还没有下单,也就没有实付金额 —— 这几格空着是对的,不是没同步上。
+              </div>
+            )}
+            {/* 下单没成、但护栏那一步已经比过数:说清这几个数是哪儿来的,
+                否则「实付 0.00」配着一个没有订单号的任务,看着像是同步掉了。 */}
+            {hasMoney && !bought && (
+              <div className="mt-1 text-2xs text-zinc-400 leading-relaxed">
+                这一单没下成。上面几个数是护栏在下单之前从结算页读到并比过的,
+                不是回填来的。
               </div>
             )}
           </Group>

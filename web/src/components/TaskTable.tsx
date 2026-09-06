@@ -18,7 +18,7 @@ import { Box, Home, Mail, MapPin, Phone } from "lucide-react";
 import { CopyText } from "@/components/CopyText";
 import { Tag } from "@/components/ui/tag";
 import { useLabel, useMeta } from "@/lib/meta";
-import { cn, money, shortTime } from "@/lib/utils";
+import { capVerdict, cn, money, shortTime } from "@/lib/utils";
 import type { TaskRow } from "@/types";
 
 export type Density = "detail" | "compact";
@@ -54,16 +54,21 @@ function DL({ k, children, className }: { k: string; children: React.ReactNode; 
   );
 }
 
-/** 「实付有没有超限价」。超了要看得见 —— 护栏本来就该拦住,漏过去的那几单
- *  是最需要人去看的。没下单时不着色:那不是「没超」,是「还没有这个数」。
+/** 「这一单有没有超限价」的着色。超了要看得见 —— 护栏本来就该拦住,漏过去的
+ *  那几单是最需要人去看的。核不了的时候不着色:那不是「没超」,是「还没有这个数」。
  *
- * **只拿整单实付比**。price_guard.adjudicate 判的是 `actual_total > price_cap`,
- * 限价是**整单**的,不是单价的。拿单价去比会得出跟护栏相反的结论:
- * 3 件 × 24 元、限价 60,单价 24 看着安全,整单 72 其实已经超了。
- * 界面上的红色必须跟真正那道闸算的是同一件事,否则就是「看起来有护栏」。 */
-function totalTone(total: string | null, cap: string): string {
-  if (total === null) return "text-zinc-400";
-  return Number(total) > Number(cap) ? "text-red-600 font-medium" : "text-zinc-800";
+ * **判据只有一处(lib/utils.capVerdict),这里不许再写一遍。**
+ * 限价是**整单**的,不是单价的:3 件 × 24 元、限价 60,单价 24 看着安全,
+ * 整单 72 其实已经超了。而整单要比的是**货款**(goods_total),不是实付 ——
+ * price_guard.adjudicate 比的就是货款。这一格栽过一次:改护栏的时候它没跟着改,
+ * 于是礼品卡全额抵扣、货款 2241.86、限价 1000 的一单在列表页渲染成黑色的 0.00,
+ * 跟一张真的只花了 0 元的单**长得一模一样**,而详情弹窗那边说它超了一倍多 ——
+ * 同一个事实两个页面两种说法。界面上的红色必须跟真正那道闸算的是同一件事,
+ * 否则就是「看起来有护栏」。 */
+function totalTone(r: TaskRow): string {
+  const v = capVerdict(r);
+  if (v.state === "unknown") return "text-zinc-400";
+  return v.state === "over" ? "text-red-600 font-medium" : "text-zinc-800";
 }
 
 /** 勾选列。放在最前面,两种密度都有 —— 批量动作不该只在某一档才够得着。 */
@@ -169,7 +174,8 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
         cell: ({ row }) => <span className="num">{money(row.original.price_cap)}</span> },
       { id: "paid", header: "实付", size: 74, meta: { align: "right" },
         cell: ({ row }) => (
-          <span className={cn("num", totalTone(row.original.actual_total, row.original.price_cap))}>
+          <span className={cn("num", totalTone(row.original))}
+                title={capVerdict(row.original).text}>
             {money(row.original.actual_total)}
           </span>
         ) },
@@ -303,12 +309,26 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
           <div className="flex flex-col gap-0.5">
             {line("运费", r.actual_shipping)}
             {line("税费", r.actual_tax)}
+            {/* 礼品卡垫过的单,「总计 0.00」这一格看起来就像这单没花钱。
+                抵扣额单列一行,货款也单列一行 —— 红色标在货款上,
+                因为护栏比的是它。没有礼品卡的单两个数一样,不多这两行。 */}
+            {r.gift_card_amount !== null && line("礼品卡", r.gift_card_amount)}
             <span className="flex items-baseline border-t border-zinc-100 pt-1 mt-0.5 text-xs">
               <span className="text-zinc-900">总计</span>
-              <span className={cn("num ml-auto text-xs", totalTone(r.actual_total, r.price_cap))}>
+              <span className={cn("num ml-auto text-xs",
+                                  r.goods_total !== null && r.goods_total !== r.actual_total
+                                    ? "text-zinc-800" : totalTone(r))}>
                 {money(r.actual_total)}
               </span>
             </span>
+            {r.goods_total !== null && r.goods_total !== r.actual_total && (
+              <span className="flex items-baseline text-xs" title={capVerdict(r).text}>
+                <span className="text-zinc-900">货款</span>
+                <span className={cn("num ml-auto text-xs", totalTone(r))}>
+                  {money(r.goods_total)}
+                </span>
+              </span>
+            )}
           </div>
         );
       },
