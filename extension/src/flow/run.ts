@@ -61,6 +61,14 @@ export interface RunDeps {
   /** 进入/离开「等人做发卡行验证」。面板拿 deadlineMs 跑倒计时;
    *  离开时传 null。与 onPhase 分开:相位是给标签用的,这个是给倒计时用的。 */
   onVerifyWindow?: (deadlineMs: number | null) => void;
+  /** 这一单**开头那次清车成功了**。Loop 的清车熔断拿它清零连续计数。
+   *
+   *  为什么不能只看终态里的 cartCleared:那一位只有 failed 才带,
+   *  而 purchased / released 这两条路上清车明明成功过(它是第一步)。
+   *  于是「失败、失败、成功、失败」也会熔断 —— 熔断本身没坏,坏的是它报出来的
+   *  原因:面板会说「连着几单清不动购物车,多半是 Amazon 改了购物车页的结构」,
+   *  而这台机器的购物车其实好好的,运营照着这句话去查一个不存在的故障。 */
+  onCartCleared?: () => void;
 }
 
 class Abort extends Error {
@@ -119,6 +127,10 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
   try {
     await step("清空购物车");
     await driver.clearCart();
+    // 清成功了就说一声:Loop 的清车熔断据此把连续计数清零。**在这里说,
+    // 不等到终态** —— purchased / released 的终态里没有 cartCleared 这一位,
+    // 而清车在那两条路上明明成功过。
+    deps.onCartCleared?.();
 
     for (const p of task.products) {
       const added = await driver.addProduct(p.asin, p.quantity);

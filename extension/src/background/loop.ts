@@ -298,6 +298,11 @@ export class Loop {
         // Loop 这一层从 claim 到 return 之间一直是 running,分不出「轮到人了」。
         onPhase: (p) => this.phase(p, task),
         onVerifyWindow: (deadlineMs) => this.deps.onVerifyWindow?.(deadlineMs),
+        // 开头那次清车成功了。熔断的连续计数在这里清零,而不是只看终态 ——
+        // 终态里的 cartCleared 只有 failed 才带,purchased / released 这两条路上
+        // 清车明明成功过(它是第一步)。只看终态的话,「失败、失败、成功、失败」
+        // 也会熔断,而它报的原因(「Amazon 改了购物车页的结构」)是假的。
+        onCartCleared: () => { this.cartFailStreak = 0; },
       });
 
       // ── 看门狗 ──
@@ -402,7 +407,11 @@ export class Loop {
 
   /** 清车熔断的计数。**只数「试了没清动」**(cartCleared === false):
    *  越过下单点那一路按规矩就不清车(null),把它算进来的话,
-   *  三单「可能已下单」就能让一台购物车好好的机器停止认领。 */
+   *  三单「可能已下单」就能让一台购物车好好的机器停止认领。
+   *
+   *  清零走的是另一条路(runTask 的 onCartCleared,开头那次清车一成功就报)——
+   *  只在这里清的话,成功的那一单(purchased,它的终态里根本没有 cartCleared)
+   *  不会清零,于是「失败、失败、成功、失败」也熔断。 */
   private noteCart(outcome: Outcome): void {
     if (outcome.kind !== "failed" || outcome.cartCleared === null) return;
     if (outcome.cartCleared) {

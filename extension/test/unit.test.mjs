@@ -282,6 +282,47 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
 }
 
 {
+  // 中间成功一单必须把连续计数清零。
+  //
+  // 修之前只在「failed 且 cartCleared === true」那一支清零,而成功的一单
+  // (purchased)的终态里根本没有 cartCleared 这一位 —— 于是
+  // 「失败、失败、成功、失败」也会熔断。熔断本身没坏,坏的是它报出来的原因:
+  // 面板红条说「连着几单清不动购物车,多半是 Amazon 改了购物车页的结构」,
+  // 而这台机器的购物车其实好好的(第 3 单刚刚清成功过),
+  // 运营照着这句话去查一个并不存在的结构性故障。
+  const client = fakeClient(10);
+  let round = 0;
+  const clearOk = [false, false, true, false, true];
+  const driver = {
+    name: "fake", ready: true,
+    readLoginState: async () => "unknown",
+    clearCart: async () => {
+      if (!clearOk[round]) throw new DriverError("PLUGIN_INTERNAL", "找不到删除控件");
+    },
+    addProduct: async () => ({ shipperIsAmazon: null }),
+    verifyCart: async () => true,
+    proceedToCheckout: async () => {},
+    fillAddress: async () => {},
+    readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
+                                 unitPrices: [] }),
+    placeOrder: async () => {},
+    readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
+    dispose: async () => {},
+  };
+  const loop = new Loop({
+    client, log: silentLog,
+    config: () => ({ mode: "simulate", taskHardCapMs: 60_000 }),
+    driver: () => driver,
+  });
+
+  const kinds = [];
+  for (round = 0; round < 5; round += 1) kinds.push((await loop.tickOnce()).kind);
+  eq("失败、失败、成功、失败 —— 不该熔断", kinds,
+     ["ran", "ran", "ran", "ran", "ran"]);
+  eq("成功的那一单确实是拍成了", client.fails.length, 3);
+}
+
+{
   // 越过下单点之后按规矩不清车 —— 那**不是**一次清车失败,不该把熔断计数推上去。
   // 混为一谈的话,三单「可能已下单」就能让一台购物车好好的机器停止认领。
   const client = fakeClient(10);
