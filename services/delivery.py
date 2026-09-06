@@ -125,7 +125,15 @@ def parse_delivery(raw: str | None, *, today: date) -> date | None:
     parts = _RANGE.split(text)
     if len(parts) > 1:
         text = parts[-1].strip()
-        # 结束段可能只有日号("Aug 21 — 25" 这种归一化没吃到的形状),补上起始段的月份
+        # 结束段只剩一个日号时,补上起始段的月份。
+        #
+        # 注意这条**不**兜 "Aug 21 — 25":`_MD_RANGE` 的连字符两侧写的是 `\s*`、
+        # 字符组里也有 em dash,那个形状在上一行就被归一化成 "Aug 25" 了,
+        # 走不到这里。真正走得到的是**月日与连字符之间还隔着别的东西**的写法,
+        # 典型是隔着年份:"Aug 21, 2026 - 25"(`_MD_RANGE` 要求月名与日号相邻)。
+        # 廉价的兜底,留着;但注释说的必须是它现在真管的那件事 ——
+        # 照着一条错的注释去改 `_MD_RANGE`,会有人为了「不破坏 em dash 区间」
+        # 刻意绕开 em dash,而 em dash 本来就归上面那条管。
         if text.isdigit():
             head = _NO_YEAR.search(parts[0]) or _WITH_YEAR.search(parts[0])
             if head:

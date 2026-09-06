@@ -129,6 +129,21 @@ def test_our_gap_1_iso_date_is_not_a_range():
     assert p("Delivery 2026-09-08", today=SEP6) is None
 
 
+def test_the_bare_day_fallback_still_has_a_shape_it_really_catches():
+    """「结束段只剩一个日号,补上起始段的月份」那条兜底,现在真管的是这种写法。
+
+    它**不**管 "Aug 21 — 25":`_MD_RANGE` 的连字符两侧是 `\\s*`、字符组里也有
+    em dash,那个形状在归一化那一步就被吃掉了(下面第二条断的就是这件事)。
+    真正走得到这条兜底的是月日与连字符之间还隔着别的东西的写法,典型是隔着年份。
+
+    钉住它是因为注释曾经举错了例子 —— 而一条描述与执行路径不一致的注释,
+    会让下一个改 `_MD_RANGE` 的人为了「别破坏 em dash 区间」刻意绕开 em dash。
+    """
+    assert p("Aug 21, 2026 - 25", today=date(2026, 8, 20)) == date(2026, 8, 25)
+    # em dash 那种归一化就吃掉了,压根走不到兜底
+    assert p("Aug 21 — 25", today=date(2026, 8, 20)) == date(2026, 8, 25)
+
+
 # ── 我们自己的缺口 OG-2:取第一个月日 + 无上界地向未来滚一年 ──────────────
 
 def test_our_gap_2_takes_the_latest_month_day_not_the_first():
