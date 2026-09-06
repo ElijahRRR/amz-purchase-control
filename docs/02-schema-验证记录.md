@@ -200,8 +200,14 @@ pytest：**245 passed**（新增 13 条：心跳落库 / 不传不覆盖 / 封�
 （`parse.isSignInUrl`，用它的有五处），测试用 Playwright 的 route 拦截把夹具
 **真的放在 `/ap/signin` 上**打开——不联网，但 URL 是真的。
 
-**仍然没被盯住的**：`AmazonDriver.readLoginState` 与 `guardLogin` 里那两处调用点
-（它们要开 iframe、要真页面，离线验不了）。盯住的是它们共用的那一处判据定义，
-以及 `readLoginState` 对它的两处使用。这一行写在这里，是为了读表的人不会以为
-"判据全都被盯着"。
+**仍然没被盯住的**（写在这里，是为了读表的人不会以为"全都被盯着"）：
+
+- `AmazonDriver.readLoginState` 与 `guardLogin` 里那两处调用点——它们要开 iframe、
+  要真页面，离线验不了。盯住的是它们共用的那一处判据定义（`parse.isSignInUrl`），
+  以及 `readLoginState` 对它的两处使用。
+- service worker 里那条心跳重发路径（登录态被服务端连续拒绝 3 次就丢弃）。
+  `src/background/service-worker.ts` 一进模块就调 `chrome.*`，Node 里驱动不起来，
+  `npm run smoke` 走的是 `Loop`，不经过它。这条上限是**推演出来的，不是验过的**。
+- 封闭集的六份现在有 pytest 盯着（改坏 `server/schemas.py` 的 Literal → 4 条转红；
+  改坏 `parse.ts` 的 `LoginState` → 1 条转红），这一条是被盯住的。
 

@@ -40,6 +40,19 @@ let leaseUntil = 0;
  *  发不出去(网络断了)就留着,下一次心跳再带 —— 清空只在服务端确认收到之后。 */
 let pendingLoginState: LoginState | null = null;
 
+/** 同一位登录态**被服务端明确拒绝**了几次。只数 business 失败:断网、超时是
+ *  「没说上话」,那种情况留着重发正是对的。 */
+let pendingLoginRejects = 0;
+
+/** 重发的上限。到了就丢掉这一位并 log.err。
+ *
+ *  为什么要有上限:这一位只在 `r.ok` 时才清,而它有可能是服务端**永远**不收的
+ *  ——最现实的一种是封闭集漂了(HeartbeatReq 那个 Literal 少了一个值)→ 每一次
+ *  心跳都 422。那样的话 last_seen_at 再也不更新(这台机器在运营台上变成「失联」),
+ *  登录态也再送不上去,这道闸退化成一块永远不动的招牌。
+ *  **丢一位登录态,好过让一个毒值把整条心跳通道堵死。** */
+const PENDING_LOGIN_MAX_REJECTS = 3;
+
 /** 服务端在上一次心跳里回的「该不该复检登录态」。
  *  内容脚本每轮要租约时顺手取走 —— 不另开一条广播,少一条要维护的消息。 */
 let loginCheckDue = false;
@@ -74,7 +87,10 @@ async function heartbeat(): Promise<void> {
     // 收到了才清。清早了的话,一次网络抖动就能让「这台机器被登出了」这条消息
     // 永远丢掉 —— 而服务端会一直按上一位派单。
     // 只清送出去的那一位:发请求这段时间里内容脚本可能又报了新的。
-    if (sending && pendingLoginState === sending) pendingLoginState = null;
+    if (sending && pendingLoginState === sending) {
+      pendingLoginState = null;
+      pendingLoginRejects = 0;
+    }
     loginCheckDue = !!r.data?.login_check_due;
     return;
   }
@@ -83,6 +99,17 @@ async function heartbeat(): Promise<void> {
     log.warn("实例未注册,重新注册");
     await boot();
     return;
+  }
+  if (sending && r.kind === "business") {
+    // 服务端**明确**拒了这一条:再发一遍答案一样(api.postIdempotent 也是这么判的)。
+    // 留着重发的只该是「没说上话」那一种。
+    pendingLoginRejects += 1;
+    if (pendingLoginRejects >= PENDING_LOGIN_MAX_REJECTS) {
+      log.err(`登录态 ${sending} 连续 ${pendingLoginRejects} 次被服务端拒绝` +
+              `(${r.code} ${r.message}),丢弃这一位 —— 再重发下去整条心跳通道都会被它堵死`);
+      if (pendingLoginState === sending) pendingLoginState = null;
+      pendingLoginRejects = 0;
+    }
   }
   log.warn("心跳失败:" + (r.kind === "business" ? r.code : r.message));
 }
@@ -142,6 +169,8 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
 
   if (msg?.type === "amz.loginState") {
     // 内容脚本读页面读出来的那一位。SW 自己读不了 —— 它没有 document。
+    // 换了一个值就重新数:上一位被拒的次数说的是上一位。
+    if (msg.state !== pendingLoginState) pendingLoginRejects = 0;
     pendingLoginState = msg.state as LoginState;
     // 报上来之后这一轮的「该复检了」就算答完了,别让内容脚本再开一次页面。
     loginCheckDue = false;

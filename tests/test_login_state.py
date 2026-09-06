@@ -106,7 +106,13 @@ def test_unknown_still_overwrites_ok(client, conn, seed):
 
 
 def test_heartbeat_rejects_unknown_login_state(client, seed):
-    """封闭集。拼错的值宁可 422,也不写进库 —— 写进去之后那道闸就认不出它了。"""
+    """封闭集。拼错的值宁可 422,也不写进库 —— 写进去之后那道闸就认不出它了。
+
+    这个 422 来自 **Pydantic**(`HeartbeatReq.login_state` 是个 Literal),
+    不是 `instance.validate_login_state` —— 后者在 HTTP 这条路上走不到,
+    它守的是直调 service 的那条路。封闭集因此有两道闸,两道都得跟着改,
+    见 test_login_state_closed_set_has_exactly_one_meaning_everywhere。
+    """
     r = client.post("/v1/instances/heartbeat",
                     json={"instance_uid": "inst-A", "login_state": "SignedOut"})
     assert r.status_code == 422
@@ -169,8 +175,11 @@ def test_unknown_does_not_block_claim(client, conn, seed):
     r = client.post("/v1/tasks/claim", json={"instance_uid": "inst-A"})
     assert r.status_code == 200 and r.json()["data"] is not None
 
-    client.post("/v1/instances/heartbeat",
-                json={"instance_uid": "inst-A", "login_state": "unknown"})
+    # 断言响应码:漏了它的话,封闭集里少掉 "unknown" 之后这一句已经是 422,
+    # 而这条测试照样绿(2026-09-06 复核实测)。
+    r = client.post("/v1/instances/heartbeat",
+                    json={"instance_uid": "inst-A", "login_state": "unknown"})
+    assert r.status_code == 200
     assert task_queue.login_blocks_claim("unknown") is False
 
 
@@ -246,18 +255,52 @@ def test_login_check_due_only_when_there_is_work(client, conn, seed):
     assert r.json()["data"]["login_check_due"] is False
 
 
-# ── 封闭集:三处必须一字不差 ────────────────────────────────────────────
+# ── 封闭集:六处必须一字不差 ────────────────────────────────────────────
+
+def _ts_union(path, name: str) -> set[str]:
+    """输入:一个 .ts 文件 + 类型名 → 输出:那行字面量联合类型的成员集合。"""
+    line = next(ln for ln in path.read_text(encoding="utf-8").splitlines()
+                if ln.startswith(f"export type {name} ="))
+    return {p.strip().strip('"') for p in line.split("=")[1].strip(" ;").split("|")}
+
 
 def test_login_state_closed_set_has_exactly_one_meaning_everywhere():
-    """封闭集有三份(服务端校验 / 界面词汇 / 建表注释),得对得上。
+    """封闭集一共**六份**,得一字不差地对得上:
+
+      1. `services/instance.LOGIN_STATES`      —— 直调 service 那条路的校验
+      2. `server/schemas.HeartbeatReq` 的 Literal —— **HTTP 那条路真正的门闩**
+      3. `services/vocab` 的标签与色调          —— 界面词汇(只出中文,前端不存副本)
+      4. `refdata/schema.sql` + `docs/db_schema.md` 的行内注释
+      5. `extension/src/core/types.ts` 的 `LoginState`
+      6. `extension/src/flow/dom/parse.ts` 的 `LoginState` —— **判定真正发生的地方**
+
+    这条测试原先只比了 1/3/4/5,而漏掉的两份恰好是最要紧的两份:
+
+    · 第 2 份漂移的后果是**心跳被 422 拒**。而 service worker 里那一位只在 `r.ok`
+      时才清(`pendingLoginState`),于是它会被永远重发、每一次心跳都 422 ——
+      `last_seen_at` 再也不更新(实例在运营台上变「失联」),登录态从此再也送不上去,
+      这道闸退化成一块永远不动的招牌。(实测:把 Literal 里的 "unknown" 删掉,
+      245 条 pytest 照样全绿。)
+    · 第 6 份漂移 tsc 也看不见 —— 值经 runner → service worker 时是
+      `msg.state as LoginState`,强转把类型断了。(实测:给它加一个 "captcha"
+      并从 readLoginState 返回,typecheck、DOM、pytest 全绿。)
 
     这个项目已经因为「两份副本悄悄分叉」栽过两次(厂商的 subTotal/subtotal;
     我们自己的 vocab 与插件那份错误码标签)。
     """
+    import re
+
     from registry import paths
 
     assert set(vocab.LOGIN_STATE_LABELS) == instance.LOGIN_STATES
     assert set(vocab.LOGIN_STATE_TONE) == instance.LOGIN_STATES
+
+    # HTTP 那条路上真正把请求挡在门外的是这一份。`instance.validate_login_state`
+    # 在这条路上走不到 —— Pydantic 先回 422。
+    schemas_src = (paths.repo_root() / "server" / "schemas.py").read_text(encoding="utf-8")
+    literals = re.findall(r"login_state:\s*Literal\[([^\]]+)\]", schemas_src)
+    assert len(literals) == 1, f"server/schemas.py 里 login_state 的 Literal 有 {len(literals)} 处"
+    assert instance.LOGIN_STATES == {m.strip().strip('"') for m in literals[0].split(",")}
 
     schema = (paths.repo_root() / "refdata" / "schema.sql").read_text(encoding="utf-8")
     doc = (paths.repo_root() / "docs" / "db_schema.md").read_text(encoding="utf-8")
@@ -265,12 +308,10 @@ def test_login_state_closed_set_has_exactly_one_meaning_everywhere():
         assert state in schema, f"schema.sql 的行内注释里没写 {state}"
         assert state in doc, f"docs/db_schema.md 里没写 {state}"
 
-    # 插件那一份(extension/src/core/types.ts 的 LoginState)也是同一套。
-    # 它必须离线可用,所以留着副本 —— 那就得有东西盯着它。
-    ts = (paths.repo_root() / "extension" / "src" / "core" / "types.ts").read_text(encoding="utf-8")
-    line = next(ln for ln in ts.splitlines() if ln.startswith("export type LoginState"))
-    assert set(instance.LOGIN_STATES) == {p.strip().strip('"')
-                                          for p in line.split("=")[1].strip(" ;").split("|")}
+    # 插件那两份也是同一套。它们必须离线可用,所以留着副本 —— 那就得有东西盯着。
+    ext = paths.repo_root() / "extension" / "src"
+    assert instance.LOGIN_STATES == _ts_union(ext / "core" / "types.ts", "LoginState")
+    assert instance.LOGIN_STATES == _ts_union(ext / "flow" / "dom" / "parse.ts", "LoginState")
 
 
 def test_meta_ships_login_state_vocabulary(client):
