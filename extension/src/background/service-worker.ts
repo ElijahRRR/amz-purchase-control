@@ -12,6 +12,7 @@ import { Client } from "../core/client.js";
 import { loadConfig, saveConfig, type Config } from "../core/config.js";
 import { Log } from "../core/log.js";
 import { chromeStore } from "../core/store.chrome.js";
+import type { LoginState } from "../core/types.js";
 
 const VERSION = "0.1.0";
 const ALARM_HEARTBEAT = "amz.heartbeat";
@@ -31,6 +32,17 @@ let registered = false;
  *  不发租约的话两个标签页会各领一单,在同一个买家号上并行拍两单。 */
 let leaseTabId: number | null = null;
 let leaseUntil = 0;
+
+/** 内容脚本刚读到、还没送出去的登录态。
+ *
+ *  为什么要在这里中转:读页面必须在**内容脚本**里做(SW 没有 document),
+ *  而心跳在 SW 里发。所以内容脚本读完 → 发消息给 SW → SW 挂在下一次心跳上。
+ *  发不出去(网络断了)就留着,下一次心跳再带 —— 清空只在服务端确认收到之后。 */
+let pendingLoginState: LoginState | null = null;
+
+/** 服务端在上一次心跳里回的「该不该复检登录态」。
+ *  内容脚本每轮要租约时顺手取走 —— 不另开一条广播,少一条要维护的消息。 */
+let loginCheckDue = false;
 
 async function boot(): Promise<void> {
   cfg = await loadConfig(store);
@@ -56,8 +68,16 @@ async function boot(): Promise<void> {
 
 async function heartbeat(): Promise<void> {
   if (!client || !cfg?.envCode) return;
-  const r = await client.heartbeat();
-  if (r.ok) return;
+  const sending = pendingLoginState;
+  const r = await client.heartbeat(sending ?? undefined);
+  if (r.ok) {
+    // 收到了才清。清早了的话,一次网络抖动就能让「这台机器被登出了」这条消息
+    // 永远丢掉 —— 而服务端会一直按上一位派单。
+    // 只清送出去的那一位:发请求这段时间里内容脚本可能又报了新的。
+    if (sending && pendingLoginState === sending) pendingLoginState = null;
+    loginCheckDue = !!r.data?.login_check_due;
+    return;
+  }
   if (r.kind === "business" && r.code === "INSTANCE_NOT_REGISTERED") {
     // 服务端重建过库,或实例被清掉了。重新注册一次,别默默地一直心跳失败。
     log.warn("实例未注册,重新注册");
@@ -111,10 +131,21 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
     if (leaseTabId === null || leaseTabId === tabId || now > leaseUntil) {
       leaseTabId = tabId;
       leaseUntil = now + LEASE_TTL_MS;
-      respond({ granted: true });
+      // 顺路把服务端那句「该复检登录态了」捎回去。租约本来就每轮要一次,
+      // 搭在这上面比再开一条广播少一条要维护的消息路径。
+      respond({ granted: true, loginCheckDue });
     } else {
       respond({ granted: false, heldBy: leaseTabId });
     }
+    return false;
+  }
+
+  if (msg?.type === "amz.loginState") {
+    // 内容脚本读页面读出来的那一位。SW 自己读不了 —— 它没有 document。
+    pendingLoginState = msg.state as LoginState;
+    // 报上来之后这一轮的「该复检了」就算答完了,别让内容脚本再开一次页面。
+    loginCheckDue = false;
+    respond({ ok: true });
     return false;
   }
 

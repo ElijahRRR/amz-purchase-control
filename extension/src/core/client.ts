@@ -2,7 +2,7 @@
 
 import { post, postIdempotent, type ApiOptions, type ApiResult } from "./api.js";
 import type { ErrorCode } from "./codes.js";
-import type { GuardCheckOut, LineItem, RegisterOut, Task } from "./types.js";
+import type { GuardCheckOut, HeartbeatOut, LineItem, LoginState, RegisterOut, Task } from "./types.js";
 
 export class Client {
   constructor(
@@ -18,8 +18,20 @@ export class Client {
     }, this.opts);
   }
 
-  heartbeat(): Promise<ApiResult<{ alive: boolean }>> {
-    return postIdempotent("/v1/instances/heartbeat", { instance_uid: this.instanceUid }, this.opts);
+  /** 心跳,顺带把这一轮读到的登录态捎上去,并收回服务端那句「该不该复检」。
+   *
+   *  **不传 login_state = 这一轮没有新消息**,服务端原样保留库里那一位;
+   *  传 unknown 才是「读了,但读不出来」。两者不是一回事:前者是沉默,
+   *  后者是一个结论 —— 把沉默当成 unknown 会让一个已知被登出的买家号
+   *  在 20 秒后自己"洗白"成存疑,然后重新被派单。
+   *
+   *  登录态从哪来:插件开一张 Amazon 页面读导航栏(flow/dom/parse.readLoginState)。
+   *  **不读 Cookie** —— 插件没申请 cookies 权限,这是架构选择,不是暂缓。 */
+  heartbeat(loginState?: LoginState): Promise<ApiResult<HeartbeatOut>> {
+    return postIdempotent("/v1/instances/heartbeat", {
+      instance_uid: this.instanceUid,
+      ...(loginState ? { login_state: loginState } : {}),
+    }, this.opts);
   }
 
   /** 注意返回 data 可以是 null:队列里没有属于本买家号的单。

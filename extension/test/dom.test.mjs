@@ -61,6 +61,76 @@ async function withFixture(file, fn) {
   }
 }
 
+// ── 导航栏:登录态 ────────────────────────────────────────────────────
+//
+// 这一节盯的是「被登出」不再和「页面慢」长得一样。判错的两个方向代价不对等:
+//   · 把登出判成登录  → 闸门看着在、其实不拦,单子照领照跑照超时(最坏)
+//   · 把登录判成登出  → 这个买家号被停派,但运营台上写着「已登出」,有人看得见
+// 所以判据全部按"结构优先、文案只能往已登出那边推"来写。
+await withFixture("nav-signed-in.html", async (run) => {
+  eq("nav 已登录", await run("amzdom.readLoginState(document)"), "ok");
+  // 干扰项自己也得验一遍:隐藏模板确实排在真导航栏前面,
+  // 不然上面那条断言即使实现写松了也照样绿 —— 夹具没干扰,断言就没用。
+  eq("nav 隐藏的未登录模板排在前面(干扰项确实存在)",
+     await run(`(() => {
+        const all = [...document.querySelectorAll("#nav-link-accountList")];
+        return [all.length, (all[0].getAttribute("href") || "").includes("/ap/signin")];
+     })()`), [2, true]);
+  // signout 在 display:none 的账户浮层里 —— 判据要是要求"可见",这条会变 false
+  eq("nav signout 节点在隐藏浮层里(干扰项确实存在)",
+     await run(`(() => {
+        const el = document.querySelector("#nav-item-signout");
+        return !!el && el.closest('[style*="display:none"]') !== null;
+     })()`), true);
+});
+
+await withFixture("nav-signed-out.html", async (run) => {
+  eq("nav 已登出", await run("amzdom.readLoginState(document)"), "signed_out");
+  // 这张页面里藏着一个"已登录"的模板(连 signout 都有)。见到 signout 就判已登录的
+  // 实现会在这里翻车 —— 而那正是最坏的那个方向。
+  eq("nav 隐藏的已登录模板确实存在(干扰项)",
+     await run(`!!document.querySelector('[style*="display:none"] #nav-item-signout')`), true);
+  // 页脚那条 signin 链接、商品标题里的 "sign in" 都在,全局扫页面文本的实现会中招
+  eq("nav 页脚的无关 signin 链接确实存在(干扰项)",
+     await run(`!!document.querySelector('#navFooter a[href*="signin"]')`), true);
+  eq("nav 商品标题里带 sign in(干扰项)",
+     await run(`/sign in/i.test(document.querySelector(".sc-recommendations").textContent)`), true);
+});
+
+// **读不到导航栏 = unknown,不是 ok。** 判不出来时兜底成"应该登录着吧",
+// 这道闸就等于不存在,而界面上还会写着"已登录"。
+await withFixture("cart.html", async (run) => {
+  eq("购物车夹具没有导航栏 → unknown", await run("amzdom.readLoginState(document)"), "unknown");
+});
+await withFixture("checkout.html", async (run) => {
+  eq("结算页没有导航栏 → unknown", await run("amzdom.readLoginState(document)"), "unknown");
+});
+
+// 几个边界:用 DOMParser 现造,不值得为它们各建一张夹具
+await withFixture("cart-empty.html", async (run) => {
+  const parse = (html) =>
+    run(`amzdom.readLoginState(new DOMParser().parseFromString(${JSON.stringify(html)}, "text/html"))`);
+
+  // signout 藏在 display:none 的浮层里(Amazon 的常态)—— 照样算已登录
+  eq("nav 只有隐藏浮层里的 signout → ok",
+     await parse('<div style="display:none"><a id="nav-item-signout" href="#">Sign Out</a></div>'), "ok");
+  // 文案是否决票:问候语明写着 sign in 时,残留的 signout 节点不算数
+  eq("nav 问候语 sign in 压过残留的 signout → signed_out",
+     await parse('<span id="nav-link-accountList-nav-line-1">Hello, sign in</span>' +
+                 '<a id="nav-item-signout" href="#">Sign Out</a>'), "signed_out");
+  // 有账户入口,但 href 认不出、也没有别的判据 → 不许猜
+  eq("nav 只有一个认不出的账户入口 → unknown",
+     await parse('<a id="nav-link-accountList" href="/gp/something-new"></a>'), "unknown");
+  // 中文/别的语言的问候语:判不出就是判不出,**不能**当成已登录
+  eq("nav 非英文问候语 → unknown",
+     await parse('<a id="nav-link-accountList" href="/gp/x">' +
+                 '<span id="nav-link-accountList-nav-line-1">你好,David</span></a>'), "unknown");
+  eq("nav 账户入口指向账户首页 → ok",
+     await parse('<a id="nav-link-accountList" href="/gp/css/homepage.html?ref_=nav_ya"></a>'), "ok");
+  eq("nav 账户入口指向 /ap/signin → signed_out",
+     await parse('<a id="nav-link-accountList" href="/ap/signin?openid.pape=0"></a>'), "signed_out");
+});
+
 // ── 商品页 ──────────────────────────────────────────────────────────
 await withFixture("product.html", async (run) => {
   eq("product 有货", await run("amzdom.readInStock(document)"), true);

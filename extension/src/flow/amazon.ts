@@ -21,16 +21,19 @@ import {
   pickQuantitySelect, readCarrier, readCartLines, readCheckoutPanels,
   readDeliveryPromise, readGrandTotal, readInStock, readOrderCards, readOrderState,
   isTrackingUnavailable,
+  readLoginState,
   readOrderSummary, readPaymentLast4, readProductShipper, readTrackingEvents,
   readTrackingNumber, readTrackingStatus,
-  type OrderState,
+  type LoginState, type OrderState,
 } from "./dom/parse.js";
 import type { ShipmentReader, TrackingRead } from "./shipment.js";
-import { DriverError, type AddResult, type CheckoutReading, type OrderCard, type PageDriver } from "./driver.js";
+import { DriverError, LoginLostError, type AddResult, type CheckoutReading, type OrderCard, type PageDriver } from "./driver.js";
 import type { Shipping } from "../core/types.js";
 
 const T = {
   frameLoad: 30_000,
+  /** 判登录态那一次:只要导航栏渲染出来就够,不等整页加载完。 */
+  loginProbe: 20_000,
   addToCart: 30_000,
   checkoutNav: 45_000,
   addressForm: 30_000,
@@ -70,6 +73,52 @@ export class AmazonDriver implements PageDriver {
     this.checkout = null;
   }
 
+  // ── 登录态 ───────────────────────────────────────────────────────
+  //
+  // 为什么要有这一步:买家号的登录态只存在浏览器 profile 里(我们不申请
+  // cookies 权限、不读 Cookie)。号被登出之后,插件照样认领、照样开结算 iframe,
+  // Amazon 把它导到 /ap/signin,然后 waitFor 超时 → CHECKOUT_TIMEOUT。
+  // 于是「被登出」和「页面慢」渲染成同一个结果:重置多少次都不会好,
+  // 而运营台上看不出这个买家号其实已经不能用了。
+
+  /** 开一张轻量页面(购物车)读导航栏。读不出来就是 unknown,**不兜底成 ok**。 */
+  async readLoginState(): Promise<LoginState> {
+    return withFrame(URLS.loginProbe(this.origin), async (f) => {
+      // 未登录时 Amazon 有可能直接把这一页导到 /ap/signin —— 那条判据比 DOM 还硬,
+      // 所以两个条件里任一成立就算"读到了",不必干等满超时。
+      try {
+        await waitFor("导航栏渲染",
+                      () => f.url().includes(URLS.signIn) ||
+                            readLoginState(f.doc()) !== "unknown",
+                      { timeoutMs: T.loginProbe, everyMs: 300 });
+      } catch {
+        // 等不到任何判据。这**是** unknown,不是 ok ——
+        // 判不出来时放行是这道闸最容易被写坏的地方。
+        return "unknown";
+      }
+      if (f.url().includes(URLS.signIn)) return "signed_out";
+      return readLoginState(f.doc());
+    }, T.frameLoad);
+  }
+
+  /** 每一处超时之前先问一句:是不是被登出了。
+   *
+   *  抛 LoginLostError 而不是 DriverError —— 上层据此**退回队列**(而不是记异常),
+   *  并把这台机器的登录态标成 signed_out 上报。见 flow/driver.LoginLostError 的注释。 */
+  private guardLogin(f: Frame, where: string): void {
+    let out = f.url().includes(URLS.signIn);
+    if (!out) {
+      try {
+        out = readLoginState(f.doc()) === "signed_out";
+      } catch {
+        // 连 document 都拿不到时不下结论:那是另一种失败,由调用方原本的码去说
+      }
+    }
+    if (out) {
+      throw new LoginLostError(`${where}:买家号已被登出(当前 ${f.url() || "URL 读不到"})`);
+    }
+  }
+
   // ── 清车 ─────────────────────────────────────────────────────────
   async clearCart(): Promise<void> {
     await withFrame(URLS.cart(this.origin), async (f) => {
@@ -83,6 +132,7 @@ export class AmazonDriver implements PageDriver {
           SEL.cart.emptyMarkers.some((m) => f.doc().querySelector(m)),
           { timeoutMs: 20_000 });
       } catch {
+        this.guardLogin(f, "清空购物车");
         throw new DriverError("PLUGIN_INTERNAL", "购物车页没渲染出来,不能断定车是空的");
       }
 
@@ -114,9 +164,16 @@ export class AmazonDriver implements PageDriver {
     return withFrame(URLS.product(this.origin, asin), async (f) => {
       // 厂商在这里固定等 2 秒。改成等真正要用的那个元素出现 ——
       // 固定等待在慢页面上等不够,在快页面上白等。
-      await waitFor("商品页买家框", () => f.doc().querySelector(SEL.product.addToCart) ||
-                                          f.doc().querySelector(SEL.product.outOfStock),
-                    { timeoutMs: T.frameLoad });
+      try {
+        await waitFor("商品页买家框", () => f.doc().querySelector(SEL.product.addToCart) ||
+                                            f.doc().querySelector(SEL.product.outOfStock),
+                      { timeoutMs: T.frameLoad });
+      } catch (e) {
+        // 商品页是这一单第一张要读的页。被登出时它照样打得开(商品页不需要登录),
+        // 但导航栏会明说 —— 在这里就发现,比拖到结算页超时省 45 秒。
+        this.guardLogin(f, "打开商品页");
+        throw e;
+      }
 
       if (!readInStock(f.doc())) {
         throw new DriverError("OUT_OF_STOCK", `${asin} 页面显示 Currently unavailable`);
@@ -148,6 +205,8 @@ export class AmazonDriver implements PageDriver {
                       { timeoutMs: T.addToCart });
       } catch (e) {
         if (e instanceof WaitTimeout) {
+          // 加购按钮点下去却弹到登录页,是登录态失效最典型的表现之一。
+          this.guardLogin(f, `加购 ${asin}`);
           // 厂商这条分支只打日志、不通知服务端,任务就悬在那里。
           throw new DriverError("ADD_TO_CART_FAILED", `${asin} 点了加购但页面没跳到购物车`);
         }
@@ -203,6 +262,10 @@ export class AmazonDriver implements PageDriver {
                          },
                          3, { timeoutMs: T.checkoutNav, everyMs: 400 });
       } catch {
+        // **这就是这一整件事的起点。** 被登出时 Amazon 把结算跳转导去 /ap/signin,
+        // 这里等不到最终结算页,原先一律报 CHECKOUT_TIMEOUT(RETRYABLE)——
+        // 「被登出」和「页面慢」于是渲染成同一个结果,重置多少次都不会好。
+        this.guardLogin(f, "跳转结算页");
         throw new DriverError("CHECKOUT_TIMEOUT", `等结算页超时,当前 URL:${f.url()}`);
       }
       if (f.url().includes(URLS.finalCheckout)) return;
@@ -226,6 +289,7 @@ export class AmazonDriver implements PageDriver {
         await waitFor("地址区加载", () => doc().querySelector(SEL.address.section),
                       { timeoutMs: T.addressForm });
       } catch {
+        this.guardLogin(f, "打开地址区");
         throw new DriverError("ADDRESS_FORM_TIMEOUT", "地址区没加载出来");
       }
       click(doc().querySelector(SEL.address.addNew));
@@ -314,6 +378,7 @@ export class AmazonDriver implements PageDriver {
                     () => readCheckoutPanels(f.doc()).length > 0,
                     { timeoutMs: T.checkoutNav });
     } catch {
+      this.guardLogin(f, "读结算页");
       throw new DriverError("CHECKOUT_TIMEOUT", "结算页商品面板没渲染出来");
     }
 
@@ -379,6 +444,11 @@ export class AmazonDriver implements PageDriver {
       await waitFor("下单确认页", () => f.url().includes(URLS.thankyou),
                     { timeoutMs: T.orderConfirm, everyMs: 500 });
     } catch {
+      // 落到登录页说明 Amazon 在最后一步要求重新认证 —— 单多半没下成。
+      // 但**这里已经越过下单点了**:guardLogin 抛出的 LoginLostError 在 run.ts 里
+      // 走既有的转人工路径(不退回队列),同时把这台机器标成已登出。
+      // 「可能已经花了钱」比「被登出了」更要紧,处置不能变。
+      this.guardLogin(f, "下单后等确认页");
       throw new DriverError("ORDER_CONFIRM_TIMEOUT",
                             `点了下单但没等到确认页,当前 URL:${f.url()}`);
     }

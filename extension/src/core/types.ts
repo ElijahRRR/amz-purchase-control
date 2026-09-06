@@ -41,6 +41,19 @@ export interface Task {
   guards: Guards;
 }
 
+/** 买家号浏览器里的 Amazon 登录态。判定在 flow/dom/parse.readLoginState。
+ *  与服务端 procure.plugin_instances.login_state 的封闭集一字不差。 */
+export type LoginState = "ok" | "signed_out" | "unknown";
+
+export interface HeartbeatOut {
+  alive: boolean;
+  /** 服务端最终记下的那一位(不是我们刚报的那一位 —— 没报时它是库里原来的值)。 */
+  login_state: LoginState;
+  /** 服务端的回话:这个买家号有单在等派,且上次读页面已经过了复检间隔,
+   *  下一轮认领前去读一次导航栏。策略在服务端,改它不用发新插件版本。 */
+  login_check_due: boolean;
+}
+
 export interface RegisterOut {
   instance_id: number;
   buyer_env_id: number;

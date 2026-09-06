@@ -14,7 +14,7 @@ import type { ErrorCode } from "../core/codes.js";
 import { toManual } from "../core/codes.js";
 import type { Log } from "../core/log.js";
 import type { Task } from "../core/types.js";
-import { DriverError, type PageDriver } from "./driver.js";
+import { DriverError, LoginLostError, type PageDriver } from "./driver.js";
 
 export type Outcome =
   | { kind: "purchased"; amazonOrderNo: string }
@@ -32,6 +32,10 @@ export interface RunDeps {
   confirmBeforeOrder?: boolean;
   /** 预览步的应答。返回 false 表示人按了取消。 */
   askConfirm?: (task: Task, reading: { total: string; deliveryRaw?: string }) => Promise<boolean>;
+  /** 执行中发现这个浏览器已被登出。**这一单怎么落地是另一回事** ——
+   *  这个回调只负责把「这台机器登录态没了」这个事实往上说:
+   *  Loop 据此停止认领,服务端据此拦住下一次认领,运营台据此把那个买家号标红。 */
+  onLoginLost?: () => void;
 }
 
 class Abort extends Error {
@@ -170,6 +174,17 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     return { kind: "unreported", message: done.message };
 
   } catch (e) {
+    if (e instanceof LoginLostError) {
+      // 无论这一单最后怎么落地,「这台机器被登出了」都是既成事实,先说出去。
+      // 不说的话,下一单会照样被领走、照样走到 /ap/signin —— 一个被登出的
+      // 买家号能这样一口气废掉整队的单,而每一单看起来都只是"页面慢"。
+      deps.onLoginLost?.();
+      if (!mayHaveOrdered) {
+        return releaseAfterLoginLost(task, e.message, deps);
+      }
+      // 越过下单点了:退回队列是被禁止的(见文件头第 2 条),往下走既有的转人工路径。
+      // 那时要说的事情已经变了 —— 「可能已经花了钱」比「被登出了」更要紧。
+    }
     // 驱动认得出原因的失败(DriverError)直接用它的码;认不出的才兜底。
     const code: ErrorCode = e instanceof Abort || e instanceof DriverError
       ? e.code
@@ -180,6 +195,48 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     // iframe 一定要收掉,不管这一单是怎么结束的。
     try { await driver.dispose(); } catch { /* 收尾失败不改变这一单的结局 */ }
   }
+}
+
+/** 登录态失效且**还没到下单点**:退回队列,不记异常。
+ *
+ * 为什么是 release 而不是 fail:这一单本身没有任何毛病 —— 没缺货、没超限价、
+ * 地址也没问题,只是这台机器的浏览器被登出了。记成 exception 会把一堆好单
+ * 堆进「拍单异常」桶,让人挨个去看一遍才发现原因都一样;
+ * 而退回队列之后,这些单在人重新登录之后自己就会被领走。
+ *
+ * 队列不会因此空转:服务端那道闸(login_state = signed_out 拒绝认领)已经
+ * 把这个买家号关在门外,退回去的单会安静地等着,不会被同一台机器立刻再领一次。
+ */
+async function releaseAfterLoginLost(
+  task: Task,
+  detail: string,
+  deps: RunDeps,
+): Promise<Outcome> {
+  const { client, driver, log } = deps;
+  log.err(`登录态失效 —— 这个买家号的浏览器已被登出,这一单退回队列。` +
+          `请在这个浏览器里重新登录 Amazon,插件复检到之后会自己继续。(${detail})`);
+
+  // **先写事件流,再退回队列。** release 之后这条任务就不再归本实例持有,
+  // /events 会被 TASK_NOT_HELD 拒掉 —— 那条 step 就永远写不进去了,
+  // 而运营台上这一单看起来会是「领走了又回来了,什么也没说」。
+  await client.events(task.task_id, [
+    { kind: "step", payload: { step: "登录态失效,退回队列", detail } },
+  ]);
+
+  // 清车:没到下单点,车里可能还留着这一单的东西,不清会污染下一单。
+  // 清不掉不改变结局(页面多半已经在登录页上了,本来也清不动)。
+  try {
+    await driver.clearCart();
+  } catch (e) {
+    log.warn("退回队列前清车失败:" + (e instanceof Error ? e.message : String(e)));
+  }
+
+  const rel = await client.release(task.task_id);
+  if (!rel.ok) {
+    // 没说上话:任务仍是 claimed,交给服务端的超时清扫(15 分钟后转待人工)。
+    return { kind: "unreported", message: rel.message };
+  }
+  return { kind: "released" };
 }
 
 /** 唯一的失败出口:先清车,再上报。两件事都做完才算这一单结束。 */

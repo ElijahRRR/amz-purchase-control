@@ -9,6 +9,29 @@
  */
 
 export const SEL = {
+  // ── 全站导航栏:判登录态 (报告未记载 —— 厂商不判登录态,他们读 Cookie) ──
+  //
+  // 我们**不申请 cookies 权限**,登录态只能从页面上看出来。判据按可信度排:
+  //   1. URL 落在 /ap/signin —— 最硬,不需要解析任何 DOM
+  //   2. #nav-item-signout 在不在 —— 结构判据。这个节点只有签入时才会渲染出来
+  //   3. #nav-link-accountList 的 href 指向哪 —— 结构判据。未签入时它指向
+  //      /ap/signin?openid...,签入时指向 /gp/css/homepage.html
+  //   4. #nav-link-accountList-nav-line-1 的文案 —— **只做辅助**。
+  //      按英文文案硬判是最脆的一种:换个站点语言、Amazon 改一版问候语就失灵,
+  //      而且页面上到处都能出现 "sign in" 这三个字(页脚链接、商品标题)。
+  //      所以文案只用来把结论往 signed_out 推,从不用来断定"已登录"。
+  nav: {
+    /** 账户入口。未签入时 href 指向 /ap/signin,签入时指向账户首页。 */
+    accountLink: "#nav-link-accountList",
+    /** 问候语那一行:签入是 "Hello, <名字>",未签入是 "Hello, sign in"。 */
+    accountGreeting: "#nav-link-accountList-nav-line-1",
+    /** 「Sign Out」。**只有签入的页面才有这个节点** —— 未签入时 Amazon 压根不发它。
+     *  不要求它可见:账户浮层默认 display:none,要求可见的话每张签入页都会读成"未知"。 */
+    signOut: "#nav-item-signout",
+    /** 账户入口指向这里 = 已签入。 */
+    accountHrefHints: ["/gp/css/homepage.html", "/gp/your-account"],
+  },
+
   // ── 商品页 /dp/{ASIN}?th=1&psc=1 (报告 §4.2.1) ──────────────────────
   product: {
     outOfStock: "#outOfStock span.a-color-price.a-text-bold",
@@ -177,6 +200,16 @@ export const URLS = {
   /** 下单成功。**只认 thankyou** —— 厂商把 /gp/cart/view.html 也判成功
    *  (深度分析 §4.2.4 高危),而被退回购物车恰恰是下单失败的典型表现。 */
   thankyou: "/gp/buy/thankyou",
+  /** 登录页。执行中任何一步落到这里,都是「这个买家号被登出了」,
+   *  不是「页面慢」—— 后者重试有用,前者重试多少次都不会好。 */
+  signIn: "/ap/signin",
+  /** 判登录态时开的那一页。
+   *
+   *  选购物车页的三个理由:① 有完整导航栏(判据全在那儿);
+   *  ② 未登录也能打开、不会 302 到 signin —— 我们要的是**读导航栏**这条稳定判据,
+   *  不是赌一次重定向;③ 这条流本来就要开购物车,不多引入一种新的页面形态,
+   *  Amazon 改版时要盯的页面不会因此多一张。 */
+  loginProbe: (origin: string) => `${origin}/gp/cart/view.html`,
 } as const;
 
 /** ASIN 形态。报告 §4.2.5 的正则。 */

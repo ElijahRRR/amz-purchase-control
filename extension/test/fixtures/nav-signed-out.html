@@ -1,0 +1,86 @@
+<!doctype html>
+<!--
+================================================================================
+  FIXTURE: nav-signed-out.html  —  Amazon US 全站导航栏（**已登出**）
+================================================================================
+
+  页面        : 购物车页（未登录也打得开,不会 302 到 signin ——
+                所以这一态只能靠读导航栏判出来,赌重定向是赌不到的)
+  事实来源    : 同 nav-signed-in.html:报告没有这一节,按 Amazon 常见形态造。
+
+  这张夹具存在的理由,就是那条"两种不同的情况渲染出同一个结果"的缺陷:
+  号被登出之后,插件照样认领、照样开结算 iframe,Amazon 把它导到 /ap/signin,
+  然后 waitFor 超时 → CHECKOUT_TIMEOUT(可重试)。「被登出」和「页面慢」
+  于是长成同一个样子:重置多少次都不会好,运营台上也看不出这个买家号已经废了。
+
+  ---------------------------------------------------------------------------
+  本夹具覆盖的判据(parse.readLoginState)
+  ---------------------------------------------------------------------------
+    #nav-link-accountList[href]       指向 /ap/signin = 已登出(结构判据,主判)
+    #nav-link-accountList-nav-line-1  "Hello, sign in" —— 文案,辅助 + 否决票
+
+  ---------------------------------------------------------------------------
+  刻意塞进来的干扰项
+  ---------------------------------------------------------------------------
+    1. **排在最前面的隐藏模板**,里面是一整套"已登录"的导航栏:
+       href 指向 /gp/css/homepage.html + "Hello, David",还带一个
+       #nav-item-signout。不挑可见节点、或者见到 signout 就判"已登录"的实现,
+       会把这张登出的页面读成正常 —— 那是最坏的方向:闸门看着在,其实不拦。
+    2. 页脚里含 signin 的无关链接。
+    3. 商品标题里带 "sign in" 三个字。
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Amazon.com Shopping Cart</title></head>
+<body>
+
+<!-- ① 干扰:隐藏模板,内容是"已登录"那一套(连 signout 都有),且排在最前面 -->
+<div id="nav-flyout-template-shadow" style="display:none">
+  <div id="nav-tools">
+    <a href="/gp/css/homepage.html?ref_=nav_youraccount_btn" id="nav-link-accountList">
+      <span id="nav-link-accountList-nav-line-1" class="nav-line-1">Hello, David</span>
+      <span class="nav-line-2">Account &amp; Lists</span>
+    </a>
+    <a id="nav-item-signout" href="/gp/flushInterstitial.html?action=sign-out">Sign Out</a>
+  </div>
+</div>
+
+<!-- 真正的导航栏:未登录 -->
+<header id="navbar-main">
+  <div id="nav-belt">
+    <div id="nav-tools">
+      <a href="/ap/signin?openid.pape.max_auth_age=0&amp;openid.return_to=https%3A%2F%2Fwww.amazon.com%2Fgp%2Fcart%2Fview.html&amp;ref_=nav_ya_signin" class="nav-a nav-a-2" id="nav-link-accountList">
+        <span id="nav-link-accountList-nav-line-1" class="nav-line-1 nav-progressive-content">Hello, sign in</span>
+        <span class="nav-line-2">Account &amp; Lists</span>
+      </a>
+      <a href="/gp/css/order-history?ref_=nav_orders_first" id="nav-orders">
+        <span class="nav-line-1">Returns</span>
+        <span class="nav-line-2">&amp; Orders</span>
+      </a>
+      <a href="/gp/cart/view.html?ref_=nav_cart" id="nav-cart"><span id="nav-cart-count">0</span></a>
+    </div>
+  </div>
+</header>
+
+<div id="sc-active-cart">
+  <div class="sc-your-amazon-cart-is-empty">
+    <h2>Your Amazon Cart is empty</h2>
+    <!-- 未登录的购物车页上 Amazon 自己就写着这句 -->
+    <a href="/ap/signin?ref_=cart_signin" class="a-button-text">Sign in to your account</a>
+  </div>
+  <!-- ③ 干扰:推荐位商品标题里带 "sign in" -->
+  <div class="sc-recommendations">
+    <span class="a-truncate-full">Custom Neon Sign in Warm White — "Hello, sign in" Party Backdrop</span>
+  </div>
+</div>
+
+<footer id="navFooter">
+  <ul class="nav_first">
+    <!-- ② 干扰:页脚里含 signin 的无关链接 -->
+    <li><a href="/ap/signin?openid.return_to=%2Fgp%2Fcss%2Fhomepage.html" class="nav_a">Your Account</a></li>
+    <li><a href="/gp/help/customer/display.html" class="nav_a">Help</a></li>
+  </ul>
+  <span class="nav_copy">&copy; 1996-2026, Amazon.com, Inc.</span>
+</footer>
+
+</body>
+</html>

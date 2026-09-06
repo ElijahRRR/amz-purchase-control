@@ -4,13 +4,17 @@
  * 这一整套能不能真的跑通。场景与 tools/mock_plugin.py 一致,便于两边对照。
  */
 
-import { DriverError, type AddResult, type CheckoutReading, type OrderCard, type PageDriver } from "./driver.js";
+import { DriverError, LoginLostError, type AddResult, type CheckoutReading, type OrderCard, type PageDriver } from "./driver.js";
+import type { LoginState } from "./dom/parse.js";
 import type { ShipmentReader, TrackingRead } from "./shipment.js";
 import type { Shipping } from "../core/types.js";
 
 export type Scenario =
   | "happy" | "over_cap" | "oos" | "not_fba" | "wrong_asin"
-  | "confirm_timeout" | "late_delivery" | "cart_mismatch";
+  | "confirm_timeout" | "late_delivery" | "cart_mismatch"
+  /** 跑到一半发现买家号被登出。**没到下单点**,所以这一单该退回队列,
+   *  而不是记成一次拍单异常 —— 单子本身没毛病,是这台机器的环境坏了。 */
+  | "login_lost";
 
 export class SimulatedDriver implements PageDriver {
   readonly name = "simulated";
@@ -24,6 +28,13 @@ export class SimulatedDriver implements PageDriver {
   private mark(step: string) { this.calls.push(step); }
 
   async dispose(): Promise<void> { this.mark("dispose"); }
+
+  /** 模拟档永远是"登录着的" —— 这条流本来就不碰 Amazon。
+   *  login_lost 场景在执行到一半时才抛,模拟的是「认领时还在、跑着跑着掉了」。 */
+  async readLoginState(): Promise<LoginState> {
+    this.mark("readLoginState");
+    return "ok";
+  }
 
   async clearCart(): Promise<void> {
     this.mark("clearCart");
@@ -44,7 +55,12 @@ export class SimulatedDriver implements PageDriver {
     return expected.length === this.added.length;
   }
 
-  async proceedToCheckout(): Promise<void> { this.mark("proceedToCheckout"); }
+  async proceedToCheckout(): Promise<void> {
+    this.mark("proceedToCheckout");
+    if (this.scenario === "login_lost") {
+      throw new LoginLostError("跳转结算页:买家号已被登出(模拟)");
+    }
+  }
 
   async fillAddress(_shipping: Shipping): Promise<void> { this.mark("fillAddress"); }
 

@@ -22,6 +22,7 @@ import { Loop } from "../background/loop.js";
 import { AmazonDriver, AmazonShipmentReader } from "../flow/amazon.js";
 import { SimulatedDriver, SimulatedShipmentReader } from "../flow/simulated.js";
 import type { PageDriver } from "../flow/driver.js";
+import type { LoginState } from "../flow/dom/parse.js";
 import type { ShipmentReader } from "../flow/shipment.js";
 
 export interface RunnerState {
@@ -37,6 +38,8 @@ export class Runner {
   private client: Client | null = null;
   private loop: Loop | null = null;
   private hasLease = false;
+  /** 服务端在心跳里回的「该复检登录态了」。每轮要租约时从 SW 顺手取回来。 */
+  private loginCheckDue = false;
   private phase: Phase = "off";
   private task: Task | null = null;
   private timers: Array<ReturnType<typeof setInterval>> = [];
@@ -76,6 +79,13 @@ export class Runner {
         driver: () => this.driver(),
         shipmentReader: () => this.shipmentReader(),
         onPhase: (p, t) => { this.phase = p; this.task = t; this.emit(); },
+        // 读页面必须在内容脚本里(SW 没有 document),心跳发在 SW 里。
+        // 所以这里只负责把读到的那一位交给 SW,由它挂在下一次心跳上。
+        reportLogin: (state: LoginState) => {
+          chrome.runtime.sendMessage({ type: "amz.loginState", state })
+            .catch(() => { /* SW 没起来:下一轮复检还会再报一次,不必在这里重试 */ });
+        },
+        loginCheckDue: () => this.loginCheckDue,
       });
     }
     this.emit();
@@ -109,6 +119,9 @@ export class Runner {
     try {
       const got = await chrome.runtime.sendMessage({ type: "amz.acquireRunner" });
       const ok = !!got?.granted;
+      // 服务端说「这个买家号有单在等,而且该复检登录态了」。
+      // 搭租约这趟车回来的,不另开一条消息路径。
+      this.loginCheckDue = !!got?.loginCheckDue;
       if (ok !== this.hasLease) {
         this.hasLease = ok;
         this.log.dim(ok ? "拿到执行租约,本标签页负责跑单" : "另一个标签页在跑,本页只看不动");
