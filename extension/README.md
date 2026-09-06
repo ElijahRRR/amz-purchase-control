@@ -1,13 +1,18 @@
 # extension —— Chrome MV3 插件
 
-服务端派单，插件在**操作员自己的浏览器环境里**执行。这一层是 P2：
-和服务端说话的时序全部跑通并可自检；真实页面动作（P3）还是空的。
+服务端派单，插件在**操作员自己的浏览器环境里**执行。和服务端说话的时序全部跑通
+并可自检；真实页面动作（`AmazonDriver`）**已实现**，解析层对着 DOM 夹具全绿，
+但**从未在真实 Amazon 上跑过** —— 这里没有可登录的买家号。
+（这一段一度停在「P2 阶段、真实页面动作还是空的」，与下面那张状态表、
+`live` 档那一节、根 README 的进度表三处直接矛盾。第一段和后面的表说两句相反的话时，
+人通常信第一段 —— 于是不会去复核 `amazon.ts` 里那一千多行真实页面动作，
+也不会意识到把 `mode` 调到 `live` 就真的会在 Amazon 上点下单按钮。）
 
 ## 现在能跑的 / 还不能跑的
 
 | | 状态 |
 |---|---|
-| 注册 / 心跳 / 认领 / 事件上报 / 护栏裁决 / 回填 / 失败 / 释放 | ✅ 通了，六个场景实跑验过 |
+| 注册 / 心跳 / 认领 / 事件上报 / 护栏裁决 / 回填 / 失败 / 释放 | ✅ 通了，场景实跑验过（清单见下面那张表） |
 | 执行时序（清车 → 加购 → 核对 → 填地址 → 读结算页 → 护栏 → 下单 → 回填断言） | ✅ 通了 |
 | 面板（相位、任务卡、步骤、日志、点击复制） | ✅ |
 | 物流同步（订单详情页 → 跟踪页 → 回传轨迹） | ✅ 独立一条流，跑在 purchased 之后 |
@@ -82,6 +87,7 @@ SW 那段「读租约 → 裁决 → 写租约」并发时只许一个标签页�
 | `checkout.html` | 结算页 | 金额、卡尾号、下单按钮、地址面板；折叠地址簿干扰项 |
 | `checkout-apex-price.html` | 结算页 | 划线原价与实付价挂同一个类名 |
 | `checkout-thirdparty.html` | 结算页 | FBA 看的是谁发货，不是谁卖 |
+| `checkout-giftcard.html` | 结算页 | **礼品卡抵扣行**(隐藏表单标记 `subtotalLineType=SPECIAL_PAYMENTS_GIFT_CARD_BALANCE`,厂商 v2.5.3 `popup.js:2052-2079`)、已选支付方式的**槽位数**、卡尾号 |
 | `checkout-interstitial.html` | 中间页 | 会骗人的 `#submitOrderButtonId` |
 | `address-select.html` | 地址选择页 | **这一页没有姓名框**；同 id 入口三份，三种隐藏机制 |
 | `address-form-async.html` | 异步地址表单 | 预填着**别人地址**的隐藏模板副本；保存后三种结果 |
@@ -145,7 +151,9 @@ node tools/smoke.mjs --scenario happy --ship delivered
 跑的是 `src/` 里将来真装进浏览器的那份 `Loop` 与 `runTask`，只把页面动作换成假的。
 和 `tools/mock_plugin.py` 的分工：那个是手写 HTTP 序列，验服务端；这个验插件。
 
-六个场景实跑后库里应该是：
+场景实跑后库里应该是（**这张表就是唯一的场景清单** —— 上面那几行 `--scenario`
+与 `flow/simulated.ts` 里认的场景都跟它对得上;不写「一共几个」,
+那个数字每加一条就过期一次,与 codes.ts 不写「一共几个错误码」是同一条理由）:
 
 | 上游单号 | 状态 | 错误码 |
 |---|---|---|
@@ -155,6 +163,8 @@ node tools/smoke.mjs --scenario happy --ship delivered
 | not_fba | `exception` | `NOT_FBA` |
 | wrong_asin | `manual` | `ORDER_NO_AMBIGUOUS`（**单号未写入**） |
 | confirm_timeout | `manual` | `ORDER_CONFIRM_TIMEOUT` |
+| late_delivery | `manual` | `DELIVERY_TOO_LATE`（结算页交期超出 `max_delivery_days`） |
+| cart_mismatch | `exception` | `CART_MISMATCH`（购物车回读与本单不符，**在下单点之前**） |
 | login_lost | `ready`(**退回队列**) | — （单子没毛病，是这台机器被登出了；事件流里有一条「登录态失效，退回队列」） |
 | manual_verify | `purchased` | — （事件流里有「等待人工完成支付验证」「人工支付验证已完成」两条） |
 | manual_verify_timeout | `manual` | `PAYMENT_VERIFICATION_TIMEOUT`（**可能已下单**，重置前要有人去买家号里看一眼） |
@@ -352,7 +362,12 @@ MV3 的后台是 service worker,**没有 `document`**。而 `AmazonDriver` 靠�
 **租约解决的是多标签页问题。** 同一浏览器里可能开着好几个 amazon.com,
 每个都注入了内容脚本。不发租约的话两个标签页会各领一单,
 在同一个买家号上并行拍两单 —— 而整套服务端设计的前提正是「这不会发生」。
-租约 45 秒 TTL,每轮认领前现要;拿着租约的标签页被关掉时立刻释放。
+租约 TTL **5 分钟**(`leaseTtlMs`,见可调参数表),每轮认领前续租;
+持有者报着 busy 时过期也不换手,宽限 `leaseBusyGraceMs`;
+拿着租约的标签页被关掉时立刻释放。
+(这一行一度写着「45 秒 TTL」—— 那正是这一轮修掉的那个坏值:45 秒短于后台标签页的
+定时器节流周期,正跑着单的标签页只要被切到后台就会把租约丢掉。同一份 README 里
+两段话给出两个 TTL,而这一段读起来像现行说明,照它去调只会把缺陷装回去。)
 
 ## 物流同步
 

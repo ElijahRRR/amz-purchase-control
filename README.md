@@ -40,7 +40,7 @@ python cli.py db_init
 
 # 2. 跑测试(需要一个可连的 PostgreSQL 17;连不上会整体 skip)
 export AMZ_TEST_ADMIN_DSN="dbname=postgres"
-python -m pytest -q                       # 400 条
+python -m pytest -q                       # 409 条
 
 # 3. 起服务
 python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
@@ -59,7 +59,7 @@ python tools/mock_plugin.py --scenario no_asin     # 一个 ASIN 都没采到:�
 # 6. 插件侧
 cd extension && npm install
 npm run typecheck && npm run build        # → dist/,可加载进 Chrome
-npm run test:dom                          # 225 条 DOM 解析断言(不需要服务端),顺带跑 test:unit 74 条
+npm run test:dom                          # 225 条 DOM 解析断言(不需要服务端),顺带跑 test:unit 91 条
 npm run smoke                             # 用插件自己的 Loop/runTask 跑闭环
 node tools/smoke.mjs --scenario happy --ship in_transit
 node tools/smoke.mjs --scenario login_lost         # 跑到一半被登出:退回队列,不记异常
@@ -187,10 +187,10 @@ python cli.py feishu_writeback
 
 | | 状态 |
 |---|---|
-| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 400 条 pytest,跑在真 PostgreSQL 17 上 |
-| 插件与服务端的时序(认领 → 执行 → 护栏 → 回填 → 失败清车) | ✅ 8 个场景实跑,跑的是插件自己的 `Loop`/`runTask` |
+| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 409 条 pytest,跑在真 PostgreSQL 17 上 |
+| 插件与服务端的时序(认领 → 执行 → 护栏 → 回填 → 失败清车) | ✅ 全部 smoke 场景实跑,跑的是插件自己的 `Loop`/`runTask`(清单见 `extension/README.md`,那张表就是唯一的场景清单 —— 写死一个数字每加一条就过期一次) |
 | 物流同步时序 | ✅ 实跑 |
-| DOM 解析层(选择器是否按报告的语义在读) | ✅ 225 条断言,对着按报告造的夹具跑(地址/购物车/商品页从 0 条到有断言);另有 74 条纯 Node 断言盯等待原语、单飞闸、租约、认领循环 |
+| DOM 解析层(选择器是否按报告的语义在读) | ✅ 225 条断言,对着按报告造的夹具跑(地址/购物车/商品页从 0 条到有断言);另有 91 条纯 Node 断言盯等待原语、单飞闸、租约、认领循环、看门狗、清车熔断、「下单点留痕没落地就不许点」,以及「上界由服务端反推」那条算式 |
 | 登录态(被登出 → 拒绝派单 → 重新登录后自愈) | ✅ 心跳落库/认领被拒/恢复/unknown 的 pytest,加一轮 `--scenario login_lost` 实跑 |
 | 下单后的三段等待(发卡行验证 → 露窗口 → 上报 → 有界超时) | ⚠️ **只验到时序那一半**:两条 step 事件、`claim_timeout_min` 下发、列表徽标、新错误码转人工,都有 pytest 与 `--scenario manual_verify / manual_verify_timeout` 实跑;**「iframe 真被导到跨域页之后 `urlState()` 读到什么、`reveal()` 出来的窗口能不能真的输验证码」没验过** —— 那要一个真买家号 |
 | 运营台前端 | ✅ 真库 + 真服务 + 真浏览器跑过四页、详情弹窗、改地址、剪贴板、NEEDS_ACK 流程 |
@@ -322,18 +322,19 @@ python cli.py task_retry
 |---|---|
 | `POST /v1/instances/register` `/heartbeat` | 实例注册与心跳。心跳捎上插件读到的**登录态**,回一句「该不该复检」 |
 | `POST /v1/tasks/claim` | 按买家号认领一单。被登出的实例回 409 `INSTANCE_SIGNED_OUT` —— **不是**回一个「没有单」 |
-| `POST /v1/tasks/{id}/events` | 执行步骤上报(只追加) |
+| `POST /v1/tasks/{id}/events` | 执行步骤上报(只追加)。回执带 `may_have_ordered`:**这条任务**此刻越没越过下单点,不是「这一批里有没有那条 step」 |
 | `POST /v1/tasks/{id}/guard-check` | **护栏裁决在服务端**,插件只报数 |
 | `POST /v1/tasks/{id}/complete` `/fail` `/release` | 落终态 |
 | `POST /v1/shipments/pending` `/sync` | 物流同步 |
 | `POST /v1/admin/tasks/import` `/search` `/export` · `GET /{id}` | 落库、查询、导出 CSV(整个筛选结果,不只当前页) |
 | `POST /v1/admin/tasks/{id}/release` `/reset` `/force-backfill` `/address` `/asin` | 五个人工动作 |
 | `POST /v1/admin/tasks/batch-reset` | 批量重置。**不接受 acknowledged** —— 可能已下单的原样报回来,让人逐条去看 |
+| `POST /v1/admin/envs/{id}/expected-card` | 就地改这个买家号该刷哪张卡的后四位(留空 = 关掉这道闸;只校验、不替买家号切卡) |
 
 | `GET /v1/admin/instances` | 买家号与判活 |
 | `GET /v1/admin/meta` | 封闭集连中文标签下发,外加 `auto_retry: {enabled, max, backoff_min, max_age_min, batch}`。**前端不存副本** |
 | `GET /v1/admin/summary` | 状态桶计数(跟着 env/时间筛选走;顶栏两个数字保持全局) |
-| `GET /v1/admin/error-stats` | 错误码分布:按码 / 按买家号 / 按天 |
+| `GET /v1/admin/error-stats` | 错误码分布:按码 / 按买家号 / 按天。外加 `assert_skipped: {count, backfills, ratio, alert, days}` —— 回填 ASIN 断言「没能比」的近 7 日计数,**连同同期回填条数**(只发 count 的话,「500 次漏了 1 次」与「1 次漏了 1 次」长得一模一样,而后者是护栏整体失效) |
 | `GET /v1/admin/runs` | 工作流运行记录 |
 
 ## 几条贯穿全项目的判断
@@ -357,9 +358,19 @@ python cli.py task_retry
 以及插件自己调的 `/release`(越过下单点之后一律拒,任务停在 claimed 等超时转人工)。
 最后这条是最容易漏的一条,也是唯一一条**连人都没有**的:前三条至少还要人点一下。
 
-而插件那条 step 到底发没发,有一条 pytest 直接读 `run.ts` 源码在盯 ——
+而插件那条 step 到底发没发,有两条 pytest 直接读 `run.ts` 源码在盯 ——
 上面四道闸没有一道自己看得出「越过下单点了」,全都在等那个键名;
 键名一分叉,四道闸一起变成招牌,而服务端侧的测试全是自己合成那条事件的,一条都不会红。
+(比对之前先把注释剥掉:同一处的注释里就写着这个键名,不剥的话把代码里的键名
+改成 TS 习惯的 `mayHaveOrdered`,子串搜索照样命中注释,全套仍然全绿。)
+
+**而「发出去」不等于「说上了话」。** 那条 step 走的是一次不重试的 POST,
+撞上网络抖动 / 服务端重启 / 15 秒超时就回一个 `transport` 失败 ——
+返回值一丢,插件照点下单按钮:订单在 Amazon 上真下成了,而库里那一位从没被置上,
+四道闸一起失效。所以它是**下单的前置条件**,不是旁白:没落地就重发一次
+(服务端那条 `UPDATE ... WHERE NOT may_have_ordered` 是幂等的),
+还不落地就不点 —— 那一刻还没花钱,清车退回队列是安全的那一边。
+第二条 pytest 盯的就是「这个返回值必须被消费」。
 
 **不确定就不写。** 回填前拿订单卡上的 ASIN 跟本单断言,不符就**不写单号**。
 厂商是「先写进去,再在界面上打个红叉给你看」;写错的单号会把别人的订单挂到这条任务上,
@@ -462,5 +473,6 @@ python cli.py task_retry
 | P7 | 上游接入:定时从飞书多维表格拉单 + 结果回写 | ✅ 代码完成,**未对着真实表格跑过**(缺凭据) |
 | — | 登录态上报:被登出的买家号不再空转刷认领,运营台上看得见 | ✅ |
 | P8 | 有界自动重试:`RETRYABLE` 那一组终于有 `task_retry` 在消费它 | ✅ **默认关**(`AMZ_AUTO_RETRY_MAX=0`),开了才跑,界面文案跟着配置走 |
-| P9 | 对照厂商 v2.5.3 补的缺口:护栏比**货款**而不是卡扣的钱(礼品卡)、支付面板作用域与期望卡、下单后有界三段等待 + 发卡行验证页露出来给人做、单飞/租约/清车熔断/看门狗、厂商在真实 Amazon 上校准的判据(更改地址入口、购物车删除图标、加购按钮可用性、订单状态第二形态)、交期解析三处、ASIN 断言三态、「越过下单点」在库里留痕并封住四条回队列的路 | ✅ 代码完成,四条线各经一轮对抗式复核;**未在真实 Amazon 上跑过** |
+| P9 | 对照厂商 v2.5.3 补的缺口:护栏比**货款**而不是卡扣的钱(礼品卡)、支付面板作用域与期望卡、下单后有界三段等待 + 发卡行验证页露出来给人做、单飞/租约/清车熔断/看门狗、厂商在真实 Amazon 上校准的判据(更改地址入口、购物车删除图标、加购按钮可用性、订单状态第二形态)、交期解析三处、ASIN 断言三态、「越过下单点」在库里留痕并封住四条回队列的路 | ✅ 代码完成,六条线各经一轮对抗式复核,**合并后又整体复核并修了一轮**;**未在真实 Amazon 上跑过** |
+| — | 合并后的整体复核:「越过下单点」的留痕从旁白改成下单的前置条件、清车熔断的清零挪到终态、租约的 busy 判据改成 `Loop.holdsWork()`、支付判据的半开状态、算钱之前那几道闸也落金额、错误码标签只留一份(文档那一列改成 `LABELS` 并逐码比对)、列表这一层补上「越过下单点」与「已试 k/N」 | ✅ 每条都先复现再改;新增的断言见 `extension/test/unit.test.mjs` 与 `tests/` |
 | 下一步 | 在真实 Amazon 上跑第一单(P3 至今唯一没验过的那一格) | 待定 |

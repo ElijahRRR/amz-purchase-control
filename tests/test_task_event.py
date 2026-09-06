@@ -153,7 +153,8 @@ def test_design_canvas_shows_every_error_code():
 
 
 def test_docs_layout_lists_every_service_and_workflow():
-    """docs/01 §目录树 与真实文件必须**双向**对得上。
+    """docs/01 §目录树 里 `services/` `workflows/` `server/routes/` 三节与真实文件
+    必须**双向**对得上。
 
     这条测试的由来:那张目录树里曾经写着 workflows/erp_sync.py、workflows/reconcile.py、
     api/erp.py —— 三个都不存在。文档描述一个不存在的目录结构,
@@ -164,6 +165,13 @@ def test_docs_layout_lists_every_service_and_workflow():
       · 抓 `services/` 下的文件名时用的正则不分节,把整棵树里所有 `*.py`
         都算成了「services 一节列出的」。于是那个方向的断言是个超集比较,
         永远成立。
+
+    **覆盖范围写在标题里,不写「整棵树」。** 这条测试盯的是那三节的 `*.py`;
+    树里别的几节(extension / registry / api / refdata / docs / web)**它盯不到** ——
+    docstring 曾经笼统写着「与真实文件双向对得上」,而这一轮的漂移就发生在
+    它盯不到的地方(树里列着 `test/dom.test.mjs` 却没有新增的 `test/unit.test.mjs`,
+    也没有 `src/core/`)。一句说过头的 docstring 会让下一个人以为这件事有测试兜着,
+    不必自己核 —— 那正是本项目列出的头号危险形状。
     """
     from registry import paths
 
@@ -179,8 +187,10 @@ def test_docs_layout_lists_every_service_and_workflow():
         遇到缩进回到同级或更浅就停。不这么切的话就是在全树里瞎抓。
         """
         lines = tree.splitlines()
+        # 树里写的是最后一段(`server/routes` 那一节的标题就是 `routes/`)
+        leaf = pkg.rsplit("/", 1)[-1]
         head = next(i for i, ln in enumerate(lines)
-                    if ln.strip() == f"{pkg}/" or ln.strip().startswith(f"{pkg}/ "))
+                    if ln.strip() == f"{leaf}/" or ln.strip().startswith(f"{leaf}/ "))
         base = len(lines[head]) - len(lines[head].lstrip())
         out: set[str] = set()
         for ln in lines[head + 1:]:
@@ -193,7 +203,9 @@ def test_docs_layout_lists_every_service_and_workflow():
                 out.add(name)
         return out
 
-    for pkg in ("services", "workflows"):
+    # server/routes 也纳进来:它同样是一节纯 *.py、树里逐个列了出来,
+    # 而「加了一个端点文件、文档没提」与 services 那次事故是同一个形状。
+    for pkg in ("services", "workflows", "server/routes"):
         real = {f.name for f in (root / pkg).glob("*.py") if f.name != "__init__.py"}
         listed = files_under(pkg)
         assert not (real - listed), f"{pkg}/ 里有文档没提的文件:{sorted(real - listed)}"
