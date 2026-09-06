@@ -10,11 +10,17 @@
  * 把它们塞进一个文件的话,DOM 那边的夹具一坏,这边的断言也跟着不跑了。
  */
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
+
 import { waitFor, waitStable, WaitTimeout } from "../build/flow/dom/wait.js";
 import { SingleFlight } from "../build/core/singleflight.js";
 import { decideLease, LEASE_TTL_MS, LEASE_BUSY_GRACE_MS } from "../build/core/lease.js";
 import { Loop } from "../build/background/loop.js";
 import { DriverError } from "../build/flow/driver.js";
+
+const here = dirname(fileURLToPath(import.meta.url));
 
 let pass = 0;
 const failures = [];
@@ -332,6 +338,31 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
   await new Promise((r) => setTimeout(r, 20));   // 让那条 runTask 走完
   const after = await loop.tickOnce();
   check("被掐掉的那一单落地之后恢复认领", after.kind === "ran", after.kind);
+}
+
+// ── 接线本身(只验得到源码这一层,说清楚) ──────────────────────────────
+//
+// content/runner.ts 与 background/service-worker.ts 里全是 chrome API,
+// 在 Node 里驱动不了(`npm run build:node` 也不编译 src/content)。
+// 上面那些断言验的是**闸本身**(SingleFlight / decideLease);这里退一步,
+// 只钉住「闸有没有被接上」—— 这是源码层的检查,不是行为验证,别把它当成后者。
+// (仓库里已有同型的先例:tests/test_task_event.py 用正则比对 codes.ts。)
+{
+  const runnerSrc = readFileSync(join(here, "..", "src", "content", "runner.ts"), "utf8");
+  check("单飞闸接在 Runner 上:配置替换走 offer",
+        /setConfig\([^)]*\)\s*:\s*void\s*\{[\s\S]{0,200}?this\.flight\.offer\(/.test(runnerSrc));
+  check("认领与物流两条流都跑在同一道闸里",
+        (runnerSrc.match(/this\.flight\.run\(/g) ?? []).length === 2);
+  check("要租约那一步在闸**里面**(不然是个 TOCTOU)",
+        /this\.flight\.run\(async \(\) => \{\s*\n\s*if \(!\(await this\.lease\(\)\)\)/.test(runnerSrc));
+  check("续租时如实报「这个标签页手里有没有单」",
+        /busy: BUSY_PHASES\.has\(this\.phase\)/.test(runnerSrc));
+
+  const swSrc = readFileSync(join(here, "..", "src", "background", "service-worker.ts"), "utf8");
+  check("租约落 chrome.storage.session,不再活在模块级变量里",
+        swSrc.includes("chrome.storage.session") &&
+        !/^let leaseTabId/m.test(swSrc) && !/^let leaseUntil/m.test(swSrc));
+  check("租约裁决走的是那个纯函数", swSrc.includes("decideLease("));
 }
 
 console.log(`\n  通过 ${pass} 条`);
