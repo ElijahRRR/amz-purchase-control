@@ -145,9 +145,40 @@ export const SEL = {
   // ── 地址表单 (报告 §4.2.3) ─────────────────────────────────────────
   address: {
     section: '[aria-labelledby="delivery-addresses-section-header-id"]',
-    changeAddress: '#checkout-deliveryAddressPanel [aria-label="Change delivery address"]',
+    /** 结算页上的「更改收货地址」入口,四条按可信度排。
+     *
+     *  前三条出自**厂商 v2.5.3:3159-3163**,是这一版新增的;第四条
+     *  `[aria-label="Change delivery address"]` 是厂商 2.4.1/2.5.1 用的那条,
+     *  **他们在 2.5.3 里把它整条删掉了**(findings.md:46「不再依赖英/日文 aria-label」)。
+     *
+     *  我们原先只有被删掉的那一条。它失灵的样子是最坏的一种:
+     *  querySelector 返回 null → click 静默什么都不做 → 紧接着等 30 秒
+     *  → 每一单都报 ADDRESS_FORM_TIMEOUT(可重试码,而重试多少次都一样)。
+     *  运营看到「地址表单加载超时」,真实原因是「入口选择器坏了,要改代码」。
+     *
+     *  这里保留它当垫底而不是跟着删:厂商的新形态是他们在自己那批买家号上
+     *  校准出来的,不能确定所有账号都已经换过去。但它排在最后 ——
+     *  前三条命中就用不到它。
+     *
+     *  配 parse.findAddressChangeEntry 用(逐条走 isRendered)。 */
+    changeAddress: [
+      "#checkout-deliveryAddressPanel #change-delivery-link",
+      '#checkout-deliveryAddressPanel a[data-toPage="shipaddressselect"]',
+      '#checkout-deliveryAddressPanel [data-action="page-transit-no-update-action"] a[href*="/address?"]',
+      '#checkout-deliveryAddressPanel [aria-label="Change delivery address"]',
+    ],
+    /** 「新增地址」。**我们一律新建,从不复用地址簿里已有的条目。**
+     *
+     *  这是个明写下来的决定,不是没做:复用要先比对几十条地址文本才能确认
+     *  选中的是哪一条(厂商真实买家号上的样本是 55 条,findings.md:45),
+     *  比对写松一点就寄错人 —— 而寄错人和实付超限价是同一量级的后果。
+     *  新建的代价是地址簿越攒越长、/address 页越来越慢,已知并接受。
+     *
+     *  这里原先还有一条 `editNth: (i) => '#edit-address-desktop-tango-sasp-' + i`
+     *  (厂商 v2.5.3:3222 真在用),而我们全仓库**没有任何调用点**。
+     *  已删:一条躺在选择器表里、看起来在用其实没人取的条目,
+     *  会让下一个读代码的人以为「复用已有地址」这条路径是实现过的。 */
     addNew: "#add-new-address-desktop-sasp-tango-link",
-    editNth: (i: number) => `#edit-address-desktop-tango-sasp-${i}`,
     fullName: "#address-ui-widgets-enterAddressFullName",
     phone: "#address-ui-widgets-enterAddressPhoneNumber",
     line1: "#address-ui-widgets-enterAddressLine1",
@@ -238,6 +269,13 @@ export const URLS = {
   interstitial: ["checkout/byg/ref", "/cart/byc/ref"],
   /** 最终结算页 */
   finalCheckout: "/checkout/p/p-",
+  /** 地址选择页 `/checkout/p/p-…/address`。
+   *
+   *  点完「更改地址」之后**先确认页面真的换过去了**,再去等地址区 ——
+   *  否则结算页上那个折叠着(display:none)的地址簿会在页面还没跳走的那一刻
+   *  就满足「地址区加载」,于是我们在错误的页面上点一个不可见的「新建地址」。
+   *  这条判据只在结算 iframe 里用,不会撞上账户里的 /gp/css/account/address。 */
+  addressSelect: "/address",
   /** 跟踪页链接的两种形态(报告 §4.3 第 1 步) */
   trackHrefHints: ["/ship-track?", "/progress-tracker/package/"],
   /** 下单成功。**只认 thankyou** —— 厂商把 /gp/cart/view.html 也判成功

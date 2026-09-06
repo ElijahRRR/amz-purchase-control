@@ -15,10 +15,12 @@
 
 import { SEL, URLS } from "./dom/selectors.js";
 import { openFrame, withFrame, type Frame } from "./dom/frame.js";
-import { sleep, waitFor, waitStable, WaitTimeout } from "./dom/wait.js";
+import { waitFor, waitStable, WaitTimeout } from "./dom/wait.js";
 import {
-  cartMatches, describeMiss, findAddToCartButton,
+  cartMatches, describeMiss, findAddNewAddressEntry, findAddToCartButton,
+  findAddressChangeEntry, findAddressFormNameField, findAddressSection,
   findInterstitialButton, findQuantityOption, findSubmitOrderButton, findTrackingLink,
+  readAddressSaveOutcome,
   pickFirstRendered, pickQuantitySelect, readCarrier, readCartLines, readCartState,
   readCheckoutPanels,
   readDeliveryPromise, readGrandTotal, readInStock, readOrderCards, readOrderState,
@@ -387,33 +389,137 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
     const f = this.need();
     const doc = () => f.doc();
 
-    if (!doc().querySelector(SEL.address.fullName)) {
-      // 地址簿里已有地址时,先点"换地址"再点"新建"。
-      click(doc().querySelector(SEL.address.changeAddress));
-      try {
-        await waitFor("地址区加载", () => doc().querySelector(SEL.address.section),
-                      { timeoutMs: T.addressForm });
-      } catch {
+    // 结算页上已经有姓名框 = 这个买家号一条地址都没有,Amazon 直接给了内联表单。
+    // 走 findAddressFormNameField 而不是裸 querySelector:隐藏模板里也有这个 id,
+    // 取到它就会跳过整段「换地址 → 新建」,然后往一个没人看的 DOM 里填字。
+    if (!findAddressFormNameField(doc())) {
+      // ── 第 1 步:点结算页上的「更改收货地址」 ──────────────────────
+      //
+      // 入口选择器有四条(见 selectors.address.changeAddress),全部走 isRendered。
+      // **click 的返回值必须看。** 原先这里是裸 `click(querySelector(...))`:
+      // 入口选择器一失效就静默什么都不做,然后白等 30 秒报 ADDRESS_FORM_TIMEOUT ——
+      // 一个可重试码,而这类失败重试多少次都一样。同一个文件里加购、结算、
+      // 中间页、地址建议、下单五处都写成 `if (!click(...)) throw`,唯独这里没有。
+      //
+      // 等待条件里也带上「内联表单」:刚跳到结算页时地址面板可能还没画完,
+      // 而买家号没有任何地址时 Amazon 给的就是内联表单 —— 这两种都要能接住。
+      const entry = await waitFor("更改地址入口", () => {
+        if (findAddressFormNameField(doc())) return "inline" as const;
+        return findAddressChangeEntry(doc());
+      }, { timeoutMs: T.addressForm }).catch(() => null);
+
+      if (entry === null) {
         await this.guardLogin(f, "打开地址区");
-        throw new DriverError("ADDRESS_FORM_TIMEOUT", "地址区没加载出来");
+        // 这一句就是「选择器坏了」与「页面慢」的分界:全落空 = 改版,
+        // 命中但没渲染 = 页面还没画完。两者在运营台上必须长得不一样。
+        throw new DriverError("ADDRESS_FORM_TIMEOUT",
+                              `结算页找不到可点的更改地址入口:` +
+                              `${describeMiss(doc(), SEL.address.changeAddress)}`);
       }
-      click(doc().querySelector(SEL.address.addNew));
-      try {
-        await waitFor("新建地址表单", () => doc().querySelector(SEL.address.fullName),
-                      { timeoutMs: T.addressForm });
-      } catch {
-        throw new DriverError("ADDRESS_FORM_TIMEOUT", "新建地址表单没出来");
+
+      // entry === "inline" 时表单就在眼前,不用点任何东西,直接往下填。
+      if (entry !== "inline") {
+        if (!click(entry)) {
+          throw new DriverError("ADDRESS_FORM_TIMEOUT", "更改地址入口点不动(元素在但 click 没生效)");
+        }
+
+        // ── 第 2 步:确认这一下**真的产生了效果** ───────────────────
+        //
+        // 这一步原先没有,而它是整段最要命的地方:紧接着的「地址区加载」
+        // 判据(`[aria-labelledby="delivery-addresses-section-header-id"]`)会被
+        // 结算页上**折叠着的地址簿**立刻满足 —— waitFor 的第一次探测是同步的,
+        // 连一个周期都不等。于是我们在还没跳走的结算页上,去点折叠容器里那个
+        // 不可见的「新建地址」,click 不报错也不跳转,此后 30 秒等一个永远不会
+        // 出现的表单。净效果:**只要买家号地址簿里有历史地址(常态),
+        // 每一单都 ADDRESS_FORM_TIMEOUT。**
+        //
+        // 两条判据任一成立都算「产生了效果」,因为这个入口有两种落地形态:
+        //   · 整页跳到 /checkout/p/p-…/address(厂商 v2.5.3 走的就是这条)
+        //   · 就地弹一个模态框(findings.md:45 记的 checkout-view-modal / isAsync)
+        // 只认 URL 会把模态框那种判成失败;只认地址区就是原来那个坑 ——
+        // 所以关键不在选哪一条,而在**地址区必须是渲染出来的那个**(findAddressSection
+        // 走 isRendered),折叠的地址簿满足不了它。
+        const moved = await waitFor("更改地址生效", () => {
+          if (f.url().includes(URLS.addressSelect)) return "url" as const;
+          if (findAddressSection(doc())) return "section" as const;
+          return null;
+        }, { timeoutMs: T.addressForm, everyMs: 300 }).catch(() => null);
+
+        if (moved === null) {
+          await this.guardLogin(f, "跳到地址选择页");
+          throw new DriverError("ADDRESS_FORM_TIMEOUT",
+                                `点了更改地址,但既没跳到地址选择页、也没就地渲染出地址区,` +
+                                `当前 URL:${f.url() || "读不到(跨域或文档未就绪)"}`);
+        }
+
+        // ── 第 3 步:URL 换了但页面还在画时,等地址列表区 ─────────────
+        if (moved === "url") {
+          try {
+            await waitFor("地址区加载", () => findAddressSection(doc()),
+                          { timeoutMs: T.addressForm });
+          } catch {
+            await this.guardLogin(f, "打开地址区");
+            throw new DriverError("ADDRESS_FORM_TIMEOUT",
+                                  `已经到了地址选择页,但没等到地址列表区:` +
+                                  `${describeMiss(doc(), [SEL.address.section])}`);
+          }
+        }
+
+        // ── 第 4 步:点「新增地址」 ─────────────────────────────────
+        //
+        // 我们**一律新建、不复用地址簿里已有的条目**(理由写在
+        // selectors.address.addNew 的注释里)。这个 id 在结算页折叠的地址簿里
+        // 也有一份,所以这里同样走 isRendered。
+        const addNew = await waitFor("新增地址入口", () => findAddNewAddressEntry(doc()),
+                                     { timeoutMs: T.addressForm }).catch(() => null);
+        if (!addNew || !click(addNew)) {
+          throw new DriverError("ADDRESS_FORM_TIMEOUT",
+                                `地址选择页找不到可点的新建地址入口:` +
+                                `${describeMiss(doc(), [SEL.address.addNew])}`);
+        }
+
+        // ── 第 5 步:等那张**异步注入**的表单 ────────────────────────
+        //
+        // 地址选择页本身**不含姓名输入框**(厂商 findings.md:45 的实测结论),
+        // 表单是点完入口之后才注入的。走到这里入口都点到了、页面也换过了,
+        // 所以这一条超时是货真价实的「慢」,不是「选择器坏了」。
+        try {
+          await waitFor("新建地址表单", () => findAddressFormNameField(doc()),
+                        { timeoutMs: T.addressForm });
+        } catch {
+          throw new DriverError("ADDRESS_FORM_TIMEOUT",
+                                `点了新建地址,但表单在 ${T.addressForm}ms 内没注入出来` +
+                                `(入口点到了、页面也换过了 —— 这一条是页面慢,不是选择器坏了):` +
+                                `${describeMiss(doc(), [SEL.address.fullName])}`);
+        }
       }
     }
 
-    setInput(doc().querySelector(SEL.address.fullName), shipping.name);
-    setInput(doc().querySelector(SEL.address.phone), shipping.phone);
-    setInput(doc().querySelector(SEL.address.line1), shipping.line1);
-    setInput(doc().querySelector(SEL.address.line2), "");
-    setInput(doc().querySelector(SEL.address.city), shipping.city);
-    setInput(doc().querySelector(SEL.address.postal), shipping.postcode);
+    // **每一格都走 pickFirstRendered,不用裸 querySelector。**
+    //
+    // Amazon 的地址表单是从隐藏模板克隆出来的,页面上常同时挂着一份 display:none
+    // 的副本,字段 id 一模一样,而且**排在真身前面**,里面还预填着上一次用过的
+    // (也就是别人的)地址。裸 querySelector 会往那一份里写字:setInput 不报错,
+    // 保存按钮点下去什么都没发生 —— 表现是 30 秒后 ADDRESS_FORM_TIMEOUT,
+    // 而地址其实一个字都没填进去。更坏的分支是模板里预填的地址被 Amazon 采用,
+    // 那就是把货寄给别人,而 ADDRESS_NOT_APPLIED 那道校验读的是同一份页面文本,
+    // 未必拦得住。
+    const field = <T extends Element>(sel: string): T | null =>
+      pickFirstRendered<T>(doc(), [sel]);
 
-    const stateSel = doc().querySelector<HTMLSelectElement>(SEL.address.state);
+    const nameField = field<HTMLInputElement>(SEL.address.fullName);
+    if (!nameField) {
+      throw new DriverError("ADDRESS_FORM_TIMEOUT",
+                            `地址表单不见了:${describeMiss(doc(), [SEL.address.fullName])}`);
+    }
+    setInput(nameField, shipping.name);
+    setInput(field(SEL.address.phone), shipping.phone);
+    setInput(field(SEL.address.line1), shipping.line1);
+    setInput(field(SEL.address.line2), "");
+    setInput(field(SEL.address.city), shipping.city);
+    setInput(field(SEL.address.postal), shipping.postcode);
+
+    const stateSel = field<HTMLSelectElement>(SEL.address.state);
     if (!stateSel) throw new DriverError("ADDRESS_FORM_TIMEOUT", "地址表单没有州下拉");
     const want = shipping.state.trim().toLowerCase();
     const opt = Array.from(stateSel.options).find(
@@ -425,28 +531,58 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
     stateSel.value = opt.value;
     stateSel.dispatchEvent(new Event("change", { bubbles: true }));
 
-    click(doc().querySelector(SEL.address.save));
-
-    // 两轮弹窗对抗:表单校验提示 / Amazon 的地址建议弹窗。
-    await sleep(1200);
-    if (SEL.address.validationAlerts.some((s) => doc().querySelector(s)?.textContent?.trim())) {
-      click(doc().querySelector(SEL.address.save));
-      await sleep(1200);
+    // 保存按钮同样要挑渲染出来的那个:模板副本里也有一个同 id 的。
+    // 注意这里从 doc() 取而不是从表单里取 —— SEL.address.save 带
+    // `#pagelet-layout-section` 前缀,那是表单的**祖先**,在表单子树里查不到。
+    const save = () => click(pickFirstRendered(doc(), [SEL.address.save]));
+    if (!save()) {
+      throw new DriverError("ADDRESS_FORM_TIMEOUT",
+                            `地址表单上找不到保存按钮:${describeMiss(doc(), [SEL.address.save])}`);
     }
-    if (doc().querySelector(SEL.address.suggestionPopup)) {
-      // 选**原始地址**那一项:上游给什么就寄什么,不让 Amazon 替我们改收件地址。
-      const radio = doc().querySelector(`${SEL.address.suggestionPopup} input[type=radio]`);
-      if (!click(radio)) {
-        throw new DriverError("ADDRESS_SUGGESTION_BLOCKED", "地址建议弹窗里选不到原始地址");
+
+    // ── 保存之后会出现三种结果之一,**谁先出现就处理谁** ──────────────
+    //
+    // 原先这里是「两轮弹窗对抗」:sleep(1200) 之后**只看一次**校验提示,
+    // 再 sleep(1200) 之后**只看一次**地址建议弹窗 —— 那是定时快照,不是轮询。
+    // 弹窗晚出现 200ms 就整单失败:我们在 t≈2.4s 那一眼没看见,直接去等
+    // #deliver-to-address-text,而弹窗正挡着保存 → 30 秒后 ADDRESS_FORM_TIMEOUT。
+    // 同一个订单换一次网络抖动就可能变成成功 —— 这种「时快时慢」的失败最难查,
+    // 而且失败时地址其实已经填好了,重试还要从头再来一遍。
+    // (这一处厂商 v2.5.3:3409-3455 比我们稳:他们两处都是 6 轮 × 500ms 的轮询。)
+    //
+    // 整段共用**一个**预算 T.addressSave:每一轮 waitFor 只拿剩下的时间,
+    // 所以无论走几轮,「保存 → 地址生效」这一段的总耗时上界不变(任何等待都必须有界)。
+    // 轮数上限 3 是防呆:校验提示一直不消失时不能在这里空转。
+    const deadline = Date.now() + T.addressSave;
+    let settled = false;
+    for (let round = 0; round < 3 && !settled; round += 1) {
+      const hit = await waitFor("地址保存结果", () => readAddressSaveOutcome(doc()),
+                                { timeoutMs: Math.max(0, deadline - Date.now()), everyMs: 300 })
+        .catch(() => null);
+
+      if (hit === "saved") { settled = true; break; }
+      if (hit === "alerts") {
+        // 校验提示:再点一次保存(Amazon 常在第一次提交时补全/规范化字段)。
+        save();
+        continue;
       }
-      click(doc().querySelector(SEL.address.save));
+      if (hit === "suggestion") {
+        // 选**原始地址**那一项:上游给什么就寄什么,不让 Amazon 替我们改收件地址。
+        const radio = pickFirstRendered(doc(), [`${SEL.address.suggestionPopup} input[type=radio]`]);
+        if (!click(radio)) {
+          throw new DriverError("ADDRESS_SUGGESTION_BLOCKED", "地址建议弹窗里选不到原始地址");
+        }
+        save();
+        continue;
+      }
+      // 三种结果一个都没等到,预算也用完了。
+      throw new DriverError("ADDRESS_FORM_TIMEOUT",
+                            `点了保存,但 ${T.addressSave}ms 内既没出现收货地址栏,` +
+                            `也没出现校验提示或地址建议弹窗(第 ${round + 1} 轮)`);
     }
-
-    try {
-      await waitFor("地址生效", () => doc().querySelector(SEL.checkout.addressText),
-                    { timeoutMs: T.addressSave });
-    } catch {
-      throw new DriverError("ADDRESS_FORM_TIMEOUT", "地址保存后没等到收货地址栏");
+    if (!settled) {
+      throw new DriverError("ADDRESS_FORM_TIMEOUT",
+                            "地址保存对抗了 3 轮仍没等到收货地址栏(校验提示/建议弹窗反复出现)");
     }
 
     // 填完不等于生效。Amazon 可能仍然用着地址簿里原来那条 ——

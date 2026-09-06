@@ -532,6 +532,202 @@ await withFixture("checkout-interstitial.html", async (run) => {
         await run("!!document.querySelector('#submitOrderButtonId')"));
 });
 
+// ── 地址流程:结算页 → 地址选择页 → 异步注入的表单 ──────────────────
+//
+// **这一整节以前是 0 条断言**(`grep -i address` 零命中)。地址是整条链路上
+// 唯一「填错了会把货寄给别人」的环节,而它一行离线验证都没有 ——
+// 「护栏在、但没人证明它还活着」正是本项目反复点名的那一类。
+//
+// 三张页面各自要证明的事:
+//   checkout.html            结算页上的入口能选对,而**折叠着的地址簿不算数**
+//   address-select.html      /address 页上能选对新增入口,而这一页**没有姓名框**
+//   address-form-async.html  异步注入的表单要选真身,不选预填着别人地址的模板
+
+await withFixture("checkout.html", async (run) => {
+  // ① 更改地址入口:四条有序判据,结构判据(厂商 v2.5.3:3159)在前、
+  //    英文 aria-label(厂商 2.5.3 已删)垫底。
+  eq("address 更改入口选到 #change-delivery-link(结构判据优先)",
+     await run(`(() => {
+        const el = amzdom.findAddressChangeEntry(document);
+        return el ? [el.id, el.getClientRects().length > 0] : null;
+     })()`), ["change-delivery-link", true]);
+  // 干扰项自己也得验:隐藏的同 id 副本确实排在真身前面。
+  // 不然上面那条即使实现写成裸 querySelector 也照样绿 —— 夹具没干扰,断言就没用。
+  eq("address 隐藏的 #change-delivery-link 副本确实排在前面(干扰项确实存在)",
+     await run(`(() => {
+        const all = [...document.querySelectorAll("#change-delivery-link")];
+        return [all.length, all[0].getClientRects().length === 0];
+     })()`), [2, true]);
+  eq("address 旧的英文 aria-label 入口也还在页面上(两种形态并存)",
+     await run(`!!document.querySelector('[aria-label="Change delivery address"]')`), true);
+  eq("address 判据顺序:aria-label 那条垫在最后",
+     await run(`amzdom.SEL.address.changeAddress[3].includes('aria-label')`), true);
+
+  // ② **ADDR-1 的要害**:结算页上那个折叠着的地址簿不许满足「地址区加载」。
+  //    原先 amazon.ts 点完「更改地址」就等 SEL.address.section,而 waitFor 的
+  //    第一次探测是**同步**的 —— 页面还没跳走,折叠地址簿当场满足,
+  //    于是我们在结算页上点了折叠容器里那个不可见的「新建地址」,
+  //    此后 30 秒等一个永远不会出现的表单。
+  //    净效果:只要买家号地址簿里有历史地址(常态),每一单都 ADDRESS_FORM_TIMEOUT。
+  eq("address 结算页上折叠的地址簿不算「地址区加载」",
+     await run("amzdom.findAddressSection(document)"), null);
+  eq("address 结算页上确实有那个折叠的地址区节点(干扰项确实存在)",
+     await run(`(() => {
+        const el = document.querySelector('[aria-labelledby="delivery-addresses-section-header-id"]');
+        return [!!el, el.getClientRects().length === 0];
+     })()`), [true, true]);
+  eq("address 结算页上折叠地址簿里的「新增地址」也不算数",
+     await run("amzdom.findAddNewAddressEntry(document)"), null);
+  eq("address 结算页上确实有那个隐藏的新增地址入口(干扰项确实存在)",
+     await run(`!!document.querySelector("#add-new-address-desktop-sasp-tango-link")`), true);
+  eq("address 结算页上没有渲染出来的姓名输入框",
+     await run("amzdom.findAddressFormNameField(document)"), null);
+
+  // ③ 落空时要能一眼分出「选择器坏了」和「页面慢」。
+  //    两种情况今天都渲染成 ADDRESS_FORM_TIMEOUT,而前者要改代码、后者重试就好。
+  eq("address 落空诊断:命中了但没渲染 = 页面慢",
+     await run(`amzdom.diagnoseMiss(document, [amzdom.SEL.address.addNew]).kind`), "not_rendered");
+  eq("address 落空诊断:一个节点都没匹配到 = 选择器坏了",
+     await run(`amzdom.diagnoseMiss(document, ["#no-such-entry", ".neither-this"])`),
+     { kind: "no_match", tried: 2 });
+  // 两种诊断必须说出两句**不同**的话 —— 说同一句话就等于没有诊断
+  check("address 两种落空的说法确实不同",
+        (await run(`amzdom.describeMiss(document, [amzdom.SEL.address.addNew])`)) !==
+        (await run(`amzdom.describeMiss(document, ["#no-such-entry"])`)));
+  check("address「选择器坏了」那句话里点明了重试无用",
+        (await run(`amzdom.describeMiss(document, ["#no-such-entry"])`)).includes("重试无用"));
+});
+
+await withFixture("address-select.html", async (run) => {
+  // ④ 这一页**本身不含姓名输入框**(厂商 findings.md:45 的实测结论):
+  //    表单要点完「新增地址」才异步注入。拿姓名框当「到了地址选择页」的判据
+  //    永远等不到 —— 那正是 ADDR-1 里那 30 秒空等的去处。
+  eq("address-select 这一页没有姓名输入框",
+     await run("amzdom.findAddressFormNameField(document)"), null);
+  eq("address-select 地址列表区渲染出来了",
+     await run(`!!amzdom.findAddressSection(document)`), true);
+
+  // ⑤ 新增地址入口:页面上有**三份**,真身排在最后。三份各考一种隐藏机制,
+  //    缺一种判据就会被对应的那一份骗到 —— 而被骗到的表现都一样:
+  //    click() 不报错也不跳转,然后等一个永远不会出现的表单,30 秒后超时。
+  eq("address-select 新增入口选到真身(第 3 份)",
+     await run(`(() => {
+        const all = [...document.querySelectorAll("#add-new-address-desktop-sasp-tango-link")];
+        const el = amzdom.findAddNewAddressEntry(document);
+        return [all.length, el === all[2]];
+     })()`), [3, true]);
+  // 干扰项 A-1:靠 **CSS 类**隐藏,没有 inline style。
+  // 「往上找 [style*=display:none]」的写法完全看不见它;而且父级 display:none 时
+  // 子 <a> 自己的 computed display 仍是 inline —— 只看自己那一格也不行。
+  eq("address-select 干扰项 A-1 是靠 class 隐藏的(没有 inline style,且子节点自己的 display 仍是 inline)",
+     await run(`(() => {
+        const a = document.querySelectorAll("#add-new-address-desktop-sasp-tango-link")[0];
+        return [a.getAttribute("style"), a.closest("[style]") === null,
+                getComputedStyle(a).display, a.getClientRects().length];
+     })()`), [null, true, "inline", 0]);
+  // 干扰项 A-2:visibility:hidden —— 它**占位**,getClientRects 照样有矩形,
+  // 只有单独判 visibility 才拦得住
+  eq("address-select 干扰项 A-2 占着位置(getClientRects 拦不住它)",
+     await run(`(() => {
+        const a = document.querySelectorAll("#add-new-address-desktop-sasp-tango-link")[1];
+        return [getComputedStyle(a).visibility, a.getClientRects().length > 0];
+     })()`), ["hidden", true]);
+
+  // ⑥ 55 个编辑入口、编号从 0 起(厂商 v253:3210 的循环从 i=1 起,第 0 条永远选不中)。
+  //    我们**一律新建地址**,不复用 —— 这几条是把那个坑摆在台面上,
+  //    以及记录「每单新建」在真实买家号上会攒成什么样。
+  eq("address-select 55 个编辑入口",
+     await run(`document.querySelectorAll('[data-action="checkout-view-modal"]').length`), 55);
+  eq("address-select 编辑入口编号从 0 起",
+     await run(`!!document.querySelector("#edit-address-desktop-tango-sasp-0")`), true);
+  // editNth 是死代码,已删。留这条断言是为了防止有人「顺手补回来」却依旧没有调用点。
+  eq("selectors 里不再有无人调用的 editNth",
+     await run(`amzdom.SEL.address.editNth === undefined`), true);
+});
+
+await withFixture("address-form-async.html", async (run) => {
+  // ⑦ **异步注入的表单要选真身。** 隐藏模板排在前面,而且预填着**另一个人**的地址。
+  //    取到模板那份的后果:setInput 往一个没人看的 DOM 里写字,点保存什么都没发生,
+  //    30 秒后 ADDRESS_FORM_TIMEOUT —— 而地址其实一个字都没填进去。
+  eq("address-form 姓名框选到的是空的真身,不是预填着别人地址的模板",
+     await run(`(() => {
+        const el = amzdom.findAddressFormNameField(document);
+        return el ? el.value : null;
+     })()`), "");
+  eq("address-form 裸 querySelector 取到的确实是模板那一份(干扰项确实存在)",
+     await run(`document.querySelector("#address-ui-widgets-enterAddressFullName").value`),
+     "Priya Raman");
+  // 姓名框只是入口 —— **每一格**都得挑对。填进模板里那一份的后果:
+  // setInput 不报错、保存点下去什么都没发生,30 秒后 ADDRESS_FORM_TIMEOUT,
+  // 而地址其实一个字都没填进去。更坏的分支是模板里预填的地址被采用 = 寄给别人。
+  eq("address-form 每一格都挑到真表单那一份(模板里预填着别人的地址)",
+     await run(`(() => {
+        const S = amzdom.SEL.address;
+        const pick = (sel) => amzdom.pickFirstRendered(document, [sel]);
+        const raw = (sel) => document.querySelector(sel);
+        return {
+          picked: [S.phone, S.line1, S.city, S.postal].map((x) => pick(x).value),
+          naive:  [S.phone, S.line1, S.city, S.postal].map((x) => raw(x).value),
+          state:  [pick(S.state).options.length, raw(S.state).options.length],
+        };
+     })()`), {
+       picked: ["", "", "", ""],
+       naive: ["2065550147", "410 Terry Ave N", "Seattle", "98109"],
+       state: [4, 1],
+     });
+
+  // ⑧ 保存按钮的选择器带 #pagelet-layout-section 前缀 —— 模板里也有一个同 id 的
+  eq("address-form 保存按钮选到真表单里那个",
+     await run(`(() => {
+        const el = amzdom.pickFirstRendered(document, [amzdom.SEL.address.save]);
+        return el ? [el.value, el.closest("#pagelet-layout-section") !== null] : null;
+     })()`), ["Use this address", true]);
+
+  // ⑨ **保存之后三种结果谁先出现就处理谁。**
+  //    原先是 sleep(1200) 各看一眼的定时快照:弹窗晚出现 200ms 就整单失败,
+  //    而失败时地址其实已经填好了,重试还要从头再来一遍。
+  //    这一页是「刚点完保存、什么都还没出来」的状态 —— 三种都不成立。
+  eq("address-form 刚点完保存、还没出结果 → null", 
+     await run("amzdom.readAddressSaveOutcome(document)"), null);
+  // 关键的干扰项:校验提示节点与建议弹窗的壳子**一直在 DOM 里**。
+  // 只判「节点在不在」的话,每一单在第一次探测就会认定「弹窗出现了」,
+  // 于是去点一个折叠着的 radio、再点一次保存,来回三轮然后失败。
+  eq("address-form 建议弹窗的壳子确实在 DOM 里但折叠着(干扰项确实存在)",
+     await run(`(() => {
+        const el = document.querySelector(amzdom.SEL.address.suggestionPopup);
+        return [!!el, el.getClientRects().length === 0];
+     })()`), [true, true]);
+  eq("address-form 校验提示节点确实在 DOM 里但没有文字(干扰项确实存在)",
+     await run(`(() => {
+        const s = amzdom.SEL.address.validationAlerts;
+        return [s.every((x) => !!document.querySelector(x)),
+                s.every((x) => !document.querySelector(x).textContent.trim())];
+     })()`), [true, true]);
+
+  // 三种结果各自出现时都要认得出来
+  eq("address-form 校验提示有文字 → alerts",
+     await run(`(() => {
+        document.querySelector("#address-ui-widgets-enterAddressLine1-full-validation-alerts")
+                .textContent = "Please enter a street address";
+        return amzdom.readAddressSaveOutcome(document);
+     })()`), "alerts");
+  eq("address-form 建议弹窗展开 → suggestion",
+     await run(`(() => {
+        document.querySelector("#address-ui-widgets-enterAddressLine1-full-validation-alerts")
+                .textContent = "";
+        document.querySelector(amzdom.SEL.address.suggestionPopup).style.display = "block";
+        return amzdom.readAddressSaveOutcome(document);
+     })()`), "suggestion");
+  eq("address-form 收货地址栏出现 → saved(压过还开着的建议弹窗)",
+     await run(`(() => {
+        const d = document.createElement("div");
+        d.id = "deliver-to-address-text";
+        d.textContent = "Marcus Delgado, 1425 S Bristol St Apt 12B, Santa Ana, CA 92707";
+        document.body.appendChild(d);
+        return amzdom.readAddressSaveOutcome(document);
+     })()`), "saved");
+});
+
 // ── 订单历史 ────────────────────────────────────────────────────────
 await withFixture("order-history.html", async (run) => {
   const cards = await run("amzdom.readOrderCards(document)");

@@ -406,6 +406,75 @@ export function readPaymentLast4(doc: Document): string | undefined {
   return all ? all[all.length - 1] : undefined;
 }
 
+// ── 地址:结算页 → 地址选择页 → 异步注入的表单 ──────────────────────
+//
+// 这一段原先整个长在 amazon.ts 里(裸 querySelector + 时序混在一起),
+// 于是 test/dom.test.mjs 够不着 —— 地址是整条链路上唯一「填错了会把货寄给别人」
+// 的环节,而它的离线断言曾经是 **0 条**。下沉成纯函数就是为了能对着夹具验。
+//
+// 三个函数**全部走 isRendered**,不是 isHidden:结算页上那个折叠着的地址簿
+// (aok-hidden + display:none)里有一整套同名节点,包括一个「新建地址」<a>。
+// 只按标记判隐藏挡不住它 —— 实测(SP/wf/address_probe.mjs)那个 <a> 自己的
+// computed display 是 inline,父级才是 none。
+
+/** 输入:结算页 → 输出:「更改收货地址」入口,四条判据里第一个渲染出来的。
+ *  全落空返回 null —— 调用方**必须**据此报错,不许继续往下等。 */
+export function findAddressChangeEntry(doc: Document): HTMLElement | null {
+  return pickFirstRendered<HTMLElement>(doc, SEL.address.changeAddress);
+}
+
+/** 输入:地址选择页 → 输出:「新增地址」入口(渲染出来的那个)。
+ *
+ *  这个 id 在结算页折叠着的地址簿里也有一份。**先确认页面真的换到 /address 页**
+ *  再调它(amazon.ts 用 URL 判据把这件事挡在前面),这里的 isRendered 是第二道。 */
+export function findAddNewAddressEntry(doc: Document): HTMLElement | null {
+  return pickFirstRendered<HTMLElement>(doc, [SEL.address.addNew]);
+}
+
+/** 输入:任意页面 → 输出:地址表单的姓名输入框(渲染出来的那个)。
+ *
+ *  它是这条流上的两个判据合一:
+ *   · 结算页上有它 = 买家号还没有任何地址,Amazon 直接给了内联表单,不用点「更改」;
+ *   · 点完「新增地址」之后有它 = 那张**异步注入**的表单到位了。
+ *
+ *  必须走 isRendered:Amazon 的地址表单是从隐藏模板克隆出来的,
+ *  页面上常同时存在一份 display:none 的副本(见 address-form-async.html 夹具)。
+ *  取到隐藏那份的后果是 setInput 往一个没人看的 DOM 里写字,然后保存按钮点下去
+ *  什么都没发生 —— 表现是 ADDRESS_FORM_TIMEOUT,而地址其实一个字都没填进去。 */
+export function findAddressFormNameField(doc: Document): HTMLInputElement | null {
+  return pickFirstRendered<HTMLInputElement>(doc, [SEL.address.fullName]);
+}
+
+/** 输入:地址选择页 → 输出:地址列表区(渲染出来的那个)。 */
+export function findAddressSection(doc: Document): HTMLElement | null {
+  return pickFirstRendered<HTMLElement>(doc, [SEL.address.section]);
+}
+
+/** 点完保存之后,页面上出现的是哪一种结果。三种之外返回 null(还没出结果)。
+ *
+ *  `saved`      收货地址栏出现了 = 地址已生效
+ *  `alerts`     表单校验提示有文字 = 得再点一次保存
+ *  `suggestion` Amazon 的地址建议弹窗出现了 = 得先选「原始地址」
+ *
+ *  **三条都要求「渲染出来」而不是「节点在」。** Amazon 把建议弹窗的壳子和三条
+ *  校验提示节点一直留在 DOM 里(见 address-form-async.html 夹具),只判
+ *  `querySelector(...)` 非空的话,每一单在保存后的第一次探测就会认定
+ *  「弹窗出现了」,于是去点一个折叠着的 radio、再点一次保存,来回三轮然后失败。
+ *  校验提示那一条还要额外要求**有文字**:空壳节点是常态。
+ *
+ *  做成纯函数是为了能对着夹具验 —— 这三种结果原先是 amazon.ts 里两段
+ *  `sleep(1200)` 之后各看一眼的快照,一条离线断言都覆盖不到。 */
+export type AddressSaveOutcome = "saved" | "alerts" | "suggestion";
+
+export function readAddressSaveOutcome(doc: Document): AddressSaveOutcome | null {
+  if (doc.querySelector(SEL.checkout.addressText)) return "saved";
+  for (const sel of SEL.address.validationAlerts) {
+    if (text(pickFirstRendered(doc, [sel]))) return "alerts";
+  }
+  if (pickFirstRendered(doc, [SEL.address.suggestionPopup])) return "suggestion";
+  return null;
+}
+
 // ── 「选择器坏了」还是「页面慢」 ──────────────────────────────────────
 
 /** 一组选择器一个都没给出可用元素时,到底是哪种情况。 */
