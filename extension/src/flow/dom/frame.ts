@@ -27,11 +27,16 @@ const HOST_HIDDEN_CSS =
   "position:fixed;left:-10000px;top:0;width:1280px;height:900px;" +
   "pointer-events:none;opacity:0.01;z-index:-1";
 
-/** 露出来的样子:居中、可点、盖在页面之上。只有一种情况会用到 ——
- *  Amazon 把结算 iframe 导到了发卡行的验证页,得让操作员真的够得着它。 */
+/** 露出来的样子:可点、盖在页面之上。只有一种情况会用到 ——
+ *  Amazon 把结算 iframe 导到了发卡行的验证页,得让操作员真的够得着它。
+ *
+ *  **不是在整个视口里居中**:面板固定在右侧 380px(content/styles.ts 的 .wrap),
+ *  真居中的话这个窗口会把面板盖住,而面板上那条倒计时正是在说
+ *  「你还有多久、超时会怎样」—— 把它挡掉等于只剩一半话。
+ *  所以居中的是「面板左边那块地方」。 */
 const HOST_SHOWN_CSS =
-  "position:fixed;left:50%;top:5vh;transform:translateX(-50%);" +
-  "width:min(1280px,96vw);height:min(900px,88vh);" +
+  "position:fixed;left:calc(50% - 200px);top:5vh;transform:translateX(-50%);" +
+  "width:min(1100px,calc(100vw - 420px));height:min(900px,88vh);" +
   "pointer-events:auto;opacity:1;z-index:2147483646;" +
   "background:#fff;box-shadow:0 24px 64px rgba(0,0,0,.35);border-radius:10px;overflow:hidden";
 
