@@ -23,25 +23,31 @@ from services import error_codes, task_admin
 #: 一条自动重试在时间线上必须一眼看出没有人参与,不能借用某个运营的名字。
 OPERATOR = "auto_retry"
 
-#: 选单条件。前六条是**这一张单**够不够格,六条同时成立才算数,少任何一条都可能
+#: 选单条件。前七条是**这一张单**够不够格,七条同时成立才算数,少任何一条都可能
 #: 变成重复下单或者无限重试:
 #:   ① status = 'exception'  —— manual 不碰。manual 的含义就是「等人裁决」,
 #:      系统在这里替人做决定,那道闸就白设了
 #:   ② error_code ∈ RETRYABLE —— 页面慢/结构没等到这一类
 #:   ③ error_code ∉ POSSIBLY_ORDERED —— 见 _retryable_codes():两组按定义不交,
 #:      这里是第二道,防的是有人改了分组还没人发现
-#:   ④ retry_count < 上限 —— 界的是「同一张单重几次」
-#:   ⑤ 失败已经过了 backoff —— 立刻重拍只是拿同一个坏环境再撞一次
-#:   ⑥ 失败**没有太久**(AMZ_AUTO_RETRY_MAX_AGE_MIN)—— 见下
+#:   ④ **NOT may_have_ordered** —— 这一单没越过下单点。①②③ 合起来仍然拦不住它:
+#:      status 是**插件**在 /fail 里用自己算的 to_manual 定的,插件那侧漏判一次
+#:      (版本旧了、两边分叉、算错),一张点过下单按钮的单就会落成 exception,
+#:      而它的码恰恰在 RETRYABLE 里(run.ts 的 catch 直接用 DriverError 自己的码,
+#:      PLUGIN_INTERNAL / CART_MISMATCH 都在那一组)。那一轮的后果是
+#:      **定时任务自动重复下单**。这一列不经插件的判断,记的是它自己说过的话
+#:   ⑤ retry_count < 上限 —— 界的是「同一张单重几次」
+#:   ⑥ 失败已经过了 backoff —— 立刻重拍只是拿同一个坏环境再撞一次
+#:   ⑦ 失败**没有太久**(AMZ_AUTO_RETRY_MAX_AGE_MIN)—— 见下
 #:
-#: 第七道不属于任何一张单,属于这一轮:
-#:   ⑦ LIMIT batch —— 一轮最多放这么多条回队列
+#: 第八道不属于任何一张单,属于这一轮:
+#:   ⑧ LIMIT batch —— 一轮最多放这么多条回队列
 #:
-#: **⑥⑦ 拦的是同一件事:「有界」不能只界在单张任务上。** ④ 管的是同一张单重几次,
+#: **⑦⑧ 拦的是同一件事:「有界」不能只界在单张任务上。** ⑤ 管的是同一张单重几次,
 #: 管不了一轮放几张单 —— 所有者第一次把 AMZ_AUTO_RETRY_MAX 从 0 改成 N 的那一轮,
 #: 库里积着的**全部历史** exception 的 retry_count 都是 0、都早过了 backoff,
-#: 于是一轮全部退回队列,插件挨个在亚马逊上重拍一遍。⑦ 把这一批摊到多轮里
-#: (照 services/shipment.py 那条 LIMIT 的先例),⑥ 才是真正拦住它的那一道:
+#: 于是一轮全部退回队列,插件挨个在亚马逊上重拍一遍。⑧ 把这一批摊到多轮里
+#: (照 services/shipment.py 那条 LIMIT 的先例),⑦ 才是真正拦住它的那一道:
 #: 攒了几个月的失败单早就在别处被处置掉了,不该由一条定时任务替人重新买回来。
 #: 「跑之前先 --dry-run 看看会动到谁」是给人的提醒,不是护栏 —— 它靠人记得敲。
 #:
@@ -57,6 +63,7 @@ SELECT t.id, t.upstream_order_no, t.error_code, t.retry_count, t.updated_at,
  WHERE t.status = 'exception'
    AND t.error_code = ANY(%(codes)s)
    AND NOT (t.error_code = ANY(%(never)s))
+   AND NOT t.may_have_ordered
    AND t.retry_count < %(max)s
    AND t.updated_at < now() - make_interval(mins => %(backoff)s)
    AND t.updated_at > now() - make_interval(mins => %(max_age)s)
@@ -126,7 +133,7 @@ def candidates(conn, *, cfg: dict[str, Any] | None = None) -> list[dict[str, Any
 def retry_one(conn, task_id: int, *, cfg: dict[str, Any] | None = None) -> dict[str, Any]:
     """输入:任务 id → 输出:{task_id, attempt, max, was_error_code};不够格抛 AdminRefused。
 
-    选单那六条在这里**一条不少地再判一遍**,不信任调用方递过来的那一行:选单和执行
+    选单那七条在这里**一条不少地再判一遍**,不信任调用方递过来的那一行:选单和执行
     之间隔着一段时间,期间插件可能已经把这条任务领走了,人也可能已经手工处置过。
     照着一份过期快照去重置,重的就是另一条任务的状态。
 
@@ -147,8 +154,8 @@ def retry_one(conn, task_id: int, *, cfg: dict[str, Any] | None = None) -> dict[
     codes = set(_retryable_codes())
 
     row = conn.execute(
-        """SELECT id, status, error_code, retry_count,
-                  -- 与 _CANDIDATE_SQL 的 ⑤⑥ 互为反面,边界要对齐:
+        """SELECT id, status, error_code, retry_count, may_have_ordered,
+                  -- 与 _CANDIDATE_SQL 的 ⑥⑦ 互为反面,边界要对齐:
                   -- 那边放行的是 backoff 之前、max_age 之后,这两个就是它们的否定。
                   updated_at >= now() - make_interval(mins => %(backoff)s) AS too_fresh,
                   updated_at <= now() - make_interval(mins => %(max_age)s) AS too_old
@@ -166,6 +173,15 @@ def retry_one(conn, task_id: int, *, cfg: dict[str, Any] | None = None) -> dict[
         raise task_admin.AdminRefused(
             "POSSIBLY_ORDERED",
             f"{row['error_code']} 可能已经在亚马逊上下过单,永远不自动重试")
+    if row["may_have_ordered"]:
+        # 上面那条按**码**判,这条按**事实**判:下单按钮点过了。
+        # 两条都要有 —— 越过下单点之后抛 DriverError 落下来的码在 RETRYABLE 里,
+        # 上面那条对它一句话都说不上。reset_to_queue 那道 NEEDS_ACK 是最后一道
+        # (by="auto" 连带回执的资格都没有),但让定时任务撞到那道闸才被拒,
+        # 意味着每一轮都会有一批「够格却被拒」——这里直接不选它。
+        raise task_admin.AdminRefused(
+            "POSSIBLY_ORDERED",
+            "这一单已经越过下单点(下单按钮点过了),永远不自动重试")
     if row["error_code"] not in codes:
         raise task_admin.AdminRefused(
             "NOT_RETRYABLE", f"{row['error_code']} 不在可自动重试的那一组里")

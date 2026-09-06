@@ -64,10 +64,25 @@ def claim(req: schemas.ClaimReq, conn=Depends(conn_ctx)) -> schemas.Envelope:
 def events(task_id: int, req: schemas.EventsReq, conn=Depends(conn_ctx)) -> schemas.Envelope:
     inst = require_instance(conn, req.instance_uid)
     require_task_owned(conn, task_id, inst)
+    crossed = False
     for ev in req.events:
         task_event.record(conn, task_id, ev.kind, instance_id=inst["id"],
                           code=ev.code, payload=ev.payload)
-    return schemas.Envelope(ok=True, data={"recorded": len(req.events)})
+        # 「点击下单按钮」那一条。插件在 placeOrder() **之前**置位 mayHaveOrdered
+        # 并立刻报上来 —— 从这一刻起,这一单是可能已经花过钱的。
+        if ev.kind == "step" and ev.payload.get("may_have_ordered") is True:
+            crossed = True
+    if crossed:
+        # **与追加事件同一事务。** 分开写(比如另起一个连接、或者留给别处补)的话,
+        # 会出现「事件流里写着点过下单按钮、而闸门那一列还是 false」——
+        # 一条留了痕却没人认的痕,比不留更坏:看的人以为它管用。
+        #
+        # 只往 true 写,永远不写回 false:重置回队列不清它,「曾经花过钱」是既成事实。
+        conn.execute(
+            "UPDATE procure.tasks SET may_have_ordered = true "
+            " WHERE id = %s AND NOT may_have_ordered", (task_id,))
+    return schemas.Envelope(ok=True, data={"recorded": len(req.events),
+                                           "may_have_ordered": crossed})
 
 
 @router.post("/{task_id}/guard-check")

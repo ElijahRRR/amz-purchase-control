@@ -492,6 +492,7 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
                     </span>}
               </KV>
             )}
+            {t.may_have_ordered && <KV k="下单点"><Tag tone="solid-violet">已越过 · 下单按钮点过了</Tag><span className="text-xs text-zinc-500 ml-1.5">重置前必须有人去这个买家号的订单页确认</span></KV>}
             <KV k="创建时间"><span className="id text-xs">{fullTime(t.created_at)}</span></KV>
             <KV k="采购时间"><span className="id text-xs">{fullTime(t.purchased_at)}</span></KV>
             {retryHint && <Hint>{retryHint}</Hint>}

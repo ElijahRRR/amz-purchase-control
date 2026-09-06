@@ -129,6 +129,12 @@ export interface TaskDetail extends Omit<TaskRow, "carrier" | "tracking_no" | "s
    *  自动重试选单量的是同一把尺子,两把尺子对不上的话,界面就会在
    *  「系统还会再试」和「太久了,系统不会碰它」之间说错话。 */
   updated_age_seconds: number;
+  /** 这一单越没越过下单点(下单按钮点过了没有)。
+   *
+   *  与 error_code 是两件事:越过下单点之后抛 DriverError 落下来的码
+   *  在 RETRYABLE 那一组里(PLUGIN_INTERNAL / CART_MISMATCH),
+   *  光看码会把一张已经花过钱的单读成「重一下就过」。 */
+  may_have_ordered: boolean;
 }
 
 export interface InstanceRow {

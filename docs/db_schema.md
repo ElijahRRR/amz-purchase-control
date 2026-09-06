@@ -99,6 +99,7 @@
 | `error_code` | text | 结构化错误码，见 `01-系统设计.md` §4 |
 | `error_detail` | text | |
 | `retry_count` | integer | **系统**自动重试过几次（`workflows/task_retry.py` 每重一次 +1）。人工重置不计数——那一下背后有人在看，不该占掉机器的自动次数；但也不清零——清零等于让下一个点重置的人不知不觉又送出 N 次自动重拍。上限是「这一单一生里被自动重拍几次」，不是每轮几次。默认 `0` |
+| `may_have_ordered` | boolean | **这一单越过下单点了没有。** 插件在 `placeOrder()` **之前**置位 `mayHaveOrdered` 并立刻上报一条 `kind='step'`、`payload.may_have_ordered=true` 的事件，服务端收到就把这一列置 `true`（追加事件与置位在**同一事务**里——分开写的话，事件写进去了、置位回滚了，库里就会有一条说着「点了下单按钮」而闸门认不出来的任务）。**只增不减**：重置回队列不清它，「这一单曾经花过钱」是既成事实，不会因为它又排回队列而变回没花过。默认 `false` |
 
 **索引：**
 
@@ -135,6 +136,13 @@
 > 「这一单是谁又放回队列的」——而这个问题在出现重复下单时是第一个要问的。
 > 自动重试默认关（`AMZ_AUTO_RETRY_MAX=0`），且只吃 `RETRYABLE` 那一组，
 > `POSSIBLY_ORDERED` 永远走不到这条路（见 `services/task_retry.py`）。
+>
+> **「可能已下单」这道闸判两样东西，不是一样**：`error_code ∈ POSSIBLY_ORDERED`
+> **或** `may_have_ordered = true`。只判前者会漏掉一整类单——插件越过下单点之后
+> 抛的是 `DriverError`（`run.ts` 的 catch 直接用它自己的码，不兜底成
+> `ORDER_CONFIRM_TIMEOUT`），落库就是 `status=manual` + `error_code=PLUGIN_INTERNAL`：
+> 状态说「要人裁决」，码说「重一下就过」。判码的那道闸放行，人点一下重置，
+> 这张已经花过钱的单被再买一遍。人工重置、批量重置、自动重试三条路各判一次。
 
 ### `procure.task_products` — 商品行
 
