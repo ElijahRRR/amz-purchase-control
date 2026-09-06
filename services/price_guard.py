@@ -111,6 +111,14 @@ def adjudicate(
                        f"礼品卡抵扣读成负数 {gift},这个数不可信,不下单")
     goods = total + (gift or Decimal(0))
 
+    # 自洽记录**在任何 return 之前**算出来。它是非阻断信号,但恰恰在
+    # 「护栏正拿这个数拦单」的时候最该看得见:一张货款 2241.86、
+    # Σ单价×数量 只报上来 1.00(单价选择器半坏)的单被限价拦下时,
+    # 运营要判断的是「这单真超了」还是「基数读坏了」,而这句话是唯一的线索。
+    # 原先它写在下界与限价两条 return **之后**,于是那两条路上永远是 None ——
+    # 只有交期那几条阻断带得上它。
+    note = _consistency_note(line_items, goods)
+
     # 下界。判的是**货款**不是实付:礼品卡全额抵扣的单实付确实是 0.00,那是对的;
     # 而货款 0(或负)只有两种来源 —— 金额还在 shimmer,或者选择器读错了格子。
     # 没有礼品卡时 goods == total,所以这一条同时是「实付 0 不许放行」。
@@ -121,17 +129,15 @@ def adjudicate(
                        f"结算页货款读成 {goods}(实付 {total}"
                        + (f",礼品卡抵扣 {gift}" if gift is not None else "")
                        + "),这个数不可信,不下单",
-                       goods_total=goods, gift_card_amount=gift)
+                       goods_total=goods, gift_card_amount=gift, consistency_note=note)
 
     if goods > price_cap:
         return Verdict(
             False, "PRICE_CAP_EXCEEDED",
             f"货款 {goods} 超过限价 {price_cap}"
             + (f"(实付 {total},其中礼品卡抵扣 {gift})" if gift is not None else ""),
-            goods_total=goods, gift_card_amount=gift,
+            goods_total=goods, gift_card_amount=gift, consistency_note=note,
         )
-
-    note = _consistency_note(line_items, goods)
 
     # 结算页每个商品面板各有一条交期文案。整单什么时候到,取决于**最晚**的那件,
     # 所以取最晚的一条来判。解析放在这里而不是插件里:改解析规则不用发新插件版本。

@@ -201,8 +201,36 @@ def test_consistency_note_reports_unreadable_rows_instead_of_silently_skipping()
 
 
 def test_consistency_note_survives_a_block():
-    """被拦下的单也要带着这句话 —— 事后复盘时它常常是唯一的线索。"""
+    """被拦下的单也要带着这句话 —— 事后复盘时它常常是唯一的线索。
+
+    这条测试自己曾经是「看起来有人盯着」的那种:名字和 docstring 都说的是
+    consistency_note,断言里却一条 note 都没有,只断了 goods_total。
+    而当时的实现恰好在限价这条路上把 note 丢了(算它的那一句写在两条
+    return 之后),把 `_consistency_note` 整个改成 `return None` 这条照样绿。
+    """
     v = guard(price_cap=Decimal("10.00"),
               line_items=[{"asin": "A", "unit_price": "1.00", "quantity": 1}])
     assert v.allow is False and v.error_code == "PRICE_CAP_EXCEEDED"
     assert v.goods_total == Decimal("2241.86")
+    # 正在拿这个数拦单的时候最该看得见它:2241.86 的货款配上只报了 1.00 的单价,
+    # 要么是这单真超了,要么是基数读坏了 —— 这句话是区分两者的唯一线索。
+    assert v.consistency_note is not None
+    assert "1.00" in v.consistency_note and "2241.86" in v.consistency_note
+
+
+def test_consistency_note_survives_the_lower_bound_block_when_rows_are_unreadable():
+    """下界那条 return 也得带上它 —— 与限价那条同一个理由。
+
+    货款读成 0 时**没有百分比可算**(分母是它),那种情况 note 是 None 是
+    设计如此,不是漏了:一个「0 与 2241.86 差 ∞%」的句子帮不上任何人。
+    但「报上来的行本身就读不动」这一类与货款多少无关,必须照样带出来。
+    """
+    v = guard(actual_total="0.00",
+              line_items=[{"asin": "A", "unit_price": None, "quantity": 1}])
+    assert v.allow is False and v.error_code == "PLUGIN_INTERNAL"
+    assert v.consistency_note is not None and "读不动" in v.consistency_note
+
+    # 对照:行读得动、只是货款是 0 —— 这一档 note 就该是 None
+    v2 = guard(actual_total="0.00",
+               line_items=[{"asin": "A", "unit_price": "1299.99", "quantity": 1}])
+    assert v2.allow is False and v2.consistency_note is None
