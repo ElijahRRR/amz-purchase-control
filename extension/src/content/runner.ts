@@ -154,11 +154,19 @@ export class Runner {
     try {
       // busy 要**如实**报:正在跑单的标签页即使被切到后台、续租迟到,
       // 也不该被别的标签页把租约抢走(两单并行动同一个购物车)。
-      // 报的是相位而不是「这一轮 tick 在跑」—— 后者永远是 true,
-      // 那样任何一个空转的标签页都会声称自己在忙,这道判据就废了。
+      //
+      // 两个来源取或,缺一不可:
+      //  · `this.flight.busy` —— 此刻闸里有活。认领那一轮从 claim 到 return
+      //    之间相位会被 Loop 改成 claimed/running,但**在这之前**有一小段
+      //    (刚进闸、还没 claim 到)相位仍是上一轮留下的 idle;物流同步那一轮
+      //    也占着 iframe,同样不该让位。
+      //  · 相位 —— 兜住「闸已经放掉、但这一单还没落地」这类情况。
+      //
+      // 不能只写「这一轮 tick 在跑」:续租现在发生在闸**外面**,那一位永远是
+      // true,任何一个空转的标签页都会声称自己在忙,这道判据就废了。
       const got = await chrome.runtime.sendMessage({
         type: "amz.acquireRunner",
-        busy: BUSY_PHASES.has(this.phase),
+        busy: this.flight.busy || BUSY_PHASES.has(this.phase),
       });
       const ok = !!got?.granted;
       // 服务端说「这个买家号有单在等,而且该复检登录态了」。
@@ -175,22 +183,28 @@ export class Runner {
     }
   }
 
+  /** 续租 + 认领。
+   *
+   *  **续租在闸外面。** 一单能跑好几分钟(光发卡行验证那一段就有 6 分钟预算),
+   *  这期间闸一直是关着的 —— 把 lease() 关进闸里,租约在整单期间**一次都续不上**,
+   *  TTL 一到另一个标签页就把它接管走,两条 runTask 动同一个购物车。
+   *  那正是这道闸要堵的洞,却被闸自己堵死了。
+   *
+   *  放在闸外面不构成 TOCTOU:SingleFlight.run 的检查与置位之间没有 await,
+   *  两个定时器同时 await 完租约,也只有一个能进闸(另一个 run 直接返回 false)。 */
   async tick(): Promise<void> {
     if (!this.loop || this.cfg?.mode === "off") return;
-    // 单飞闸的检查与置位在 SingleFlight.run 里,中间没有 await;
-    // **要租约那一步必须在闸里面**(原先它在外面 —— 那就是一个 TOCTOU:
-    // 两个定时器可以双双 await 到租约再一起往下走)。
+    if (!(await this.lease())) return;
     await this.flight.run(async () => {
-      if (!(await this.lease())) return;
       await this.loop!.tickOnce();
     });
   }
 
   async tickShipments(): Promise<void> {
     if (!this.loop || this.cfg?.mode === "off") return;
+    if (!(await this.lease())) return;
     // 与认领共用同一道闸:两条流都要开 iframe,同时跑会互相抢焦点。
     await this.flight.run(async () => {
-      if (!(await this.lease())) return;
       await this.loop!.tickShipments();
     });
   }

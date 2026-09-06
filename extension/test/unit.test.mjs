@@ -352,6 +352,72 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
   check("被掐掉的那一单落地之后恢复认领", after.kind === "ran", after.kind);
 }
 
+// ── 长单期间租约必须一直续得上(R1) ────────────────────────────────────
+//
+// 这一段把 content/runner.ts 的 tick() / lease() 那十来行搬过来跑。Runner 本体
+// 全是 chrome API,`npm run build:node` 不编译 src/content,在 Node 里驱动不了;
+// 但**闸与裁决用的都是真的编译产物**(SingleFlight / decideLease),搬过来的只有
+// 「先续租、再进闸」这个形状。下面「接线本身」那一节的源码正则钉住 runner.ts
+// 里确实是这个形状 —— 两条合起来才算数,单独看哪一条都不够。
+//
+// 修之前:lease() 被关在 flight.run 的 job 里,而 job 在一单跑完之前不会再被
+// 调用一次 → 整单期间租约一次都不续,TTL 一到另一个标签页接管,两条 runTask
+// 动同一个购物车。而且它报的 busy 是**上一轮 tick 结束时**留下的相位,
+// 长单期间恒为 false ——「持有者忙就不让位」那道闸在真实链路上是死的。
+{
+  const RULES = { ttlMs: 300_000, busyGraceMs: 600_000 };
+  const BUSY_PHASES = new Set(["claimed", "running", "confirm", "verify"]);
+
+  let now = 0;
+  let stored = null;                    // SW 那边的 chrome.storage.session
+  const acquire = (tabId, busy) => {
+    const v = decideLease(stored, { tabId, busy, now, holderAlive: true }, RULES);
+    if (v.granted && v.next) stored = v.next;
+    return v.granted;
+  };
+
+  const mkTab = (tabId) => {
+    const r = { tabId, phase: "off", flight: new SingleFlight(() => {}),
+                renews: 0, busyReports: 0 };
+    r.lease = async () => {
+      const busy = r.flight.busy || BUSY_PHASES.has(r.phase);
+      r.renews += 1;
+      if (busy) r.busyReports += 1;
+      return acquire(r.tabId, busy);
+    };
+    r.tick = async (job) => {                       // runner.tick() 的形状
+      if (!(await r.lease())) return;
+      await r.flight.run(job);
+    };
+    return r;
+  };
+
+  const A = mkTab(1), B = mkTab(2);
+  let finish;
+  const longTask = new Promise((res) => { finish = res; });
+  let bRuns = 0;
+
+  // A 领到一单,Amazon 转到发卡行验证页 —— 这一单要跑 6 分钟。
+  const first = A.tick(async () => { A.phase = "running"; await longTask; A.phase = "done"; });
+  await new Promise((r) => setTimeout(r, 0));
+  A.phase = "verify";
+
+  // 之后每 10 秒两个标签页各 tick 一次,一直到第 6 分钟。
+  for (now = 10_000; now <= 6 * 60_000; now += 10_000) {
+    await A.tick(async () => {});
+    await B.tick(async () => { bRuns += 1; });
+  }
+
+  check("整单期间 A 一直在续租", A.renews > 30, `只续了 ${A.renews} 次`);
+  check("续租时如实报了「手里有活」", A.busyReports > 30, `只报了 ${A.busyReports} 次`);
+  eq("另一个标签页整段时间一次都没跑起来", bRuns, 0);
+  eq("租约始终在 A 手里", stored.tabId, 1);
+  check("租约里记着持有者在忙", stored.busy === true);
+
+  finish();
+  await first;
+}
+
 // ── 接线本身(只验得到源码这一层,说清楚) ──────────────────────────────
 //
 // content/runner.ts 与 background/service-worker.ts 里全是 chrome API,
@@ -365,10 +431,11 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
         /setConfig\([^)]*\)\s*:\s*void\s*\{[\s\S]{0,200}?this\.flight\.offer\(/.test(runnerSrc));
   check("认领与物流两条流都跑在同一道闸里",
         (runnerSrc.match(/this\.flight\.run\(/g) ?? []).length === 2);
-  check("要租约那一步在闸**里面**(不然是个 TOCTOU)",
-        /this\.flight\.run\(async \(\) => \{\s*\n\s*if \(!\(await this\.lease\(\)\)\)/.test(runnerSrc));
-  check("续租时如实报「这个标签页手里有没有单」",
-        /busy: BUSY_PHASES\.has\(this\.phase\)/.test(runnerSrc));
+  check("续租在闸**外面**(闸关着的整单期间也要续得上)",
+        (runnerSrc.match(/if \(!\(await this\.lease\(\)\)\) return;/g) ?? []).length === 2 &&
+        !/this\.flight\.run\(async \(\) => \{[\s\S]{0,160}?this\.lease\(/.test(runnerSrc));
+  check("续租时如实报「这个标签页手里有没有活」",
+        /busy: this\.flight\.busy \|\| BUSY_PHASES\.has\(this\.phase\)/.test(runnerSrc));
 
   const swSrc = readFileSync(join(here, "..", "src", "background", "service-worker.ts"), "utf8");
   check("租约落 chrome.storage.session,不再活在模块级变量里",
