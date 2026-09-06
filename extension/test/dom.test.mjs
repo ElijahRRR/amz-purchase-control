@@ -817,6 +817,42 @@ await withFixture("order-details-cancelled.html", async (run) => {
         await run("!!document.querySelector('#orderDetails')"));
 });
 
+// 「已取消」的**第二种渲染形态**:没有告警框,状态写在
+// #shipment-top-row .a-color-base.od-status-message 里,文案里也没有 refund。
+// 厂商 v2.5.3:4057-4070 专门补这一档 —— 补这一档本身就说明线上已经出现了。
+// 实测(SP/wf/orderstate_probe.mjs):这一形态我们原先判 "ok",厂商判 cancelled。
+// 判成 ok 的后果是一张已取消的订单被当成正常单继续同步物流,而没有任何地方报错。
+await withFixture("order-details-cancelled-status.html", async (run) => {
+  eq("order-details 只有 od-status-message 时也判为已取消",
+     await run("amzdom.readOrderState(document)"), "cancelled");
+  // 干扰项自己也得验:这一页确实没有告警框、文案里也确实没有 refund。
+  // 不然上面那条即使实现没补这一档也可能靠旧判据蒙对。
+  eq("这一页确实没有 .a-alert-heading(干扰项确实存在)",
+     await run(`document.querySelectorAll(".a-alert-heading").length`), 0);
+  eq("这一页的 #shipment-top-row 里确实没有 refund 字样(干扰项确实存在)",
+     await run(`/refund/i.test(document.querySelector("#shipment-top-row").textContent)`), false);
+
+  // 卡尾号的第二形态(厂商 v253:4399,2.4.1 起就有,是我们漏掉的老形态)。
+  // 落空的表现是 payment_last4 一列静静全空 —— 没有任何地方说「选择器坏了」。
+  eq("这一页确实没有 .pmts-payments-instrument-details(干扰项确实存在)",
+     await run(`document.querySelectorAll(".pmts-payments-instrument-details").length`), 0);
+  eq("order-details 卡尾号走第二形态也能读到,且不取文案里先出现的 4 位数",
+     await run("amzdom.readOrderPaymentLast4(document)"), "4417");
+
+  // 状态行判据是两条:厂商那条精确到 `.a-color-base`,我们补的第二条只要
+  // `.od-status-message`。`a-color-base` 是纯配色工具类,Amazon 换一版主题就可能不一样,
+  // 而 `od-status-message` 才是语义所在。**这一条放在本节最后** ——
+  // 它会改掉夹具的 class,后面不能再有依赖原 class 的断言。
+  eq("order-details 配色类被换掉后,第二条判据仍然兜得住",
+     await run(`(() => {
+        const el = document.querySelector(".od-status-message");
+        el.classList.remove("a-color-base");
+        el.classList.add("a-color-tertiary");
+        return [document.querySelectorAll("#shipment-top-row .a-color-base.od-status-message").length,
+                amzdom.readOrderState(document)];
+     })()`), [0, "cancelled"]);
+});
+
 await withFixture("order-details-notfound.html", async (run) => {
   // 这一页**没有** #orderDetails。只等 #orderDetails 的写法会在这里干等到超时
   eq("order-details-notfound 判为打不开",
@@ -858,6 +894,30 @@ await withFixture("tracking.html", async (run) => {
      { c: null, s: null });
   // 日期分组跨了三组,最后一条该落在最早那一天
   eq("tracking 最后一条的日期分组", ev[ev.length - 1].raw_day, "August 24, 2026");
+});
+
+// 跟踪页只渲染了事件区(轨迹已经在更新、顶部 delivery card 还没画出来或被折叠)。
+// 原先两条判据都落空 → readTrackingNumber 返回 null,而这一单在库里跟
+// 「还没发货」长得一模一样,没有任何地方说「选择器坏了」。
+// 第三条 `.tracking-event-trackingId-text h4` 出自厂商 v253:4851,2.4.1 起就有。
+await withFixture("tracking-events-only.html", async (run) => {
+  eq("tracking 只有事件区时也读得到运单号",
+     await run("amzdom.readTrackingNumber(document)"), "9400111899223197428431");
+  eq("tracking 原先那两条在这张页上确实都落空(干扰项确实存在)",
+     await run(`(() => {
+        const vis = (s) => [...document.querySelectorAll(s)]
+          .filter((e) => e.getClientRects().length > 0).length;
+        return [vis(".pt-delivery-card-trackingId"), vis("#carrierRelatedInfo-container > div h4")];
+     })()`), [0, 0]);
+  // 隐藏模板里那个占位号排在最前:读到它比读不到更坏 ——
+  // 一个假运单号会被当成真的写进库,物流同步从此追一个不存在的包裹。
+  eq("tracking 没读到隐藏模板里的占位运单号(干扰项确实存在)",
+     await run(`document.querySelector(".pt-delivery-card-trackingId").textContent.includes("0000000000000000")`),
+     true);
+  // 这一页 #primaryStatus 在,所以「跟踪页就绪」成立 ——
+  // 也就是说它不会超时,会安安静静地返回一个没有运单号的结果
+  eq("tracking 这一页确实算「就绪」(所以不会靠超时暴露)",
+     await run(`!!document.querySelector("#primaryStatus")`), true);
 });
 
 await withFixture("tracking-delivered.html", async (run) => {

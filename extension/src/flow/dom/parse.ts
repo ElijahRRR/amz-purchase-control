@@ -555,7 +555,16 @@ export function readOrderState(doc: Document): OrderState {
   const heading = Array.from(doc.querySelectorAll(SEL.orderDetails.alertHeading))
     .map(text).join(" | ");
   if (/unable to load your order details/i.test(heading)) return "not_found";
-  if (/cancell?ed/i.test(heading)) return "cancelled";
+  // 「已取消」有两种渲染形态,判据要把两种都盖住:
+  //   ① 顶部的告警框 .a-alert-heading(报告 §4.3 记的那种);
+  //   ② #shipment-top-row 里的状态行 od-status-message —— 厂商 v2.5.3:4057-4070
+  //      专门补的一档,说明线上已经出现了不带告警框的取消页。
+  // 实测(SP/wf/orderstate_probe.mjs,对着我们自己的 dist/domkit.js 跑):
+  // 只有 ② 的那种形态,我们原先判 "ok",厂商判 cancelled ——
+  // 一张已经取消的订单会被当成正常单继续同步物流。
+  // US 站不需要厂商正则里的 キャンセル / annul[ée](CLAUDE.md:首期只做 US)。
+  const status = text(pickFirstRendered(doc, SEL.orderDetails.statusMessage));
+  if (/cancell?ed/i.test(`${heading} | ${status}`)) return "cancelled";
   const top = text(doc.querySelector(SEL.orderDetails.shipmentTopRow));
   if (/refund/i.test(top)) return "cancelled";
   return doc.querySelector(SEL.orderDetails.root) ? "ok" : "loading";
@@ -604,7 +613,7 @@ export function last4FromText(t: string): string | undefined {
 }
 
 export function readOrderPaymentLast4(doc: Document): string | undefined {
-  return last4FromText(text(doc.querySelector(SEL.orderDetails.paymentDetails)));
+  return last4FromText(firstText(doc, SEL.orderDetails.paymentDetails));
 }
 
 /** 一组选择器里第一个取到非空文本的。
@@ -664,7 +673,7 @@ export function isTrackingUnavailable(doc: Document): boolean {
 // ── 包裹跟踪页 ───────────────────────────────────────────────────────
 
 export function readTrackingNumber(doc: Document): string | null {
-  const el = visible(doc, SEL.tracking.trackingId) ?? visible(doc, SEL.tracking.trackingIdFallback);
+  const el = pickFirstRendered(doc, SEL.tracking.trackingIds);
   const m = /tracking\s*id:?\s*([A-Za-z0-9]+)/i.exec(text(el));
   if (m) return m[1];
   // 退化选择器那条常常只有号本身,没有 "Tracking ID:" 前缀

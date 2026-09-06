@@ -294,6 +294,7 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
   }
 
   // ── 回读购物车 ───────────────────────────────────────────────────
+
   /** 上一次 verifyCart 读到的行,给 run.ts 写进 CART_MISMATCH 的现场用(CartReadReporter)。 */
   private cartRead: CartLine[] = [];
   lastCartRead(): CartLine[] { return this.cartRead; }
@@ -768,7 +769,7 @@ export class AmazonShipmentReader implements ShipmentReader {
                       // 三个选择器一个都等不到,只能干等满 30 秒。
                       // 一批 20 单全是这种,就是白等 10 分钟。
                       () => isTrackingUnavailable(f.doc()) ||
-                            f.doc().querySelector(SEL.tracking.trackingId) ||
+                            SEL.tracking.trackingIds.some((x) => f.doc().querySelector(x)) ||
                             f.doc().querySelector(SEL.tracking.primaryStatus) ||
                             f.doc().querySelector(SEL.tracking.eventsContainer),
                       { timeoutMs: 30_000 });

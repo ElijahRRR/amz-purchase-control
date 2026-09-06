@@ -200,9 +200,27 @@ export const SEL = {
     root: "#orderDetails",
     alertHeading: ".a-alert-heading",
     shipmentTopRow: "#shipment-top-row",
+    /** 订单状态行的第二形态。第一条出自**厂商 v2.5.3:4067(这一版新增)** ——
+     *  他们专门补这一档,说明线上已经出现了「状态不在 .a-alert-heading 里」的页面。
+     *
+     *  第二条是同一条判据去掉 `.a-color-base`:那是个纯配色工具类,
+     *  Amazon 换一版主题就可能不一样,而 `od-status-message` 才是语义所在。
+     *
+     *  不裸取 `#shipment-top-row` 的原因:那一整块里混着运单号、商品名、
+     *  按钮文案,拿它去判 /cancell?ed/ 会被稀释(也会被别的词误伤)。 */
+    statusMessage: [
+      "#shipment-top-row .a-color-base.od-status-message",
+      "#shipment-top-row .od-status-message",
+    ],
     subtotalRow: "#od-subtotals .a-row.od-line-item-row",
     productLinks: ".a-fixed-left-grid-col.a-col-right .a-row .a-link-normal",
-    paymentDetails: ".pmts-payments-instrument-details",
+    /** 订单详情页上的卡尾号。第二条出自**厂商 v2.5.3:4399**,verify_origin 确认
+     *  2.4.1 起三版都有 —— 是我们照抄报告时漏掉的一条老形态,不是新形态。
+     *  落空的表现是 payment_last4 一列静静全空,没有任何地方报「选择器坏了」。 */
+    paymentDetails: [
+      ".pmts-payments-instrument-details",
+      '[data-component="viewPaymentPlanSummaryWidget"] > div [data-testid="method-details-number"]',
+    ],
     /** 跟踪链接的**兜底** class 选择器。
      *
      * 正常路径是直接按 href 找(见 parse.findTrackingLink)——
@@ -232,8 +250,17 @@ export const SEL = {
      * 顺带省掉 30 秒:不认它的话,三个就绪选择器一个都等不到,
      * 只能干等满超时。一批 20 单就是白等 10 分钟。 */
     unavailableText: "unable to get the tracking information",
-    trackingId: ".pt-delivery-card-trackingId",
-    trackingIdFallback: "#carrierRelatedInfo-container > div h4",
+    /** 运单号的三种形态。中间那条出自**厂商 v2.5.3:4851**(extractTrackingEvents 里),
+     *  verify_origin 确认 2.4.1 起三版都有 —— 同样是我们照抄报告时漏掉的老形态。
+     *
+     *  漏掉它的表现:跟踪页只渲染了事件区(轨迹已经在更新、顶部的 delivery card
+     *  还没画出来或被折叠)时,前后两条都落空 → readTrackingNumber 返回 null
+     *  → 这一单在库里长得跟「还没发货」一模一样。 */
+    trackingIds: [
+      ".pt-delivery-card-trackingId",
+      ".tracking-event-trackingId-text h4",
+      "#carrierRelatedInfo-container > div h4",
+    ],
     cardWrapper: ".pt-delivery-card-wrapper",
     cardSmall: ".pt-delivery-card-wrapper .a-spacing-small",
     promiseNowrap: ".pt-promise-main-slot .nowrap",
