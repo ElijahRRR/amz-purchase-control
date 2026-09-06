@@ -35,7 +35,18 @@ export interface RunDeps {
   client: Client;
   driver: PageDriver;
   log: Log;
-  /** 下单前是否停下来等人按。默认 true —— 花钱这一步永远有预览。 */
+  /** 下单前是否停下来等人按。**只有真的传了 askConfirm 才有意义。**
+   *
+   *  ⚠️ 现状:全仓**没有任何调用点提供 askConfirm**(content/runner.ts 构造 Loop 时
+   *  没传),所以这一步实际不发生,core/status 里的 `confirm` 相位是死代码。
+   *  这条注释原先写着「默认 true —— 花钱这一步永远有预览」,那是一句
+   *  系统不会兑现的承诺,比不写更坏。
+   *
+   *  要接上的话,难的不是弹窗,是**等待必须有界**:人一直不按怎么办?
+   *  超时默认「取消 → 清车 → 退回队列」是个说得通的答案,但它意味着
+   *  「操作员去吃了个饭」和「他看了一眼觉得不对」落成同一个结果,
+   *  而且那个上界还要和服务端的认领超时对齐(与 placeOrder 的硬顶同一条道理)。
+   *  那是一个要单独定的决定,不在这一轮里顺手做。 */
   confirmBeforeOrder?: boolean;
   /** 预览步的应答。返回 false 表示人按了取消。 */
   askConfirm?: (task: Task, reading: { total: string; deliveryRaw?: string }) => Promise<boolean>;
