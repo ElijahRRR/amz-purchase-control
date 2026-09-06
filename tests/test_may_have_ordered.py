@@ -60,6 +60,67 @@ def _flag(conn, task_id) -> bool:
                         (task_id,)).fetchone()["may_have_ordered"]
 
 
+# ── 契约的另一半:插件真的发了那条 step 吗 ──────────────────────────────
+
+#: 服务端认的键名。四道闸(人工重置 / 批量重置 / 自动重试选单 / release)全都挂在
+#: 它身上,所以它在这里出现一次,底下两条测试拿它去比两侧。
+CROSS_KEY = "may_have_ordered"
+CROSS_STEP = "点击下单按钮"
+
+
+def test_the_server_and_the_design_doc_agree_on_the_key_name():
+    """键名在服务端与 docs/01 §5.4 里必须是同一个词。
+
+    这一条是绿的那一半:它盯的是「我们自己写下的契约与我们自己的实现对不对得上」。
+    """
+    from registry import paths
+
+    route = (paths.repo_root() / "server" / "routes" / "tasks.py").read_text(encoding="utf-8")
+    doc = (paths.repo_root() / "docs" / "01-系统设计.md").read_text(encoding="utf-8")
+    assert f'payload.get("{CROSS_KEY}")' in route
+    assert CROSS_KEY in doc and CROSS_STEP in doc
+
+
+def test_the_plugin_really_sends_the_step_that_arms_those_gates():
+    """**这一条盯的是插件那一侧。**
+
+    服务端那四道闸没有一道是自己看出来「这一单越过下单点了」的 —— 它们全都在等
+    `extension/src/flow/run.ts` 在 `placeOrder()` 之前发的那条 step,而且认的是
+    payload 里 `may_have_ordered` 这个**键名**。键名一旦不同(按 TS 习惯写成
+    `mayHaveOrdered`),或者那一行压根没写,`payload.get("may_have_ordered") is True`
+    恒为 False:库里那一列永远是 false,四道闸里那个 `or crossed` 恒假,
+    **这道闸退化成一块永远不动的招牌** —— 而库里那一列、运营台上那一行、
+    docs/01 §5.4 整节都在说它管用。
+
+    本文件其余的测试全部自己用 HTTP 合成那条事件,所以一条都不会红。
+    这与 tests/test_login_state.py 记的那次事故完全同型(「插件那份副本没人比过,
+    19 个悄悄分叉了 10 个」),解法也照它:拿源码去比。
+    """
+    from registry import paths
+
+    src = (paths.repo_root() / "extension" / "src" / "flow" / "run.ts").read_text(encoding="utf-8")
+    place = src.find("driver.placeOrder(")
+    assert place > 0, "run.ts 里找不到 driver.placeOrder( —— 这条测试的锚点没了,先来修锚点"
+    before = src[:place]
+
+    # 用 pytest.fail 而不是 assert:`assert x in src` 失败时 pytest 会把整个
+    # run.ts 的内容打进报告里,真正要说的那句话被淹掉。
+    if CROSS_KEY not in before:
+        pytest.fail(
+            f"extension/src/flow/run.ts 在 driver.placeOrder() 之前没有上报 "
+            f"{CROSS_KEY!r}。服务端那四道闸(人工重置 / 批量重置 / 自动重试选单 / "
+            f"release)全靠这条 step 置位 tasks.may_have_ordered —— 插件不发,"
+            f"四道闸就都是摆设,而界面和文档都在说它管用。\n"
+            f"照契约补上这一行(mayHaveOrdered 置位之后、placeOrder 之前):\n"
+            f'    await step("{CROSS_STEP}", {{ {CROSS_KEY}: true }});\n'
+            f"注意是下划线的 {CROSS_KEY},不是 TS 习惯的 mayHaveOrdered —— "
+            f"服务端按字面取这个键。"
+        )
+    if CROSS_STEP not in before:
+        pytest.fail(f"那条 step 的名字要是 {CROSS_STEP!r} —— "
+                    f"事件时间线上人是照这个名字找它的")
+
+
 # ── 事件 → 库里那一列 ────────────────────────────────────────────────────
 
 def test_the_step_event_sets_the_column_in_the_same_request(client, conn, seed):
