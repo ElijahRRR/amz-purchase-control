@@ -901,6 +901,96 @@ await withFixture("address-form-async.html", async (run) => {
      })()`), [true, null, "suggestion"]);
 });
 
+// ── 地址保存的「三轮对抗」:每一轮动作之后要等的是「状态真的变了」 ──────
+//
+// 这一节验的不是纯函数,是 fillAddress 那段循环的**时序**:让驱动对着夹具
+// 真跑一遍,自己填字、自己点保存、自己等结果。上面那些断言一条都够不着这里 ——
+// 循环写坏时(动完手立刻重读同一个状态)全部纯函数断言照样绿,而线上每一单都失败。
+//
+// waitFor 的第一次探测是同步的,所以「点完保存立刻重读」读到的必然还是刚才
+// 那个弹窗 —— 三轮在同一毫秒里烧光、保存按钮被连点 4 次、30 秒预算用掉 9%,
+// 而最后一次保存的结果从来没有被等过,抛出来那句「反复出现」一次都没等过。
+//
+// 页面上同时摆着一条**旧地址**:就地弹窗那条路上文档一直是结算页,
+// saved 若只看「地址栏在不在」,第一拍就判成功,弹窗整段处理直接跳过。
+//
+// reactions[k] = 第 k+1 次点保存之后,过 delay 毫秒页面变成什么样。
+async function fillAddressDrill(run, reactions) {
+  return run(`(async () => {
+    const REACT = ${JSON.stringify(reactions)};
+    const bar = document.createElement("div");
+    bar.id = "deliver-to-address-text";
+    bar.textContent = "Priya Raman, 410 Terry Ave N, Seattle, WA 98109";   // 别人的旧地址
+    document.body.appendChild(bar);
+    // 提交会让页面导航走,这里只关心点击本身。
+    document.querySelector("#pagelet-layout-section form")
+            .addEventListener("submit", (e) => e.preventDefault());
+
+    const popup = document.querySelector(amzdom.SEL.address.suggestionPopup);
+    const radio = popup.querySelector('input[type=radio]');
+    const alertNode = document.querySelector(amzdom.SEL.address.validationAlerts[0]);
+    let saves = 0, radios = 0;
+    radio.addEventListener("click", () => { radios += 1; });
+    const t0 = Date.now();
+    document.querySelector(amzdom.SEL.address.save).addEventListener("click", () => {
+      const r = REACT[saves];
+      saves += 1;
+      if (!r) return;
+      setTimeout(() => {
+        if (r.popup !== undefined) popup.style.display = r.popup ? "block" : "none";
+        if (r.alert !== undefined) alertNode.textContent = r.alert;
+        if (r.address !== undefined) bar.textContent = r.address;
+      }, r.delay);
+    });
+
+    const driver = new amzdom.AmazonDriver("https://www.amazon.com");
+    // checkout 在 TS 里是私有的,这里是**故意**从外面摆好它:这一段要验的是
+    // 保存之后那个循环,而走公开路径得先有一个真的结算 iframe。
+    driver.checkout = { el: null, doc: () => document, url: () => "", close() {} };
+    let threw = "没抛";
+    try {
+      await driver.fillAddress({
+        name: "Marcus Delgado", phone: "7145550188",
+        line1: "1425 S Bristol St Apt 12B", city: "Santa Ana",
+        state: "CA", postcode: "92707", country: "US",
+      });
+    } catch (e) { threw = (e.code ?? e.constructor.name) + ":" + String(e.message).slice(0, 120); }
+    return { threw, saves, radios, ms: Date.now() - t0 };
+  })()`);
+}
+
+const APPLIED = "Marcus Delgado, 1425 S Bristol St Apt 12B, Santa Ana, CA 92707";
+
+// ① 最常见的那条路:买家地址被 Amazon 判为需要规范化,保存之后弹出地址建议弹窗。
+await withFixture("address-form-async.html", async (run) => {
+  const res = await fillAddressDrill(run, [
+    { delay: 600, popup: true },                      // 第 1 次保存 → 600ms 后弹窗
+    { delay: 300, popup: false, address: APPLIED },   // 选完原始地址再保存 → 地址生效
+  ]);
+  eq("地址保存:建议弹窗晚 600ms 出现,这一单照样走通", res.threw, "没抛");
+  // 改坏时这里是 4:第 1 轮读到弹窗 → 选原始地址 + 保存,第 2、3 轮在同一毫秒
+  // 又各读到同一个弹窗、又各点一次保存。连点保存本身还有重复提交的风险。
+  eq("地址保存:保存按钮只按需点了 2 次", res.saves, 2);
+  eq("地址保存:原始地址那一项选过一次", res.radios, 1);
+  check("地址保存:真的等到了弹窗出现(不是在同一拍里烧完三轮)", res.ms >= 600, `${res.ms}ms`);
+});
+
+// ② 用满三轮的那条路:弹窗 → 校验提示 → 弹窗 → 生效。
+//    要害在**最后一次保存之后还有没有一次「等结果」的机会** —— 少了它,
+//    那一次点击的结果永远看不到,而它恰恰是成功的那一次:地址其实已经生效,
+//    我们却报 ADDRESS_FORM_TIMEOUT,重试还要从头再填一遍。
+await withFixture("address-form-async.html", async (run) => {
+  const res = await fillAddressDrill(run, [
+    { delay: 300, popup: true },                                     // 保存 1 → 弹窗
+    { delay: 300, popup: false, alert: "Please check the street address" }, // 保存 2 → 校验提示
+    { delay: 300, alert: "", popup: true },                          // 保存 3 → 又是弹窗
+    { delay: 300, popup: false, address: APPLIED },                  // 保存 4 → 地址生效
+  ]);
+  eq("地址保存:三轮都用满之后,最后那一次保存的结果也要等", res.threw, "没抛");
+  eq("地址保存:三轮各点一次保存(加最开始那一次共 4 次)", res.saves, 4);
+  eq("地址保存:两次弹窗各选了一次原始地址", res.radios, 2);
+});
+
 // ── 订单历史 ────────────────────────────────────────────────────────
 await withFixture("order-history.html", async (run) => {
   const cards = await run("amzdom.readOrderCards(document)");

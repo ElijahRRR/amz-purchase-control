@@ -29,7 +29,7 @@ import {
   readLoginState,
   readOrderSummary, readPaymentLast4, readProductShipper, readTrackingEvents,
   readTrackingNumber, readTrackingStatus,
-  type CartLine, type LoginState, type OrderState,
+  type AddressSaveOutcome, type CartLine, type LoginState, type OrderState,
 } from "./dom/parse.js";
 import type { ShipmentReader, TrackingRead } from "./shipment.js";
 import { DriverError, LoginLostError, type AddResult, type CartReadReporter, type CheckoutReading, type OrderCard, type PageDriver } from "./driver.js";
@@ -613,36 +613,71 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
     // 整段共用**一个**预算 T.addressSave:每一轮 waitFor 只拿剩下的时间,
     // 所以无论走几轮,「保存 → 地址生效」这一段的总耗时上界不变(任何等待都必须有界)。
     // 轮数上限 3 是防呆:校验提示一直不消失时不能在这里空转。
+    //
+    // **每一轮动作之后要等的是「状态真的变了」,不是「再读一次同一个状态」。**
+    // waitFor 的第一次探测是同步的(dom/wait.ts):选完原始地址、点完保存之后
+    // 立刻重读,读到的必然还是刚才那个弹窗 —— 表单提交不可能在同一拍就生效。
+    // 不带这一条的话,三轮在同一毫秒里烧光(实测 t=2702ms 结束、保存按钮被点了
+    // 4 次、30 秒预算用掉 9%),最后一次保存的结果**从来没有被等过**,
+    // 而抛出来那句「校验提示/建议弹窗反复出现」一次都没等过,是假的。
+    // 于是探针带上 prev:与上一轮已经处理过的结果相同 = 页面还没反应过来,继续等。
     const deadline = Date.now() + T.addressSave;
-    let settled = false;
-    for (let round = 0; round < 3 && !settled; round += 1) {
-      const hit = await waitFor("地址保存结果", () => readAddressSaveOutcome(doc(), addressTextBefore),
-                                { timeoutMs: Math.max(0, deadline - Date.now()), everyMs: 300 })
-        .catch(() => null);
+    const left = () => Math.max(0, deadline - Date.now());
+    /** 上一轮已经动过手的那个结果。再读到它不算新结果。 */
+    let prev: AddressSaveOutcome | null = null;
+    const nextOutcome = () =>
+      waitFor("地址保存结果", () => {
+        const o = readAddressSaveOutcome(doc(), addressTextBefore);
+        return o !== null && o !== prev ? o : null;
+      }, { timeoutMs: left(), everyMs: 300 }).catch(() => null);
 
+    let settled = false;
+    let acted = 0;                       // 对校验提示/建议弹窗动过几次手
+    for (let round = 0; round < 3 && !settled; round += 1) {
+      const hit = await nextOutcome();
       if (hit === "saved") { settled = true; break; }
-      if (hit === "alerts") {
-        // 校验提示:再点一次保存(Amazon 常在第一次提交时补全/规范化字段)。
-        save();
-        continue;
-      }
+      if (hit === null) break;           // 预算用完了,下面统一报错
+      prev = hit;
+      acted += 1;
       if (hit === "suggestion") {
         // 选**原始地址**那一项:上游给什么就寄什么,不让 Amazon 替我们改收件地址。
         const radio = pickFirstRendered(doc(), [`${SEL.address.suggestionPopup} input[type=radio]`]);
         if (!click(radio)) {
           throw new DriverError("ADDRESS_SUGGESTION_BLOCKED", "地址建议弹窗里选不到原始地址");
         }
-        save();
-        continue;
       }
-      // 三种结果一个都没等到,预算也用完了。
-      throw new DriverError("ADDRESS_FORM_TIMEOUT",
-                            `点了保存,但 ${T.addressSave}ms 内既没出现收货地址栏,` +
-                            `也没出现校验提示或地址建议弹窗(第 ${round + 1} 轮)`);
+      // 校验提示则是再点一次保存(Amazon 常在第一次提交时补全/规范化字段)。
+      // **save() 的返回值必须看**:保存按钮不见了还接着往下等,等的是一个
+      // 永远不会来的结果,最后报一个与真实原因无关的超时。
+      if (!save()) {
+        throw new DriverError(
+          "ADDRESS_FORM_TIMEOUT",
+          `${hit === "alerts" ? "校验提示" : "地址建议弹窗"}还在,但保存按钮找不到了:` +
+          `${describeMiss(doc(), [SEL.address.save])}`);
+      }
     }
+
+    // 最后一次动作之后还要有一次「等结果」的机会 —— 少了它,那一次点击的结果
+    // 永远看不到,而它恰恰最可能就是成功的那一次(前面每一轮都是为它铺路)。
+    if (!settled && acted > 0 && left() > 0) {
+      settled = (await nextOutcome()) === "saved";
+    }
+
     if (!settled) {
-      throw new DriverError("ADDRESS_FORM_TIMEOUT",
-                            "地址保存对抗了 3 轮仍没等到收货地址栏(校验提示/建议弹窗反复出现)");
+      // 三种收场要说三句不一样的话,不然运营台上分不出该找谁。
+      const now = readAppliedAddressText(doc());
+      const state = now === null
+        ? "页面上始终没有收货地址栏"
+        : now === addressTextBefore
+          ? `收货地址栏还是保存之前那条(「${now.slice(0, 60)}」)`
+          : `收货地址栏此刻是「${now.slice(0, 60)}」`;
+      throw new DriverError(
+        "ADDRESS_FORM_TIMEOUT",
+        acted === 0
+          ? `点了保存,但 ${T.addressSave}ms 内既没出现收货地址栏,` +
+            `也没出现校验提示或地址建议弹窗(${state})`
+          : `点了保存,处理了 ${acted} 次校验提示/地址建议弹窗,` +
+            `${T.addressSave}ms 的预算里仍没等到地址生效(${state})`);
     }
 
     // 填完不等于生效。Amazon 可能仍然用着地址簿里原来那条 ——
