@@ -82,6 +82,10 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     const reading = await driver.readCheckout();
     await step("读到结算页", {
       actual_total: reading.actualTotal,
+      // 实付与货款分开报:礼品卡全额抵扣时前者是 0.00,后者才是这一单花的钱。
+      // 只报前者的话,事件流里那条「实付 0.00」看起来像这单没花钱。
+      gift_card_amount: reading.giftCard?.applied ? (reading.giftCard.amount ?? null) : null,
+      goods_total: reading.goodsTotal ?? null,
       delivery_texts: reading.deliveryTexts,
     });
 
@@ -90,11 +94,14 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     // 但必须在事件流里留下痕迹:静默的话,运营台上「实付单价」整列悄悄变空,
     // 没有任何地方报错,等有人觉得不对已经是几百单之后。
     if (reading.unitPriceSelectorBroken) {
-      await step("结算页单价读不到", {
-        note: "有商品面板但一个单价都没解析出来,多半是 Amazon 换了类名;" +
-              "限价护栏不受影响(它比的是整单实付),但实付单价这一列会是空的",
+      await step("结算页单价读不全", {
+        note: "有商品面板的单价没解析出来,多半是 Amazon 换了类名;" +
+              "限价护栏不受影响(它比的是整单货款),但实付单价这一列会缺行",
+        panels: reading.deliveryTexts.length,
+        priced: reading.unitPrices.length,
       });
-      log.warn("结算页一个单价都没读到 —— 选择器可能失效了,单子照下但实付单价缺失");
+      log.warn(`结算页单价只读到 ${reading.unitPrices.length}/${reading.deliveryTexts.length} 条`
+               + " —— 选择器可能失效了,单子照下但实付单价缺行");
     }
 
     // 单价来自结算页实测,数量来自任务 —— 购物车那一步已经核对过车里就是这些。
@@ -108,6 +115,15 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
       actual_total: reading.actualTotal,
       actual_shipping: reading.actualShipping,
       actual_tax: reading.actualTax,
+      // 礼品卡与货款:护栏比的是货款,不是这张卡要扣的钱。
+      // amount 为 null = 认出抵扣行但读不出金额,服务端会拒 —— 算不出基数就不下单。
+      gift_card: reading.giftCard
+        ? { applied: reading.giftCard.applied, amount: reading.giftCard.amount ?? null }
+        : undefined,
+      goods_total: reading.goodsTotal,
+      // 下单**之前**就把卡尾号报上去。此前它只在 complete 里出现,
+      // 也就是说下单前从不过问支付方式,换了卡只能等对账时才发现。
+      payment_last4: reading.paymentLast4,
       line_items: lineItems,
       delivery_raws: reading.deliveryTexts,
       is_fba: reading.isFba,
@@ -125,7 +141,11 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
       const code = (verdict.data.error_code ?? "PLUGIN_INTERNAL") as ErrorCode;
       throw new Abort(code, verdict.data.detail ?? "护栏拦截");
     }
-    log.ok(`护栏放行 · 实付 ${reading.actualTotal} ≤ 限价 ${task.guards.price_cap}`);
+    // 这行字必须说的是服务端**真正比过**的那个数。写「实付 0.00 ≤ 限价 2500」
+    // 而实际比的是货款 2241.86,人看着就以为这单没花钱。
+    log.ok(`护栏放行 · 货款 ${verdict.data.goods_total ?? reading.actualTotal}`
+           + ` ≤ 限价 ${task.guards.price_cap}`
+           + (reading.giftCard?.applied ? `(其中礼品卡抵扣 ${reading.giftCard.amount})` : ""));
 
     // 服务端最终采信哪条交期,回填时要原样带回,不能让插件另挑一条。
     const deliveryUsed = verdict.data.delivery_raw_used ?? undefined;

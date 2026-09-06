@@ -58,9 +58,19 @@ export class Client {
   /** 护栏裁决在**服务端**。插件只负责把结算页读到的数报上去。
    *  「如果价格超过限价就…」这类判断放在插件里,等于把闸门交给被管的一方。 */
   guardCheck(taskId: number, reading: {
+    /** 这张卡要扣的钱。礼品卡垫过之后它比货款小,全额抵扣时就是 "0.00"。 */
     actual_total: string;
     actual_shipping?: string;
     actual_tax?: string;
+    /** 礼品卡/余额抵扣。amount 为 null = 认出抵扣行但读不出金额 ——
+     *  服务端拒:货款基数算不出来就不下单。 */
+    gift_card?: { applied: boolean; amount: string | null };
+    /** 这一单的货款 = 实付 + 礼品卡抵扣。**服务端会自己再算一遍并以自己的为准**,
+     *  这里报上去是为了让两边算的数不一致时看得见。 */
+    goods_total?: string;
+    /** 结算页选中的那张卡的后四位。买家号配了期望卡时服务端拿它比对,
+     *  不符即 PAYMENT_METHOD_UNEXPECTED —— **在下单之前**。 */
+    payment_last4?: string;
     line_items?: LineItem[];
     delivery_raws?: string[];
     is_fba?: boolean | null;

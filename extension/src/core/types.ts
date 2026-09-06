@@ -67,6 +67,11 @@ export interface GuardCheckOut {
   delivery_date: string | null;
   /** 服务端最终采信的那条交期原文。回填时原样带回,别自己另挑一条。 */
   delivery_raw_used: string | null;
+  /** 服务端**自己算出来并真正拿去跟限价比**的那个货款。
+   *  插件也算了一份(CheckoutReading.goodsTotal),但那份只是给事件流看的:
+   *  面板上写「护栏放行 · 货款 X」时要写服务端比过的这个 X,
+   *  不然界面上那句话说的是另一次没发生过的比较。 */
+  goods_total: string | null;
 }
 
 export interface LineItem {

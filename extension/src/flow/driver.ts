@@ -57,9 +57,21 @@ export interface AddResult {
 }
 
 export interface CheckoutReading {
+  /** **这张卡要扣的钱。** 礼品卡垫过之后它比货款小,全额抵扣时就是 "0.00"。
+   *  护栏比的不是它 —— 见 goodsTotal。 */
   actualTotal: string;
   actualShipping?: string;
   actualTax?: string;
+  /** 结算页上的礼品卡/余额抵扣。`applied` 与 `amount` 是**两个独立的事实**:
+   *  认出抵扣行却读不出金额时 amount 是 undefined,不是 "0"。
+   *  服务端收到「用了但不知道多少」会拒 —— 货款基数算不出来就不下单。
+   *
+   *  可选:模拟驱动不造礼品卡场景,没有这一位就是「这一单没有礼品卡抵扣」。 */
+  giftCard?: { applied: boolean; amount?: string };
+  /** **这一单的货款** = actualTotal + 礼品卡抵扣额。护栏比的就是它。
+   *  插件算好一份报上去只是为了让事件流里看得见,**服务端会自己再算一遍并以自己的为准**
+   *  —— 「如果价格超过限价就…」这类判断放在插件里,等于把闸门交给被管的一方。 */
+  goodsTotal?: string;
   /** 每个商品面板各有一条交期文案,**全部**报给服务端,由它解析并取最晚的一条。
    *  挑哪条算数是护栏的一部分,不该让插件自己决定。 */
   deliveryTexts: string[];
