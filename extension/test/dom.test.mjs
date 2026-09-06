@@ -312,6 +312,109 @@ await withFixture("cart.html", async (run) => {
 
 await withFixture("cart-empty.html", async (run) => {
   eq("cart-empty 行数为 0", await run("amzdom.readCartLines(document).length"), 0);
+  // 「车是空的」要有正面证据:容器在、就是 0 行。
+  eq("cart-empty 的 0 行是「容器在、没有行」", await run("amzdom.readCartState(document)"),
+     { lines: [], scopeFound: true });
+});
+
+// ── 「车是空的」与「行容器的选择器坏了」 ─────────────────────────────
+//
+// 两者都是 0 行,而处置正相反:前者可以继续,后者意味着我们对购物车一无所知,
+// 再往下走就是拿上一单的残留去结算。原先 readCartLines 把两者压成同一个 []。
+//
+// 这几张 DOM 是现造的:它们要表达的只有「容器在不在」「空车标志在不在」,
+// 不值得各建一张夹具(与上面 nav 那几条同一个做法)。
+await withFixture("cart-empty.html", async (run) => {
+  const parse = (html, expr) =>
+    run(`(() => { const d = new DOMParser().parseFromString(${JSON.stringify(html)}, "text/html");
+                 return ${expr}; })()`);
+
+  // Amazon 把 data-name="Active Items" 改名(或改版把它拆了)。
+  // 车里其实还有一件,而我们读出 0 行 —— 这一位就是唯一的区别。
+  const renamed = `<div id="sc-active-cart"><div data-name="Active Cart Items">
+      <div class="sc-list-item" data-asin="B0FB3VS68J"><span data-a-selector="value">1</span></div>
+    </div></div>`;
+  eq("cart 容器改名 → 0 行,但 scopeFound=false",
+     await parse(renamed, "amzdom.readCartState(d)"), { lines: [], scopeFound: false });
+  eq("cart 容器改名时页面上确实还有一行(干扰项确实存在)",
+     await parse(renamed, `d.querySelectorAll(".sc-list-item").length`), 1);
+
+  // #sc-active-cart 曾经被算作「空车标志」。它是购物车页的**外层容器** ——
+  // 空车、满车、还在加载都有它。一个在车满时也成立的「空车标志」等于没有,
+  // 而它看起来在。现在它只属于 cartRendered。
+  eq("#sc-active-cart 不再算空车标志",
+     await run(`amzdom.SEL.cart.emptyMarkers.includes("#sc-active-cart")`), false);
+  eq("#sc-active-cart 属于「页面渲染出来了」这一组",
+     await run(`amzdom.SEL.cart.cartRendered.includes("#sc-active-cart")`), true);
+  eq("容器改名的那一页上,空车标志一条都不成立",
+     await parse(renamed, `amzdom.SEL.cart.emptyMarkers.some((m) => d.querySelector(m))`), false);
+  eq("容器改名的那一页上,渲染门照样成立(所以渲染门证明不了车是空的)",
+     await parse(renamed, `amzdom.SEL.cart.cartRendered.some((m) => d.querySelector(m))`), true);
+
+  // 反过来:真空车页有确凿的空车标志,那才是「车是空的」的正面证据
+  const trulyEmpty = `<div id="sc-active-cart">
+      <h1 class="sc-your-amazon-cart-is-empty">Your Amazon Cart is empty</h1></div>`;
+  eq("真空车页有确凿的空车标志",
+     await parse(trulyEmpty, `amzdom.SEL.cart.emptyMarkers.some((m) => d.querySelector(m))`), true);
+});
+
+// ── 购物车删除控件:厂商在产线上用的是**图标**形态 ────────────────────
+//
+// 我们原来那四条全是文字按钮形态(`input[value="Delete"]` 等,注释自己写着
+// 「按常见形态推测」),而 cart.html 也只造了那一种 —— 断言永远绿、线上一条不中。
+// 实测(SP/wf/cart_delete_probe.mjs):按厂商形态造的图标购物车上我们全落空,
+// clearCart 第一轮就抛 PLUGIN_INTERNAL,车里的东西原样留着;
+// 而按「失败必上报、必清车」,清车失败会连带废掉后面每一单。
+await withFixture("cart-icon-delete.html", async (run) => {
+  eq("cart-icon-delete 读到三行", await run("amzdom.readCartLines(document).length"), 3);
+
+  // 逐行断言:三种形态各自都要能选出控件,而且选出来的是**这一行自己的**那个
+  eq("cart 删除控件:垃圾桶图标(厂商 v253:687)",
+     await run(`(() => {
+        const row = document.querySelector('[data-asin="B0FB3VS68J"]');
+        const el = amzdom.pickFirstRendered(row, amzdom.SEL.cart.deleteButtons);
+        return el ? el.className : null;
+     })()`), "a-icon a-icon-small a-icon-small-trash");
+  eq("cart 删除控件:移除图标(厂商 v253:690)",
+     await run(`(() => {
+        const row = document.querySelector('[data-asin="B0CHXNPXVX"]');
+        const el = amzdom.pickFirstRendered(row, amzdom.SEL.cart.deleteButtons);
+        return el ? el.className : null;
+     })()`), "a-icon a-icon-small a-icon-small-remove");
+  eq("cart 删除控件:.sc-action-delete-active input(注意 -active,厂商 v253:701)",
+     await run(`(() => {
+        const row = document.querySelector('[data-asin="B0C7KN2M4P"]');
+        const el = amzdom.pickFirstRendered(row, amzdom.SEL.cart.deleteButtons);
+        return el ? [el.tagName, el.parentElement.className] : null;
+     })()`), ["INPUT", "sc-action-delete-active"]);
+
+  // 我们原先那条 `.sc-action-delete input`(不带 -active)在这张页上选不中
+  eq("旧写法 .sc-action-delete input 在这张页上确实落空(干扰项确实存在)",
+     await run(`document.querySelectorAll(".sc-action-delete input").length`), 0);
+
+  // 隐藏模板里有一个 input[value="Delete"](我们旧判据里排最前的那条),
+  // 排在整份文档最前面。不过 isRendered 的话会先点到它 —— 点了不生效,
+  // 然后「购物车行数减少」等满 10 秒。
+  eq("cart 隐藏模板里的 Delete 按钮确实存在且排在最前(干扰项确实存在)",
+     await run(`(() => {
+        const all = [...document.querySelectorAll('input[value="Delete"]')];
+        return [all.length, all[0].closest("[style]")?.getAttribute("style")];
+     })()`), [1, "display:none"]);
+  eq("cart 在整页上选删除控件时不会选到隐藏模板里那个",
+     await run(`(() => {
+        const el = amzdom.pickFirstRendered(document, amzdom.SEL.cart.deleteButtons);
+        return el ? el.className : null;
+     })()`), "a-icon a-icon-small a-icon-small-trash");
+
+  // 顺序也是判据的一部分:结构判据在前、文案判据垫底
+  eq("cart 删除控件是有序数组,厂商三条在前",
+     await run("amzdom.SEL.cart.deleteButtons.slice(0, 3)"),
+     [".a-declarative > .a-icon.a-icon-small-trash",
+      ".a-declarative > .a-icon.a-icon-small-remove",
+      ".sc-action-delete-active input"]);
+  eq("cart 英文文案判据 input[value=\"Delete\"] 垫在最后",
+     await run(`amzdom.SEL.cart.deleteButtons[amzdom.SEL.cart.deleteButtons.length - 1]`),
+     'input[value="Delete"]');
 });
 
 // ── 结算页 ──────────────────────────────────────────────────────────

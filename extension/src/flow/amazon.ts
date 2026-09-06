@@ -17,8 +17,9 @@ import { SEL, URLS } from "./dom/selectors.js";
 import { openFrame, withFrame, type Frame } from "./dom/frame.js";
 import { sleep, waitFor, waitStable, WaitTimeout } from "./dom/wait.js";
 import {
-  cartMatches, findInterstitialButton, findQuantityOption, findSubmitOrderButton, findTrackingLink,
-  pickQuantitySelect, readCarrier, readCartLines, readCheckoutPanels,
+  cartMatches, describeMiss, findInterstitialButton, findQuantityOption, findSubmitOrderButton, findTrackingLink,
+  pickFirstRendered, pickQuantitySelect, readCarrier, readCartLines, readCartState,
+  readCheckoutPanels,
   readDeliveryPromise, readGrandTotal, readInStock, readOrderCards, readOrderState,
   isTrackingUnavailable,
   isSignInUrl,
@@ -168,8 +169,7 @@ export class AmazonDriver implements PageDriver {
       // 而车里那件上一单的残留会被带进这一单。
       try {
         await waitFor("购物车页渲染", () =>
-          f.doc().querySelector(SEL.cart.activeItems) ||
-          f.doc().querySelector(SEL.cart.proceed) ||
+          SEL.cart.cartRendered.some((m) => f.doc().querySelector(m)) ||
           SEL.cart.emptyMarkers.some((m) => f.doc().querySelector(m)),
           { timeoutMs: 20_000 });
       } catch {
@@ -179,15 +179,35 @@ export class AmazonDriver implements PageDriver {
 
       // 上限是防呆:删不动时不能在这里转圈转到天荒地老。
       for (let round = 0; round < 30; round += 1) {
-        const before = readCartLines(f.doc()).length;
-        if (before === 0) return;
-        const scope = f.doc().querySelector(SEL.cart.activeItems);
-        let clicked = false;
-        for (const sel of SEL.cart.deleteButtons) {
-          if (click(scope?.querySelector(sel))) { clicked = true; break; }
+        const st = readCartState(f.doc());
+        const before = st.lines.length;
+        if (before === 0) {
+          // **「车是空的」这个结论要有正面证据。**
+          //
+          // readCartState 的 0 行有两个来源:车真的空了,或者
+          // `[data-name="Active Items"]` 这个容器根本没找到(选择器坏了)。
+          // 后者今天会被读成「已清空」然后一路往下走 —— 而车里可能还留着
+          // 上一单的东西。下游那道 verifyCart 确实会挡住脏车,但故障现场会被
+          // 描述成「插件内部异常」,没人会去查是清车环节骗了自己。
+          //
+          // 正面证据是两条之一:容器在(容器在而 0 行 = 真的空了),
+          // 或者页面上有确凿的空车标志(.sc-your-amazon-cart-is-empty / #sc-empty-cart)。
+          const emptyMarker = SEL.cart.emptyMarkers.some((m) => f.doc().querySelector(m));
+          if (st.scopeFound || emptyMarker) return;
+          throw new DriverError(
+            "PLUGIN_INTERNAL",
+            `购物车页没渲染出商品区,「车是空的」这个结论没有正面证据:` +
+            `${describeMiss(f.doc(), [SEL.cart.activeItems, ...SEL.cart.emptyMarkers])}`);
         }
+        const scope = f.doc().querySelector(SEL.cart.activeItems);
+        // 判据与动作用同一条规则:选中的必须是**渲染出来的**那个控件。
+        // 隐藏模板里的删除按钮点下去不报错也不生效,然后「行数减少」等满 10 秒。
+        const clicked = click(pickFirstRendered(scope ?? f.doc(), SEL.cart.deleteButtons));
         if (!clicked) {
-          throw new DriverError("PLUGIN_INTERNAL", `购物车里还有 ${before} 件,但找不到删除控件`);
+          throw new DriverError(
+            "PLUGIN_INTERNAL",
+            `购物车里还有 ${before} 件,但找不到删除控件:` +
+            `${describeMiss(scope ?? f.doc(), SEL.cart.deleteButtons)}`);
         }
         try {
           await waitFor("购物车行数减少", () => readCartLines(f.doc()).length < before,

@@ -1,0 +1,85 @@
+<!doctype html>
+<!--
+================================================================================
+  FIXTURE: cart-icon-delete.html  —  购物车页，删除控件是**图标形态**
+================================================================================
+
+  页面        : /gp/cart/view.html
+  事实来源    : 厂商 v2.5.3 `v253.pretty.js:687-703` clearShoppingCart
+                SP/wf/verify_origin.mjs：这三条 **2.4.1 起三版都有** ——
+                是他们几万单跑出来的形态，不是这次新加的
+                SP/wf/cart_delete_probe.mjs：实测我们原来那四条在这张页上全落空
+
+  ---------------------------------------------------------------------------
+  这张夹具存在的理由
+  ---------------------------------------------------------------------------
+  我们原来的 `SEL.cart.deleteButtons` 注释写着「报告未记载 clearShoppingCart 的
+  选择器，按常见形态推测」，四条全是**文字按钮**形态（`input[value="Delete"]` 等），
+  而我们自己的 cart.html 夹具也只造了那一种 —— 于是断言永远绿、线上一条都不命中。
+
+  按 CLAUDE.md「失败必上报、必清车」，清车失败不只废掉这一单：
+  下一单会带着上一单的残留进结算，被 CART_MISMATCH 一路判失败。
+
+  ---------------------------------------------------------------------------
+  三行三种形态（都在同一个 Active Items 容器里，因为 clearCart 是在容器内找控件）
+  ---------------------------------------------------------------------------
+    第 1 行  .a-declarative > .a-icon.a-icon-small-trash     厂商 v253:687
+    第 2 行  .a-declarative > .a-icon.a-icon-small-remove    厂商 v253:690
+    第 3 行  .sc-action-delete-active input                  厂商 v253:701
+             ⚠ 注意 `-active`：我们原先写的 `.sc-action-delete input` 选不中它
+
+  干扰项：**隐藏模板**里有一个 `input[value="Delete"]`（我们旧判据里排最前的那条），
+  排在整份文档最前面。判据要是不过 isRendered，会先点到它 —— 点了不生效，
+  然后「购物车行数减少」等满 10 秒，报「点了删除但购物车行数没变」。
+================================================================================
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Amazon.com Shopping Cart</title></head>
+<body>
+
+  <!-- 干扰项：隐藏模板里的旧形态删除按钮，排在最前 -->
+  <div id="sc-list-item-template" style="display:none">
+    <div class="sc-list-item" data-asin="B0TEMPLATE1">
+      <input value="Delete" type="submit" class="a-button-input">
+    </div>
+  </div>
+
+  <div id="sc-active-cart">
+    <div data-name="Active Items">
+
+      <!-- 形态 1：垃圾桶图标（厂商 v253:687） -->
+      <div class="sc-list-item" data-asin="B0FB3VS68J">
+        <span class="a-size-medium">Anker 737 Power Bank</span>
+        <span data-a-selector="value">1</span>
+        <span class="a-declarative" data-action="quantity-form-submit">
+          <i class="a-icon a-icon-small a-icon-small-trash" role="button" aria-label="Delete"></i>
+        </span>
+      </div>
+
+      <!-- 形态 2：移除图标（厂商 v253:690） -->
+      <div class="sc-list-item" data-asin="B0CHXNPXVX">
+        <span class="a-size-medium">Logitech MX Master 3S</span>
+        <span class="sc-non-editable-quantity">3</span>
+        <span class="a-declarative" data-action="delete-active">
+          <i class="a-icon a-icon-small a-icon-small-remove" role="button" aria-label="Remove"></i>
+        </span>
+      </div>
+
+      <!-- 形态 3：.sc-action-delete-active input（厂商 v253:701，注意 -active） -->
+      <div class="sc-list-item" data-asin="B0C7KN2M4P">
+        <span class="a-size-medium">Sony WH-1000XM5</span>
+        <span data-a-selector="value">2</span>
+        <span class="sc-action-delete-active">
+          <input type="submit" class="a-button-input" aria-label="Delete">
+        </span>
+      </div>
+
+    </div>
+
+    <span id="sc-buy-box-ptc-button"><span>
+      <input type="submit" class="a-button-input" value="Proceed to checkout">
+    </span></span>
+  </div>
+
+</body>
+</html>

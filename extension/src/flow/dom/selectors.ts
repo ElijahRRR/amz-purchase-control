@@ -68,15 +68,36 @@ export const SEL = {
     qtyValue: '[data-a-selector="value"]',
     qtyNonEditable: ".sc-non-editable-quantity",
     proceed: "#sc-buy-box-ptc-button > span > input",
-    /** 报告未记载:空车页的标志。用来把「车是空的」与「车还没渲染」分开 —— 
-     *  分不开的话,一个没加载完的购物车会被当成已清空。 */
-    emptyMarkers: ["#sc-active-cart", ".sc-your-amazon-cart-is-empty", "#sc-empty-cart"],
-    /** 报告未记载 clearShoppingCart 的选择器,按常见形态推测。 */
+    /** 报告未记载:**购物车页渲染出来了**的标志。只回答「这一页画完了没有」,
+     *  不回答「车里有没有东西」—— 两个问题混在一起正是下面那条要防的事。 */
+    cartRendered: ["#sc-active-cart", '[data-name="Active Items"]', "#sc-buy-box-ptc-button"],
+    /** 报告未记载:**空车页**的标志。用来把「车是空的」与「车还没渲染」分开 ——
+     *  分不开的话,一个没加载完的购物车会被当成已清空,上一单的残留被带进这一单。
+     *
+     *  `#sc-active-cart` 曾经在这个数组里,那是错的:它是购物车页的**外层容器**,
+     *  空车、满车、还在加载都有它。一个「空车标志」在车满的时候也成立,
+     *  等于这道判据不存在 —— 而它看起来在。已挪到上面的 cartRendered。 */
+    emptyMarkers: [".sc-your-amazon-cart-is-empty", "#sc-empty-cart"],
+    /** 删除控件。**前三条出自厂商 v2.5.3:687-703,且 2.4.1 起就在产线上用**
+     *  (SP/wf/verify_origin.mjs 逐版数过),不是这次新加的 ——
+     *  也就是说图标形态才是他们几万单里真正遇到的那种。
+     *
+     *  后三条是我们原先「按常见形态推测」的文字按钮形态,降为垫底:
+     *  `input[value="Delete"]` 是英文文案判据,换个站点语言就失灵。
+     *
+     *  实测(SP/wf/cart_delete_probe.mjs):按厂商形态造的图标购物车上,
+     *  我们原来那四条**全部落空** → clearCart 第一轮就抛
+     *  PLUGIN_INTERNAL「找不到删除控件」,车里的东西原样留着;
+     *  而按「失败必清车」,清车失败会连带废掉后面每一单。
+     *
+     *  注意第三条带 `-active`:我们原先写的 `.sc-action-delete input` 选不中它。 */
     deleteButtons: [
-      'input[value="Delete"]',
+      ".a-declarative > .a-icon.a-icon-small-trash",
+      ".a-declarative > .a-icon.a-icon-small-remove",
+      ".sc-action-delete-active input",
       '[data-action="delete"] input[type="submit"]',
       'input[data-action="delete"]',
-      ".sc-action-delete input",
+      'input[value="Delete"]',
     ],
   },
 

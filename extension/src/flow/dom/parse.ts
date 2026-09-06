@@ -226,12 +226,22 @@ export interface CartLine {
   quantity: number | null;
 }
 
-/** 报告 §4.2.2:只数 Active Items 里的行。
+export interface CartState {
+  lines: CartLine[];
+  /** Active Items 那个容器**在不在**。
+   *
+   *  这一位就是「车是空的」与「行容器的选择器坏了」之间的全部区别:
+   *  两种情况下 lines 都是 `[]`,而处置正相反 —— 前者可以继续,
+   *  后者意味着我们对购物车一无所知,再往下走就是拿上一单的残留去结算。 */
+  scopeFound: boolean;
+}
+
+/** 报告 §4.2.2:只数 Active Items 里的行,并**同时告诉调用方那个容器在不在**。
  *  不带这个前缀就会把 "Saved for later" 和推荐位一起算进来。 */
-export function readCartLines(doc: Document): CartLine[] {
+export function readCartState(doc: Document): CartState {
   const scope = doc.querySelector(SEL.cart.activeItems);
-  if (!scope) return [];
-  return Array.from(scope.querySelectorAll(SEL.cart.line))
+  if (!scope) return { lines: [], scopeFound: false };
+  const lines = Array.from(scope.querySelectorAll(SEL.cart.line))
     .map((row) => {
       const asin = row.getAttribute("data-asin") ?? "";
       const qtyEl =
@@ -240,6 +250,14 @@ export function readCartLines(doc: Document): CartLine[] {
       return { asin, quantity: Number.isFinite(n) && n > 0 ? n : null };
     })
     .filter((l) => l.asin.length > 0);
+  return { lines, scopeFound: true };
+}
+
+/** 只要行、不问容器在不在。**新代码尽量用 readCartState** ——
+ *  这个薄封装留着是因为「车里有什么」和「读得到吗」在大多数调用点上确实是一件事,
+ *  但凡是要拿 `length === 0` 下结论的地方,都必须走 readCartState。 */
+export function readCartLines(doc: Document): CartLine[] {
+  return readCartState(doc).lines;
 }
 
 /** 车里的东西是不是恰好就是本单的东西。多一件少一件、数量对不上都算不符。 */
