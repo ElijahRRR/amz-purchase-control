@@ -16,6 +16,7 @@ import { dirname, join } from "node:path";
 
 import { waitFor, waitStable, WaitTimeout } from "../build/flow/dom/wait.js";
 import { SingleFlight } from "../build/core/singleflight.js";
+import { Serial } from "../build/core/serial.js";
 import { decideLease, LEASE_DEFAULTS } from "../build/core/lease.js";
 import { Loop } from "../build/background/loop.js";
 import { DriverError } from "../build/flow/driver.js";
@@ -352,6 +353,67 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
   check("被掐掉的那一单落地之后恢复认领", after.kind === "ran", after.kind);
 }
 
+// ── 「读租约 → 裁决 → 写租约」必须整段串行(R2) ────────────────────────
+//
+// 纯函数 decideLease 验不到这一条,验的是它外面那层:SW 里那段读写夹着两次
+// await(chrome.storage.session 是异步的),两条 amz.acquireRunner 前后脚进来
+// 就会读到同一个旧值,**双双**被授予租约。
+// 下面把 service-worker.ts 那一段按源码搬过来跑,只把 chrome.storage.session
+// 换成一个同样异步的假存储。
+{
+  const mkStore = () => {
+    let cell;
+    return {
+      get: async () => { await null; await null; return cell ?? null; },
+      set: async (v) => { await null; cell = v; },
+    };
+  };
+  const NOW2 = 2_000_000_000;
+  const acquireOn = (store) => async (tabId, busy) => {
+    const cur = await store.get();
+    const v = decideLease(cur, { tabId, busy, now: NOW2, holderAlive: true });
+    if (v.granted && v.next) { await store.set(v.next); return true; }
+    return false;
+  };
+
+  // 不串行:两条并发的 acquire 双双 granted —— 这就是要堵的那个洞。
+  {
+    const raw = acquireOn(mkStore());
+    const [a, b] = await Promise.all([raw(1, false), raw(2, false)]);
+    check("(反面)不串行时两个标签页会同时拿到租约", a === true && b === true);
+  }
+
+  // 串行之后:先到的拿到,后到的读到的是**新写进去的**那一份,判 held。
+  {
+    const gate = new Serial();
+    const raw = acquireOn(mkStore());
+    const [a, b] = await Promise.all([gate.run(() => raw(1, false)),
+                                      gate.run(() => raw(2, false))]);
+    check("串行之后同一时刻只有一个标签页拿到租约", a !== b, `tab1=${a} tab2=${b}`);
+  }
+
+  // 队列里前一件抛错不许把后面的堵死(SW 里那段有 try/catch,但闸本身也得扛住)。
+  {
+    const gate = new Serial();
+    let boom = null;
+    const first = gate.run(async () => { throw new Error("boom"); }).catch((e) => { boom = e; });
+    const second = await gate.run(async () => "ok");
+    await first;
+    check("前一件抛错原样抛回调用方", boom instanceof Error);
+    eq("前一件抛错不堵住后面的", second, "ok");
+  }
+
+  // 顺序:排队不是并发,后到的必须等前一件真的跑完。
+  {
+    const gate = new Serial();
+    const order = [];
+    const p1 = gate.run(async () => { order.push("a1"); await new Promise((r) => setTimeout(r, 10)); order.push("a2"); });
+    const p2 = gate.run(async () => { order.push("b1"); });
+    await Promise.all([p1, p2]);
+    eq("后到的排在前一件跑完之后", order, ["a1", "a2", "b1"]);
+  }
+}
+
 // ── 长单期间租约必须一直续得上(R1) ────────────────────────────────────
 //
 // 这一段把 content/runner.ts 的 tick() / lease() 那十来行搬过来跑。Runner 本体
@@ -442,6 +504,10 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
         swSrc.includes("chrome.storage.session") &&
         !/^let leaseTabId/m.test(swSrc) && !/^let leaseUntil/m.test(swSrc));
   check("租约裁决走的是那个纯函数", swSrc.includes("decideLease("));
+  check("「读租约 → 裁决 → 写租约」整段跑在串行闸里",
+        /void leaseGate\.run\(async \(\) => \{\s*\n\s*const cur = await readLease\(\);/.test(swSrc));
+  check("标签页关闭时释放租约也走同一道闸",
+        (swSrc.match(/leaseGate\.run\(/g) ?? []).length === 2);
 }
 
 console.log(`\n  通过 ${pass} 条`);

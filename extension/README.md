@@ -198,6 +198,8 @@ MV3 的 service worker 空闲约 30 秒被回收,模块级变量随之归零 —
 短于后台标签页的定时器节流周期(约 60 秒),正跑着单的标签页只要被切到后台
 就会把租约丢掉。裁决规则在 `core/lease.ts`(纯函数,Node 里验得了),
 「持有者的标签页还在不在」由 SW 问 `chrome.tabs`。
+SW 里那段「读租约 → 裁决 → 写租约」整段跑在 `core/serial.ts` 的串行闸里 ——
+读和写都是 await,不串起来的话两条前后脚到达的请求会读到同一个旧值、双双拿到租约。
 持有者一直不来续租也有界:宽限期过完照样换手 —— 不然一个死掉的内容脚本
 能让这个买家号永远拍不了单。
 **续租发生在单飞闸外面**:一单能跑好几分钟(光发卡行验证那一段就有 6 分钟预算),
@@ -259,7 +261,8 @@ Amazon 改了购物车页的结构 —— 而 `tickOnce` 每 10 秒来一次,一
 ```
 src/core/      types(契约) codes(错误码封闭集) status(界面标签)
                api(HTTP 出口) client(端点) config(可调参数唯一来源,含超时表) store log
-               singleflight(单飞闸) lease(执行租约的裁决规则,纯函数)
+               singleflight(单飞闸:第二件事挡掉) serial(串行闸:第二件事排队)
+               lease(执行租约的裁决规则,纯函数)
 src/flow/      driver(页面动作接口) simulated(自检用) amazon(真实驱动) run(执行时序)
                shipment(物流同步,独立一条流)
 src/flow/dom/  wait(等待原语) frame(同源 iframe) selectors(选择器,标出处) parse(纯解析,含登录态判定)

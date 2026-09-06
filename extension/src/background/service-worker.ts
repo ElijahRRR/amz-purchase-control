@@ -12,6 +12,7 @@ import { Client } from "../core/client.js";
 import { DEFAULTS, loadConfig, posOr, saveConfig, type Config } from "../core/config.js";
 import { Log } from "../core/log.js";
 import { decideLease, type Lease, type LeaseRules } from "../core/lease.js";
+import { Serial } from "../core/serial.js";
 import { chromeStore } from "../core/store.chrome.js";
 import type { LoginState } from "../core/types.js";
 
@@ -37,6 +38,18 @@ let registered = false;
  *  裁决规则本身在 core/lease.ts(纯函数,Node 里验得了);这里只负责读写与
  *  「持有者那个标签页还在不在」这一条要问 chrome.tabs 的事实。 */
 const LEASE_KEY = "amz.lease";
+
+/** 「读租约 → 裁决 → 写租约」必须整段串行。
+ *
+ *  读和写都是 await(chrome.storage.session 是异步的),中间那两次让出足够让
+ *  第二条 amz.acquireRunner 挤进来读到**同一个**旧值 —— 于是两个标签页
+ *  双双拿到 granted:true,各领一单,两条 runTask 动同一个购物车。
+ *  core/singleflight.ts 那句「检查与置位之间一个 await 都不许有」说的正是这件事;
+ *  这里做不到没有 await,那就退一步:同一时刻只允许一条在读写。
+ *
+ *  SW 被回收再唤醒不会有两份队列同时存在(一个 SW 实例一条事件循环),
+ *  跨重启那一半由 storage.session 兜着。 */
+const leaseGate = new Serial();
 
 async function readLease(): Promise<Lease | null> {
   try {
@@ -199,7 +212,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
   if (msg?.type === "amz.acquireRunner") {
     const tabId = sender.tab?.id;
     if (tabId === undefined) { respond({ granted: false }); return false; }
-    void (async () => {
+    void leaseGate.run(async () => {
       const cur = await readLease();
       const v = decideLease(cur, {
         tabId,
@@ -228,7 +241,7 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
         log.dim(`租约过期了,但持有它的标签页 ${cur?.tabId} 报告正在跑单 —— 不换手`);
       }
       respond({ granted: false, heldBy: cur?.tabId ?? null });
-    })();
+    });
     return true;   // 异步应答:通道要保持打开
   }
 
@@ -251,10 +264,13 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
 // 而不是靠一个短 TTL 去猜 —— 短 TTL 猜错的代价是把租约从一个正在拍单的
 // 标签页手里抢走。
 chrome.tabs.onRemoved.addListener((tabId) => {
-  void (async () => {
+  // 也走那道串行闸:释放同样是「读了再写」,与一条正在裁决的 acquire 交错的话,
+  // 会把刚发给另一个标签页的新租约一起抹掉(那个标签页此后一直拿不到租约,
+  // 却也不知道为什么)。
+  void leaseGate.run(async () => {
     const cur = await readLease();
     if (cur && cur.tabId === tabId) await writeLease(null);
-  })();
+  });
 });
 
 void boot();
