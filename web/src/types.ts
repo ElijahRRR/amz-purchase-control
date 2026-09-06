@@ -60,7 +60,7 @@ export interface SearchOut {
 
 export interface TaskEvent {
   kind: "claimed" | "step" | "guard_block" | "error" | "purchased"
-      | "released" | "assert_failed" | "admin" | "auto_retry" | "shipment";
+      | "released" | "assert_failed" | "assert_skipped" | "admin" | "auto_retry" | "shipment";
   code: string | null;
   payload: Record<string, unknown>;
   created_at: string;
@@ -250,6 +250,13 @@ export interface ErrorStats {
    *  折线上那天变成 0,而 0 跟「那天确实一件没出」长得一模一样。 */
   days: string[];
   total: number;
+  /** 「回填时 ASIN 断言没采到」的近 7 日计数。
+   *
+   *  **窗口固定 7 天,不跟着上面那个时间范围走** —— 它回答的不是
+   *  「这段时间出了什么事」,而是「那道断言现在还工作吗」。
+   *  文案(label)也由服务端下发:它不属于任何封闭集,前端再写一份中文
+   *  就又多了一处会分叉的副本。 */
+  assert_skipped: { recent_7d: number; days: number; label: string };
 }
 
 export interface WorkflowRun {

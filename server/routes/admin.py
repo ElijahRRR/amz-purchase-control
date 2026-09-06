@@ -114,6 +114,14 @@ def error_stats(
     got = task_query.error_stats(conn,
                                  date_from=date_from or today - timedelta(days=13),
                                  date_to=date_to or today)
+    # 「回填时 ASIN 断言没采到」的近 7 日计数。**不跟着上面那个时间范围走** ——
+    # 它回答的不是「这段时间出了什么事」,而是「那道断言现在还工作吗」,
+    # 而后者只有最近这几天有意义。窗口固定,界面上那句话才说得准。
+    #
+    # 放在这一页,是因为这一页是运营唯一会主动去看「哪里在坏」的地方;
+    # 而它在原有的 error / guard_block 两个口径里一条都不会出现:
+    # 断言被跳过既不是失败也不是拦截,恰恰是**一批看着正常的 purchased**。
+    got["assert_skipped"] = ops_query.assert_skipped(conn)
     return schemas.Envelope(ok=True, data=got)
 
 

@@ -177,7 +177,17 @@ def complete(task_id: int, req: schemas.CompleteReq,
     expected = [r["asin"] for r in conn.execute(
         "SELECT asin FROM procure.task_products WHERE task_id = %s", (task_id,)
     ).fetchall()]
-    if not order_backfill.asins_match(expected, req.observed_asins):
+    verdict = order_backfill.asins_match(expected, req.observed_asins)
+    if verdict == "not_observed":
+        # 既定取舍:一个 ASIN 都没采到**不阻断回填**(断言的职责是抓错配,
+        # 不是制造噪音)。但它与「对上了」不是同一件事,不能渲染成同一个结果 ——
+        # 选择器一坏,observed 就恒为空,断言整体退化成厂商那套「盲取第一张卡」,
+        # 而回填照常成功。留一条事件,让「这道断言什么时候整体失效」是可数的
+        # (近 7 日计数在 GET /v1/admin/error-stats 上,见 services/ops_query)。
+        task_event.record(conn, task_id, "assert_skipped", instance_id=inst["id"],
+                          payload={"reason": "no_asin_observed", "expected": expected,
+                                   "amazon_order_no": req.amazon_order_no})
+    if verdict == "mismatch":
         task_event.record(conn, task_id, "assert_failed", instance_id=inst["id"],
                           payload={"expected": expected, "observed": req.observed_asins,
                                    "amazon_order_no": req.amazon_order_no})

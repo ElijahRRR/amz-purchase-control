@@ -180,6 +180,39 @@ export default function ErrorsPage() {
           ))}
         </div>
 
+        {/* 这一行不属于上面那五组,它数的东西压根不是失败。
+            回填时那道 ASIN 断言在「一个 ASIN 都没采到」时**照旧放行**
+            (既定取舍:断言的职责是抓错配,不是制造噪音),所以它整体失效的样子
+            是一批**看着完全正常的已拍单** —— error / guard_block 两个口径里
+            一条都不会出现,上面那张图再怎么看也看不出来。
+            唯一的读法是拿它跟同期的回填条数比:接近了,说明选择器已经坏了。
+            窗口固定 7 天(服务端给),不跟着上面那个「近 N 天」走:
+            它回答的是「那道断言现在还工作吗」,只有最近这几天算数。
+            文案也由服务端下发 —— 它不属于任何封闭集,前端再写一份中文
+            就又多了一处会分叉的副本。 */}
+        <Card className={cn("px-4 py-3 flex items-center gap-3",
+                            data && data.assert_skipped.recent_7d > 0
+                              ? "border-amber-300 bg-amber-50" : "")}>
+          <span className="w-2 h-2 rounded-full shrink-0"
+                style={{ background: data && data.assert_skipped.recent_7d > 0 ? "#f59e0b" : "#d4d4d8" }} />
+          <span className="text-xs text-zinc-600">
+            {data ? data.assert_skipped.label : "回填时 ASIN 断言没采到"}
+            <span className="text-zinc-400">
+              {" "}· 近 {data?.assert_skipped.days ?? 7} 天(与上面的时间范围无关)
+            </span>
+          </span>
+          <span className="font-mono text-lg font-semibold tabular-nums ml-auto">
+            {data ? data.assert_skipped.recent_7d : "—"}
+          </span>
+          <span className="text-xs+ text-zinc-500 leading-relaxed basis-full">
+            订单卡上一个 ASIN 都没采到,断言这次没说上话 ——
+            单<b className="font-medium">照样回填</b>了。
+            零星几条多半是页面没渲染完;要是这个数接近同期的回填条数,
+            说明采 ASIN 的选择器已经坏了,那道断言正整体失效,
+            而每一单看起来都是正常的「已拍单」。
+          </span>
+        </Card>
+
         <Card className="overflow-hidden">
           <CardHead right={<span className="text-xs text-zinc-400">按码,高的在前</span>}>
             哪个码最多

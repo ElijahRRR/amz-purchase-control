@@ -1,9 +1,19 @@
-"""运行记录的查询(ops.runs)。只读。
+"""**这套系统本身还在正常干活吗** —— 运维体检的读侧。只读。
 
-这张表一直是**只写不读**的:cli.py 每跑一条 workflow 就写一行,
-但全项目没有任何地方读它。写了没人看的记录等于没写 —— 而其中一条
-(task_sweep)是全项目唯一必须挂定时的,它哪天悄悄停了,
-claimed 的任务会一直堆着没人知道。这个模块就是把那只眼睛装上。
+与 `services/task_query.py` 的分工不是「读哪张表」,是**回答哪个问题**:
+那边回答「这些单怎么样了」(状态桶、错误码分布、某一单的全貌),
+这边回答「护栏和定时链还活着吗」。后者的特征是:出问题时**单子看起来全都正常**,
+所以必须专门去数,不会有人因为某一单不对劲而发现它。
+
+眼下两只眼睛:
+
+  · `recent()` —— 运行记录(`ops.runs`)。这张表一直是只写不读的:cli.py 每跑
+    一条 workflow 就写一行,而全项目没有任何地方读它。写了没人看等于没写 ——
+    而 `task_sweep` 是全项目唯一必须挂定时的一条,它哪天悄悄停了,
+    claimed 的任务会一直堆着没人知道。
+  · `assert_skipped()` —— 回填时那道 ASIN 断言「没能比」的近 7 日计数。
+    它整体失效的样子正是**一批看着完全正常的 purchased**:Amazon 改个类名,
+    插件采到的 ASIN 恒为空,断言退化成盲取第一张卡,而每一单都是绿的。
 """
 
 from datetime import datetime, timedelta, timezone
@@ -192,3 +202,34 @@ def recent(conn, *, limit: int = 60) -> dict[str, Any]:
         "by_workflow": by_workflow,
         "stuck_after_seconds": int(STUCK_AFTER.total_seconds()),
     }
+
+
+#: 「近 7 日」而不是「有史以来」。一个只增不减的总数回答不了「现在坏没坏」——
+#: 而这个数唯一有用的读法就是拿它跟同期的回填条数比:接近了,说明选择器已经坏了。
+ASSERT_SKIPPED_DAYS = 7
+
+_ASSERT_SKIPPED_SQL = """
+SELECT count(*) AS n
+  FROM procure.task_events
+ WHERE kind = 'assert_skipped'
+   AND created_at >= now() - make_interval(days => %(days)s)
+"""
+
+
+def assert_skipped(conn, *, days: int = ASSERT_SKIPPED_DAYS) -> dict[str, Any]:
+    """输入:连接(+ 回看几天)→ 输出:{recent_7d, days, label}。
+
+    回填时的 ASIN 断言在「一个 ASIN 都没采到」时**照旧放行**(既定取舍:
+    断言的职责是抓错配,不是制造噪音)。既然放行,这件事就只能靠数出来 ——
+    否则它整体失效时,库里是一批看着完全正常的 purchased,
+    没有任何一条错误码提示那道断言已经不工作了。
+
+    `label` 一并给出,是因为这个数要显示在错误码分布页上,而那一页的其它文案
+    都从 `/v1/admin/meta` 的封闭集里取;这一个不属于任何封闭集,
+    再让前端自己写一份中文就又多了一处会分叉的副本。出处仍是 services/vocab。
+    """
+    from services import vocab
+
+    n = conn.execute(_ASSERT_SKIPPED_SQL, {"days": days}).fetchone()["n"]
+    return {"recent_7d": n, "days": days,
+            "label": vocab.OPS_METRIC_LABELS["assert_skipped"]}

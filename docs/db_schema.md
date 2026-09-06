@@ -189,7 +189,7 @@
 | `id` | bigint identity | |
 | `task_id` | bigint FK CASCADE | |
 | `instance_id` | bigint FK | |
-| `kind` | text | `claimed` / `step` / `guard_block` / `error` / `purchased` / `released` / `assert_failed` / `admin` / `shipment`（封闭集，由 `services/task_event.py` 校验）。`admin` = 人在后台动的手；`shipment` = 物流同步结果，发生在 purchased 之后，混进 `step` 会让「这一单拍得顺不顺」的时间线被轨迹刷屏 |
+| `kind` | text | `claimed` / `step` / `guard_block` / `error` / `purchased` / `released` / `assert_failed` / `assert_skipped` / `admin` / `auto_retry` / `shipment`（封闭集，由 `services/task_event.py` 校验）。`admin` = 人在后台动的手，`auto_retry` = 定时任务干的——两者必须分得开，「谁把它放回队列的」在出现重复下单时是第一个要问的问题；`assert_failed` = 回填时 ASIN 断言**不符**（不写单号，转人工），`assert_skipped` = 一个 ASIN 都**没采到**（照旧回填）——这两件事的含义正好相反，混成一种就没法数「那道断言什么时候整体失效」；`shipment` = 物流同步结果，发生在 purchased 之后，混进 `step` 会让「这一单拍得顺不顺」的时间线被轨迹刷屏 |
 | `code` | text | `kind` 为 `error` / `guard_block` 时**必填**；填什么受 `services/error_codes.py` 的封闭集校验 |
 | `payload` | jsonb | |
 | `created_at` | timestamptz | |

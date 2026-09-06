@@ -76,6 +76,16 @@ LOGIN_STATE_TONE: dict[str, str] = {
     "unknown": "dashed-zinc",
 }
 
+#: 运维体检那几个计数,界面上那一格叫什么。
+#:
+#: 与 EVENT_LABELS 分开而不是复用:时间线上那个点只有 76px 一列,标签必须短;
+#: 而卡片标题得自己把话说完(「断言没采到」单独摆在错误码分布页上,
+#: 没人知道是哪一步的哪道断言)。同一件事两处不同长度不是分叉 ——
+#: 分叉是两处**各写一份**,这里两份都在这个文件里,改一处会看见另一处。
+OPS_METRIC_LABELS: dict[str, str] = {
+    "assert_skipped": "回填时 ASIN 断言没采到",
+}
+
 EVENT_LABELS: dict[str, str] = {
     "claimed": "认领",
     "step": "执行步骤",
@@ -84,6 +94,7 @@ EVENT_LABELS: dict[str, str] = {
     "purchased": "下单成功",
     "released": "退回队列",
     "assert_failed": "断言不通过",
+    "assert_skipped": "断言没采到",
     "admin": "人工操作",
     "auto_retry": "自动重试",
     "shipment": "物流同步",
@@ -100,6 +111,9 @@ EVENT_TONE: dict[str, str] = {
     "purchased": "emerald",
     "released": "zinc",
     "assert_failed": "amber-hollow",
+    # 与 assert_failed 同族的琥珀,但用实心:那一条是「结局不确定」,
+    # 这一条是「已经确定地什么都没比到」—— 不确定的用空心,确定的用实心。
+    "assert_skipped": "amber",
     "admin": "violet",
     # 紫色在这套界面里表示「有人动了手 / 需要人裁决」。自动重试是机器干的,
     # 用天蓝(与「还在流转中」同一族),免得运营在时间线上把它读成有人来过。
