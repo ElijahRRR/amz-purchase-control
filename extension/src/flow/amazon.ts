@@ -117,8 +117,10 @@ export class AmazonDriver implements PageDriver {
    *  换的那张页面是购物车(readLoginState 走的就是它):未登录也照样渲染导航栏、
    *  不会被 XFO 挡,是这条流里唯一确定读得到的判据来源。
    *
-   *  ⚠ **这一段没有在真实 Amazon 上验过**(这里没有可登录的买家号),XFO 那一步
-   *  是对 Amazon 登录页的合理推断。第一次真机验证时专门看一眼:登出后跑一单,
+   *  XFO 之后那一帧到底什么样,在 Chromium 141 上实测过,也有 DOM 测试盯着这条兜底
+   *  (test/dom.test.mjs 那一节给 /ap/signin 真发一顶 X-Frame-Options: DENY 的帽子)。
+   *  ⚠ **没验到的是最后一环:Amazon 的登录页到底发不发 XFO、真机上会不会 302 到别处**
+   *  —— 这里没有可登录的买家号。第一次真机验证时专门看一眼:登出后跑一单,
    *  事件流里出现的是「登录态失效,退回队列」还是 CHECKOUT_TIMEOUT。
    *  记在 README「验到了什么、没验到什么」与 docs/03 §5.3。 */
   private async guardLogin(f: Frame, where: string): Promise<void> {
