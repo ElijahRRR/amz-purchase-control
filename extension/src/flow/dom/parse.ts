@@ -259,14 +259,24 @@ export interface CartState {
    *  两种情况下 lines 都是 `[]`,而处置正相反 —— 前者可以继续,
    *  后者意味着我们对购物车一无所知,再往下走就是拿上一单的残留去结算。 */
   scopeFound: boolean;
+  /** 容器里**画出来的、看起来像商品行**的节点有几个 —— 不管解析得出 ASIN 与否。
+   *
+   *  只有 scopeFound 是不够的:它只覆盖了「容器改名」这一种改版。行 class 改掉、
+   *  或者行上的 data-asin 换个属性名(同一量级、同一概率的改版),容器照样在,
+   *  lines 照样是 `[]` —— 于是「容器在而 0 行 = 真的空了」这句话不成立,
+   *  而调用方据它认定车是空的,车里却实实在在留着上一单的商品。
+   *
+   *  `rowsSeen > 0 && lines.length === 0` 就是「我们已经读不懂购物车这一页了」。 */
+  rowsSeen: number;
 }
 
 /** 报告 §4.2.2:只数 Active Items 里的行,并**同时告诉调用方那个容器在不在**。
  *  不带这个前缀就会把 "Saved for later" 和推荐位一起算进来。 */
 export function readCartState(doc: Document): CartState {
   const scope = doc.querySelector(SEL.cart.activeItems);
-  if (!scope) return { lines: [], scopeFound: false };
-  const lines = Array.from(scope.querySelectorAll(SEL.cart.line))
+  if (!scope) return { lines: [], scopeFound: false, rowsSeen: 0 };
+  const rows = Array.from(scope.querySelectorAll(SEL.cart.line));
+  const lines = rows
     .map((row) => {
       const asin = row.getAttribute("data-asin") ?? "";
       const qtyEl =
@@ -275,7 +285,14 @@ export function readCartState(doc: Document): CartState {
       return { asin, quantity: Number.isFinite(n) && n > 0 ? n : null };
     })
     .filter((l) => l.asin.length > 0);
-  return { lines, scopeFound: true };
+  // 行节点数按两条判据取**并集**:行 class 改名时 `[data-asin]` 还在,
+  // data-asin 换属性名时行 class 还在 —— 两种改版各瞎掉一条,不会同时瞎。
+  // 只数**渲染出来**的:容器里躺着的隐藏行模板不是「车里的东西」,
+  // 数上它会把一辆真空车说成「行解析坏了」。
+  const seen = new Set<Element>([...rows, ...Array.from(scope.querySelectorAll("[data-asin]"))]);
+  let rowsSeen = 0;
+  for (const el of seen) if (isRendered(el)) rowsSeen += 1;
+  return { lines, scopeFound: true, rowsSeen };
 }
 
 /** 只要行、不问容器在不在。**新代码尽量用 readCartState** ——

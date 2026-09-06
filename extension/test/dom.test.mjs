@@ -355,9 +355,14 @@ await withFixture("cart.html", async (run) => {
 
 await withFixture("cart-empty.html", async (run) => {
   eq("cart-empty 行数为 0", await run("amzdom.readCartLines(document).length"), 0);
-  // 「车是空的」要有正面证据:容器在、就是 0 行。
-  eq("cart-empty 的 0 行是「容器在、没有行」", await run("amzdom.readCartState(document)"),
-     { lines: [], scopeFound: true });
+  // 「车是空的」要有正面证据:容器在、**而且容器里一个画出来的商品行都没有**。
+  eq("cart-empty 的 0 行是「容器在、一行都看不见」", await run("amzdom.readCartState(document)"),
+     { lines: [], scopeFound: true, rowsSeen: 0 });
+  // 前提:容器里其实躺着一份 .sc-list-item 模板 —— rowsSeen 不数它,是因为它没画出来。
+  // 少了这一条,上面那个 0 可能只是"容器里什么都没有"而不是"只数渲染出来的"。
+  eq("cart-empty 的容器里确实有一份隐藏的行模板(前提)",
+     await run(`document.querySelector('[data-name="Active Items"]')
+                  .querySelectorAll(".sc-list-item").length`), 1);
 });
 
 // ── 清车那道闸:让 AmazonDriver 真的走一遍 ───────────────────────────
@@ -406,11 +411,33 @@ await withDriverOnCart("cart.html",
     check("这条错误说的是「没有正面证据」", msg.includes("正面证据"), msg);
   });
 
-// 反面:真空车页必须能顺利返回。少了这一条,上面那条断言可能只是
+// 场景:容器没改名,改的是**行**。车里两件商品还在页面上画着,
+// 而我们一行都解析不出 ASIN —— 这不是「空车」,是我们读不懂这一页了。
+await withDriverOnCart("cart.html",
+  (html) => html.replaceAll('<div class="sc-list-item" data-asin=',
+                            '<div class="sc-item-row" data-asin='),
+  async (run) => {
+    const [code, msg] = await run(CLEAR_CART_DRILL);
+    eq("行 class 改名 → clearCart 不许判「已清空」", code, "PLUGIN_INTERNAL");
+    check("这条错误说的是「行选择器坏了」", msg.includes("解析不出 ASIN"), msg);
+  });
+
+await withDriverOnCart("cart.html",
+  (html) => html.replaceAll('<div class="sc-list-item" data-asin=',
+                            '<div class="sc-list-item" data-item-asin='),
+  async (run) => {
+    const [code, msg] = await run(CLEAR_CART_DRILL);
+    eq("行上的 data-asin 换属性名 → clearCart 不许判「已清空」", code, "PLUGIN_INTERNAL");
+    check("这条错误同样说的是「行选择器坏了」", msg.includes("解析不出 ASIN"), msg);
+  });
+
+// 反面:真空车页必须能顺利返回。少了这一条,上面那几条断言可能只是
 // 「clearCart 现在总是抛」——那是另一种坏法。
+// 这一页的在售区里还躺着一份**隐藏的**行模板:rowsSeen 要是把它数进去,
+// 这条就会转红 —— 一辆真空车被说成「行选择器坏了」,每一单都进研发的队列。
 await withDriverOnCart("cart-empty.html", (html) => html, async (run) => {
-  const [code] = await run(CLEAR_CART_DRILL);
-  eq("真空车页 → clearCart 正常返回", code, "没抛");
+  const [code, msg] = await run(CLEAR_CART_DRILL);
+  check("真空车页(在售区里有隐藏行模板)→ clearCart 正常返回", code === "没抛", `${code} ${msg}`);
 });
 
 // ── 「车是空的」与「行容器的选择器坏了」 ─────────────────────────────
@@ -431,9 +458,37 @@ await withFixture("cart-empty.html", async (run) => {
       <div class="sc-list-item" data-asin="B0FB3VS68J"><span data-a-selector="value">1</span></div>
     </div></div>`;
   eq("cart 容器改名 → 0 行,但 scopeFound=false",
-     await parse(renamed, "amzdom.readCartState(d)"), { lines: [], scopeFound: false });
+     await parse(renamed, "amzdom.readCartState(d)"),
+     { lines: [], scopeFound: false, rowsSeen: 0 });
   eq("cart 容器改名时页面上确实还有一行(干扰项确实存在)",
      await parse(renamed, `d.querySelectorAll(".sc-list-item").length`), 1);
+
+  // 容器改名不是唯一一种「读不懂」,而 scopeFound 只覆盖了这一种。
+  // 行 class 改掉、或者行上的 data-asin 换个属性名(与容器改名同一量级、
+  // 同一概率的改版),容器**照样在** → scopeFound 说不出任何问题、lines 照样是 0
+  // → 「容器在而 0 行 = 真的空了」这句话不成立,而车里还留着上一单的东西。
+  const rowClassRenamed = `<div id="sc-active-cart"><div data-name="Active Items">
+      <div class="sc-item-row" data-asin="B0FB3VS68J"><span data-a-selector="value">1</span></div>
+      <div class="sc-item-row" data-asin="B0CHXNPXVX"><span data-a-selector="value">3</span></div>
+    </div></div>`;
+  eq("行 class 改名 → 0 行、容器还在,但看得见 2 个商品行",
+     await parse(rowClassRenamed, "amzdom.readCartState(d)"),
+     { lines: [], scopeFound: true, rowsSeen: 2 });
+
+  const asinRenamed = `<div id="sc-active-cart"><div data-name="Active Items">
+      <div class="sc-list-item" data-item-asin="B0FB3VS68J"><span data-a-selector="value">1</span></div>
+      <div class="sc-list-item" data-item-asin="B0CHXNPXVX"><span data-a-selector="value">3</span></div>
+    </div></div>`;
+  eq("行上的 data-asin 换属性名 → 同样是 0 行、容器还在、看得见 2 个商品行",
+     await parse(asinRenamed, "amzdom.readCartState(d)"),
+     { lines: [], scopeFound: true, rowsSeen: 2 });
+
+  // 两条判据取并集的意义:一种改版瞎掉一条,另一条还在数。
+  // 少了这一条断言,rowsSeen 只按 .sc-list-item 数也能让上面两条里的一条过。
+  eq("行 class 改名那一页上,按 .sc-list-item 数是 0(所以 rowsSeen 不能只按它数)",
+     await parse(rowClassRenamed, `d.querySelectorAll(".sc-list-item").length`), 0);
+  eq("data-asin 换名那一页上,按 [data-asin] 数是 0(所以 rowsSeen 不能只按它数)",
+     await parse(asinRenamed, `d.querySelectorAll("[data-asin]").length`), 0);
 
   // #sc-active-cart 曾经被算作「空车标志」。它是购物车页的**外层容器** ——
   // 空车、满车、还在加载都有它。一个在车满时也成立的「空车标志」等于没有,

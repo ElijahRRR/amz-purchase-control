@@ -197,8 +197,12 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
           // 上一单的东西。下游那道 verifyCart 确实会挡住脏车,但故障现场会被
           // 描述成「插件内部异常」,没人会去查是清车环节骗了自己。
           //
-          // 正面证据是两条之一:容器在(容器在而 0 行 = 真的空了),
+          // 正面证据是两条之一:**容器在、而且容器里一个画出来的商品行都没有**,
           // 或者页面上有确凿的空车标志(.sc-your-amazon-cart-is-empty / #sc-empty-cart)。
+          //
+          // 「容器在」单独一条不够:行 class 改名、或者行上的 data-asin 换个属性名
+          // (与容器改名同一量级的改版),容器照样在、lines 照样是 0 ——
+          // 而车里实实在在还留着上一单的商品。rowsSeen 就是这一档的判据。
           //
           // 空车标志**必须走 pickFirstRendered**:裸 querySelector 的话,一个
           // display:none 的空车提示模板(Amazon 的常态,见 cart.html 夹具里那份
@@ -206,7 +210,15 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
           // 于是容器改名的那一单被判成「已清空」返回 —— 这道闸要堵的洞原样开着,
           // 而它看起来在。下结论用的判据一律看布局,不看「节点在不在」。
           const emptyMarker = pickFirstRendered(f.doc(), SEL.cart.emptyMarkers) !== null;
-          if (st.scopeFound || emptyMarker) return;
+          if ((st.scopeFound && st.rowsSeen === 0) || emptyMarker) return;
+          if (st.scopeFound && st.rowsSeen > 0) {
+            // 容器在、里面看得见 N 个商品行,却一行都解析不出 ASIN。
+            // 这不是「空车」,是**我们读不懂这一页了**。
+            throw new DriverError(
+              "PLUGIN_INTERNAL",
+              `购物车里看得见 ${st.rowsSeen} 个商品行,却一行都解析不出 ASIN —— ` +
+              `行选择器坏了(${SEL.cart.line} / data-asin),不能断定车是空的`);
+          }
           throw new DriverError(
             "PLUGIN_INTERNAL",
             `购物车页没渲染出商品区,「车是空的」这个结论没有正面证据:` +
@@ -330,9 +342,10 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
    *  运营台上却写着「插件内部异常」,按错误码建的处置 SOP 会把它分给研发看插件,
    *  而不是回上游重新报价。0 行本来就该走 cartMatches → false → CART_MISMATCH。
    *
-   *  换成三种可分辨的结局:
+   *  换成四种可分辨的结局:
    *   · 读到行,或页面明说空车     → 立刻按 cartMatches 判(空车 = 不符)
-   *   · 容器在、就是 0 行          → 等满窗口后同样按 cartMatches 判(不符)
+   *   · 容器在、里面一行都看不见   → 等满窗口后同样按 cartMatches 判(不符)
+   *   · 容器在、看得见行却解析不出 → 行选择器坏了,回读不算数 → PLUGIN_INTERNAL
    *   · 连容器带空车标志都没有     → 这一页压根没渲染,回读不算数 → PLUGIN_INTERNAL
    */
   async verifyCart(expected: Array<{ asin: string; quantity: number }>): Promise<boolean> {
@@ -353,12 +366,23 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
     }, { timeoutMs: 15_000 }).catch(() => null);
 
     const final = st ?? readCartState(f.doc());
-    if (!st && !final.scopeFound) {
-      await this.guardLogin(f, "回读购物车");
-      throw new DriverError(
-        "PLUGIN_INTERNAL",
-        `购物车页没渲染出商品区,回读不算数:` +
-        `${describeMiss(f.doc(), [SEL.cart.activeItems, ...SEL.cart.emptyMarkers])}`);
+    // 0 行有四个来源,只有前两个可以拿去和本单比对。判据按「我们到底读到了什么」
+    // 排,而不是按「waitFor 有没有超时」—— 后者只说明等没等到,不说明读到了什么。
+    if (final.lines.length === 0) {
+      if (final.scopeFound && final.rowsSeen > 0) {
+        await this.guardLogin(f, "回读购物车");
+        throw new DriverError(
+          "PLUGIN_INTERNAL",
+          `购物车页看得见 ${final.rowsSeen} 个商品行,却一行都解析不出 ASIN —— ` +
+          `行选择器坏了(${SEL.cart.line} / data-asin),回读不算数`);
+      }
+      if (!final.scopeFound && pickFirstRendered(f.doc(), SEL.cart.emptyMarkers) === null) {
+        await this.guardLogin(f, "回读购物车");
+        throw new DriverError(
+          "PLUGIN_INTERNAL",
+          `购物车页没渲染出商品区,回读不算数:` +
+          `${describeMiss(f.doc(), [SEL.cart.activeItems, ...SEL.cart.emptyMarkers])}`);
+      }
     }
     this.cartRead = final.lines;
     return cartMatches(final.lines, expected);
