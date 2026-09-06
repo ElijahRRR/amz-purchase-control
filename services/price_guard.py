@@ -107,11 +107,13 @@ def adjudicate(
         if payment_slots is not None:
             cards = payment_slots - (1 if gift_card_applied else 0)
             if cards > 1:
+                where = (f"结算页上有 {payment_slots} 个已选支付方式,"
+                         f"除掉礼品卡余额还剩 {cards} 张卡" if gift_card_applied
+                         else f"结算页上有 {cards} 张已选支付卡")
                 return Verdict(False, "PAYMENT_METHOD_UNEXPECTED",
-                               f"结算页上有 {cards} 个已选支付方式(共 {payment_slots} 个槽位"
-                               + (",其中一个是礼品卡余额)" if gift_card_applied else ")")
-                               + f",第一个是尾号 {payment_last4 or '读不出来'} —— "
-                               "拆分支付时这道闸只看得见第一张卡,不下单,交人核对")
+                               f"{where},第一张是尾号 {payment_last4 or '读不出来'} —— "
+                               "这一单被拆到了多张卡上,而这道闸只看得见第一张,"
+                               "不下单,交人核对")
 
     total = _to_decimal(actual_total)
     if total is None:
