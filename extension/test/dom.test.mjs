@@ -431,6 +431,20 @@ await withDriverOnCart("cart.html",
     check("这条错误同样说的是「行选择器坏了」", msg.includes("解析不出 ASIN"), msg);
   });
 
+// 自相矛盾的一页:空车横幅**画出来了**,而在售区里同时看得见解析不出的商品行。
+// 这时候「车是空的」是危险的那个结论(判错了就拿脏车去结算),所以
+// 「看得见行却解析不出」这条判据必须排在空车标志前面。
+await withDriverOnCart("cart.html",
+  (html) => html
+    .replaceAll('<div class="sc-list-item" data-asin=', '<div class="sc-list-item" data-item-asin=')
+    .replace('<div id="sc-empty-cart" class="aok-hidden">', '<div id="sc-empty-cart">'),
+  async (run) => {
+    const [code, msg] = await run(CLEAR_CART_DRILL);
+    eq("空车横幅与看得见的商品行同时成立 → 以「读不懂」为准,不判已清空",
+       code, "PLUGIN_INTERNAL");
+    check("这条错误说的仍是「行选择器坏了」", msg.includes("解析不出 ASIN"), msg);
+  });
+
 // 反面:真空车页必须能顺利返回。少了这一条,上面那几条断言可能只是
 // 「clearCart 现在总是抛」——那是另一种坏法。
 // 这一页的在售区里还躺着一份**隐藏的**行模板:rowsSeen 要是把它数进去,

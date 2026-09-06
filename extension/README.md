@@ -44,7 +44,7 @@ python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
 真实 Amazon 页面拿不到，所以 DOM 解析对着 `test/fixtures/` 里按逆向报告造的页面跑：
 
 ```bash
-npm run test:dom     # 199 条断言
+npm run test:dom     # 201 条断言
 ```
 
 这一套里有一节不是纯解析:**执行中掉线那条兜底**。它用 route 拦截给 `/ap/signin`

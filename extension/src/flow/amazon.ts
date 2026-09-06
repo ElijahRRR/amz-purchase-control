@@ -209,8 +209,10 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
           // 靠 CSS 类隐藏的 #sc-empty-cart)就能满足这条「正面证据」,
           // 于是容器改名的那一单被判成「已清空」返回 —— 这道闸要堵的洞原样开着,
           // 而它看起来在。下结论用的判据一律看布局,不看「节点在不在」。
-          const emptyMarker = pickFirstRendered(f.doc(), SEL.cart.emptyMarkers) !== null;
-          if ((st.scopeFound && st.rowsSeen === 0) || emptyMarker) return;
+          //
+          // 三条判据的**顺序**是有讲究的:看得见行却解析不出,排在空车标志前面。
+          // 两者同时成立(空车横幅 + 画出来的商品行)是自相矛盾的一页,
+          // 而这时候「车是空的」是危险的那个结论 —— 判错了就拿脏车去结算。
           if (st.scopeFound && st.rowsSeen > 0) {
             // 容器在、里面看得见 N 个商品行,却一行都解析不出 ASIN。
             // 这不是「空车」,是**我们读不懂这一页了**。
@@ -219,6 +221,8 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
               `购物车里看得见 ${st.rowsSeen} 个商品行,却一行都解析不出 ASIN —— ` +
               `行选择器坏了(${SEL.cart.line} / data-asin),不能断定车是空的`);
           }
+          const emptyMarker = pickFirstRendered(f.doc(), SEL.cart.emptyMarkers) !== null;
+          if ((st.scopeFound && st.rowsSeen === 0) || emptyMarker) return;
           throw new DriverError(
             "PLUGIN_INTERNAL",
             `购物车页没渲染出商品区,「车是空的」这个结论没有正面证据:` +
