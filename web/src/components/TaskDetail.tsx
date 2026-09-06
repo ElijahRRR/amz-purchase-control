@@ -16,7 +16,7 @@ import { Dot, Tag } from "@/components/ui/tag";
 import { Input } from "@/components/ui/input";
 import { api, type ApiResult } from "@/lib/api";
 import { useLabel, useMeta } from "@/lib/meta";
-import { cn, fullTime, money, shortTime } from "@/lib/utils";
+import { cn, fullTime, minutesText, money, shortTime } from "@/lib/utils";
 import type { TaskDetail as TD } from "@/types";
 
 function Group({ title, note, right, children, last }: {
@@ -213,11 +213,35 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
    *  三种情况必须说成三句不一样的话:一句「重置一下基本能过」在这三种情况下
    *  都不算错,但它同时也什么都没说 —— 而这三种的处置方式是不同的。
    *  开没开、上限几次都从 meta 来(服务端读的是配置本身),前端不存副本、也不自己判。 */
+  /** 这一单**此刻**在不在自动重试的射程里 —— 「上限 N 次」那句承诺只对它成立。
+   *
+   *  条件与 services/task_retry.py 的选单一一对应,少判一条,界面就会替系统许一个
+   *  它不会兑现的诺:
+   *   · status 必须是 `exception`。`manual` + RETRYABLE 这种组合是**真实可达**的
+   *     (插件越过下单点之后抛 DriverError,码还在 RETRYABLE 那一组里,单却已经
+   *     转了待人工),这种单机器永远不会碰,要人**现在**去看
+   *   · 码必须在 RETRYABLE 那一组
+   *   · 失败不能太久 —— 超过 `max_age_min` 的交给人。年龄由服务端算好给出
+   *     (`updated_age_seconds`),前端不拿浏览器时钟去减,那把尺子跟选单的不是同一把
+   *
+   *  「已经重满 max 次」**不在这里判**:那时候「上限 N 次」这句话仍然成立,
+   *  而且正是要让人看见它已经用满了。 */
+  const autoRetryApplies =
+    meta.auto_retry.enabled
+    && t.status === "exception"
+    && !!t.error_code
+    && meta.error_code.retryable.includes(t.error_code)
+    && t.updated_age_seconds < meta.auto_retry.max_age_min * 60;
+
   const retryHint = (() => {
     if (t.status !== "exception" || !t.error_code) return null;
     if (!meta.error_code.retryable.includes(t.error_code)) return null;
-    const { enabled, max, backoff_min } = meta.auto_retry;
+    const { enabled, max, backoff_min, max_age_min } = meta.auto_retry;
     if (!enabled) return "没开自动重试 —— 这一单只能人工重置,系统不会自己再试";
+    if (!autoRetryApplies)
+      return `失败已经超过 ${minutesText(max_age_min)},系统不再自动重它 —— `
+           + `接下来要人来点。攒太久的单往往在别处已经处置过了,不该由定时任务`
+           + `替人重新买一遍`;
     if (t.retry_count >= max)
       return `自动重试已经用满 ${max} 次,系统不会再动它 —— 接下来要人来点`;
     return `系统最多自动重试 ${max} 次(已试 ${t.retry_count} 次),失败后至少隔 `

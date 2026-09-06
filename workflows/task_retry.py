@@ -12,7 +12,11 @@
 (插件可能已经真下了单)。这一条只碰 `exception`,而且只碰其中
 「页面慢/结构没等到」那一组 —— 两条链的判断方向相反,合在一起迟早有人改错一边。
 
-选谁的条件、以及为什么是这五条,见 services/task_retry.py。
+**一轮有上限**(`AMZ_AUTO_RETRY_BATCH`,默认 20 条),而且**失败太久的不重**
+(`AMZ_AUTO_RETRY_MAX_AGE_MIN`,默认 24 小时)。这两道拦的是同一个场景:
+把上限从 0 改成 N 的那一轮,库里积着的历史 exception 会一次性全部退回队列。
+
+选谁的条件、以及为什么是这几条,见 services/task_retry.py。
 """
 
 from registry import db
@@ -44,7 +48,13 @@ def run(params: dict) -> str:
     with db.pg_conn() as conn:
         rows = task_retry.candidates(conn, cfg=cfg)
         head = (f"{len(rows)} 条够格自动重试"
-                f"(上限 {cfg['max']} 次,失败后至少隔 {cfg['backoff_min']} 分钟)")
+                f"(上限 {cfg['max']} 次;失败后隔够 {cfg['backoff_min']} 分钟、"
+                f"且不超过 {cfg['max_age_min']} 分钟;本轮最多 {cfg['batch']} 条)")
+        if len(rows) >= cfg["batch"]:
+            # 取满了就说一声。不说的话,摘要里那个数会被读成「库里就这么多够格的」,
+            # 而它其实是「这一轮取到的」—— 后面可能还排着两百条。
+            # 空跑尤其要说:所有者正是拿空跑那份输出决定「要不要真跑」的。
+            head += ";本轮取满,余下的下一轮继续"
 
         if params.get("dry_run"):
             # 空跑与真跑用的是同一个 candidates(),不是另写一条查询 ——

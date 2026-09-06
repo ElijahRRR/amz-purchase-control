@@ -228,6 +228,12 @@ python cli.py feishu_writeback
 比这还低频地跑,说明并不真指望它自动重 —— 那就把 `AMZ_AUTO_RETRY_MAX` 调回 0,
 界面会跟着改回「需人工重置」,而不是留一格永远红着的卡片。
 
+**第一次把 `AMZ_AUTO_RETRY_MAX` 从 0 改成 N 的那一轮,不会把库里积着的历史异常
+一次性全部重拍。** 挡着的是两道上界:只重最近 `AMZ_AUTO_RETRY_MAX_AGE_MIN`
+(默认 24 小时)内失败的,而且一轮最多 `AMZ_AUTO_RETRY_BATCH`(默认 20)条。
+`retry_count` 在这里帮不上忙 —— 那些陈年异常的 `retry_count` 全是 0,它界的是
+「同一张单重几次」,不是「一轮放几张单」。即便如此,还是先空跑一次看看会动到谁。
+
 跑之前先空跑一次看看会动到谁:
 
 ```bash
@@ -237,10 +243,10 @@ python cli.py task_sweep
 #   清扫完成:1 条超时任务转 manual (id: [30])
 
 python cli.py task_retry --dry-run
-#   dry-run:1 条够格自动重试(上限 2 次,失败后至少隔 10 分钟)
+#   dry-run:1 条够格自动重试(上限 2 次;失败后隔够 10 分钟、且不超过 1440 分钟;本轮最多 20 条)
 #       #1 UP-1 env-172 CHECKOUT_TIMEOUT 已试 0/2
 python cli.py task_retry
-#   1 条够格自动重试(上限 2 次,失败后至少隔 10 分钟) → 已退回队列 1 条 (#1 第 1/2 次)
+#   1 条够格自动重试(上限 2 次;失败后隔够 10 分钟、且不超过 1440 分钟;本轮最多 20 条) → 已退回队列 1 条 (#1 第 1/2 次)
 ```
 
 超时的单转 **manual 而不是 ready** —— 插件那侧可能已经在 Amazon 上真下了单,
@@ -274,6 +280,8 @@ python cli.py task_retry
 | `AMZ_ADMIN_PAGE_SIZE_MAX` | `200` | 后台列表单页上限 |
 | `AMZ_AUTO_RETRY_MAX` | `0` | 同一张任务最多被**系统**自动重拍几次,**`0` = 关(默认)**。人工重置不占这个数 |
 | `AMZ_AUTO_RETRY_BACKOFF_MIN` | `10` | 失败后至少隔这么久才轮得到自动重试。立刻重拍只是拿同一个坏环境再撞一次 |
+| `AMZ_AUTO_RETRY_MAX_AGE_MIN` | `1440` | 失败超过这么久就**不再自动重**,交给人。拦的是「刚把开关从 0 改成 N,库里积着的历史异常被一次性全部重拍」 |
+| `AMZ_AUTO_RETRY_BATCH` | `20` | 一轮最多自动重几条。`0`/负数按 `1` 算,**不当成「关」**——关只有 `AMZ_AUTO_RETRY_MAX=0` 一个开关 |
 | `AMZ_SHIPMENT_RESYNC_MIN` | `360` | 同一条物流多久之后才值得再同步 |
 | `AMZ_SHIPMENT_BATCH` | `20` | 一次给插件多少条待同步的单 |
 | （库里）`buyer_envs.daily_cap` | `0` | 该买家号一天最多拍几单，`0` = 不限。闸门在认领的那条 SQL 里 |
@@ -294,7 +302,7 @@ python cli.py task_retry
 | `POST /v1/admin/tasks/batch-reset` | 批量重置。**不接受 acknowledged** —— 可能已下单的原样报回来,让人逐条去看 |
 
 | `GET /v1/admin/instances` | 买家号与判活 |
-| `GET /v1/admin/meta` | 封闭集连中文标签下发,外加 `auto_retry: {enabled, max, backoff_min}`。**前端不存副本** |
+| `GET /v1/admin/meta` | 封闭集连中文标签下发,外加 `auto_retry: {enabled, max, backoff_min, max_age_min, batch}`。**前端不存副本** |
 | `GET /v1/admin/summary` | 状态桶计数(跟着 env/时间筛选走;顶栏两个数字保持全局) |
 | `GET /v1/admin/error-stats` | 错误码分布:按码 / 按买家号 / 按天 |
 | `GET /v1/admin/runs` | 工作流运行记录 |

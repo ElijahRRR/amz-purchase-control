@@ -155,6 +155,74 @@ def test_a_fresh_failure_waits_out_the_backoff(conn, seed, on):
     assert _row(conn, old)["status"] == "ready"
 
 
+def test_one_round_has_a_ceiling_too(conn, seed, on, monkeypatch):
+    """「有界」不能只界在单张任务上:一轮放几条也得有个数。
+
+    retry_count 管的是「同一张单重几次」,管不了「一轮放几张单」——
+    所有者第一次把 AMZ_AUTO_RETRY_MAX 从 0 改成 N 的那一轮,库里积着的历史
+    exception 的 retry_count 全是 0、全都早过了 backoff,一轮就会全部退回队列,
+    插件挨个在亚马逊上重拍一遍。
+    """
+    monkeypatch.setenv("AMZ_AUTO_RETRY_BATCH", "3")
+    env_id, _inst, _tasks = seed
+    ids = []
+    for i in range(7):
+        tid = _mk(conn, env_id, f"k-many-{i}")
+        _fail(conn, tid, "CHECKOUT_TIMEOUT", minutes_ago=60 + i)   # 越靠前失败得越晚
+        ids.append(tid)
+    conn.commit()
+
+    # 直接断选单本身:摘要里的条数是它给的,空跑列的也是它给的
+    assert len(task_retry.candidates(conn)) == 3
+
+    summary = wf.run({"dry_run": False})
+    assert "本轮取满" in summary, "取满了要说一声,否则那个数会被读成「库里就这么多」"
+
+    moved = [i for i in ids if _row(conn, i)["status"] == "ready"]
+    # 失败得最早的先重(ORDER BY updated_at),不是随机挑三条 ——
+    # minutes_ago = 60 + i,所以 i 越大失败得越早,最早的三条是 ids[4:]。
+    assert moved == ids[4:], f"一轮最多 3 条,且先失败的先重:{moved}"
+
+
+def test_a_failure_that_has_been_sitting_too_long_is_left_to_people(conn, seed, on,
+                                                                    monkeypatch):
+    """失败太久的不自动重 —— 那是人的事。
+
+    一条 120 天前失败的单还留在 exception 里,通常说明它早就在别处被处置掉了
+    (上游取消了、有人手工买了)。这时自动再拍一次,买回来的既不是当初要的东西,
+    也没人在等它。一轮条数上限只能把这一批摊到几轮里,真正拦住它的是这道年龄闸。
+    """
+    monkeypatch.setenv("AMZ_AUTO_RETRY_MAX_AGE_MIN", "1440")   # 24 小时
+    env_id, _inst, tasks = seed
+    fresh = tasks[0]
+    _fail(conn, fresh, "CHECKOUT_TIMEOUT", minutes_ago=60)             # 1 小时前
+    stale = _mk(conn, env_id, "k-stale")
+    _fail(conn, stale, "CHECKOUT_TIMEOUT", minutes_ago=120 * 24 * 60)  # 120 天前
+    conn.commit()
+
+    assert [r["id"] for r in task_retry.candidates(conn)] == [fresh]
+
+    wf.run({"dry_run": False})
+
+    assert _row(conn, fresh)["status"] == "ready"
+    assert _row(conn, stale) == {"status": "exception",
+                                 "error_code": "CHECKOUT_TIMEOUT", "retry_count": 0}
+
+
+def test_neither_ceiling_can_be_turned_into_a_silent_off_switch(monkeypatch):
+    """条数和年龄这两个上界,0 与负数都按 1 算,**不当成「关」**。
+
+    按 0 算的话,这条链每轮安静地什么都不做,而界面还在替它对运营承诺
+    「系统最多自动重试 N 次」,工作流记录页那一格还是绿的 —— 一个看起来在跑、
+    实际什么都没做的功能,比没有这个功能更害人。
+    关只有一个开关:AMZ_AUTO_RETRY_MAX=0,界面跟着它改口说「需人工重置」。
+    """
+    monkeypatch.setenv("AMZ_AUTO_RETRY_BATCH", "0")
+    monkeypatch.setenv("AMZ_AUTO_RETRY_MAX_AGE_MIN", "-5")
+    assert settings.auto_retry_batch() == 1
+    assert settings.auto_retry_max_age_minutes() == 1
+
+
 def test_a_negative_config_never_widens_the_gate(monkeypatch):
     """负数不许把闸门变宽 —— 两个方向都得往「更保守」那边倒。
 
@@ -167,7 +235,8 @@ def test_a_negative_config_never_widens_the_gate(monkeypatch):
     monkeypatch.setenv("AMZ_AUTO_RETRY_MAX", "-3")
     assert settings.auto_retry_backoff_minutes() == 0
     assert settings.auto_retry_max() == 0
-    assert task_retry.config() == {"enabled": False, "max": 0, "backoff_min": 0}
+    cfg = task_retry.config()
+    assert (cfg["enabled"], cfg["max"], cfg["backoff_min"]) == (False, 0, 0)
 
 
 def test_stops_at_the_ceiling(conn, seed, on):
@@ -339,16 +408,25 @@ def test_runs_page_only_watches_it_when_it_is_on(client, conn, monkeypatch):
 # ── 界面拿到的事实 ──────────────────────────────────────────────────────
 
 def test_meta_tells_the_web_whether_it_is_on(client, monkeypatch):
-    """界面关于 RETRYABLE 那一组的每一句话都从这里来,所以这三个值不能少也不能错。"""
-    monkeypatch.delenv("AMZ_AUTO_RETRY_MAX", raising=False)
-    monkeypatch.delenv("AMZ_AUTO_RETRY_BACKOFF_MIN", raising=False)
+    """界面关于 RETRYABLE 那一组的每一句话都从这里来,所以这几个值不能少也不能错。
+
+    `max_age_min` 也得下发:它决定的不是「什么时候重」,而是**会不会重** ——
+    界面不知道这道闸,就会对着一张系统永远不会碰的单继续写「不点它也会被放回队列」。
+    """
+    for var in ("AMZ_AUTO_RETRY_MAX", "AMZ_AUTO_RETRY_BACKOFF_MIN",
+                "AMZ_AUTO_RETRY_MAX_AGE_MIN", "AMZ_AUTO_RETRY_BATCH"):
+        monkeypatch.delenv(var, raising=False)
     d = client.get("/v1/admin/meta").json()["data"]
-    assert d["auto_retry"] == {"enabled": False, "max": 0, "backoff_min": 10}
+    assert d["auto_retry"] == {"enabled": False, "max": 0, "backoff_min": 10,
+                               "max_age_min": 1440, "batch": 20}
 
     monkeypatch.setenv("AMZ_AUTO_RETRY_MAX", "3")
     monkeypatch.setenv("AMZ_AUTO_RETRY_BACKOFF_MIN", "20")
+    monkeypatch.setenv("AMZ_AUTO_RETRY_MAX_AGE_MIN", "300")
+    monkeypatch.setenv("AMZ_AUTO_RETRY_BATCH", "5")
     d = client.get("/v1/admin/meta").json()["data"]
-    assert d["auto_retry"] == {"enabled": True, "max": 3, "backoff_min": 20}
+    assert d["auto_retry"] == {"enabled": True, "max": 3, "backoff_min": 20,
+                               "max_age_min": 300, "batch": 5}
 
     # 那个写死的「做没做自动重试」的布尔不许回来:功能做出来之后,
     # 开没开是配置的事,一个写死的常量迟早与配置说的不是同一件事。

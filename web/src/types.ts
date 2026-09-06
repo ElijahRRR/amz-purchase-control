@@ -123,6 +123,12 @@ export interface TaskDetail extends Omit<TaskRow, "carrier" | "tracking_no" | "s
   /** **系统**自动重拍过几次。人点的重置不计数(那一下背后有人在看),
    *  所以这个数是「机器替你试了几回」,配 meta.auto_retry.max 一起读。 */
   retry_count: number;
+  /** 距上次变动过了多久(秒)。对 exception 的单,这就是「失败到现在多久」。
+   *
+   *  由**服务端**用库里的 now() 算好,不是前端拿浏览器时钟减出来的 ——
+   *  自动重试选单量的是同一把尺子,两把尺子对不上的话,界面就会在
+   *  「系统还会再试」和「太久了,系统不会碰它」之间说错话。 */
+  updated_age_seconds: number;
 }
 
 export interface InstanceRow {
@@ -186,7 +192,20 @@ export interface Meta {
    *
    *  **前端不存副本、也不自己算「开没开」** —— 服务端读的是配置本身
    *  (services/task_retry.config()),与那条定时链选单读的是同一份。 */
-  auto_retry: { enabled: boolean; max: number; backoff_min: number };
+  auto_retry: {
+    enabled: boolean;
+    max: number;
+    backoff_min: number;
+    /** 失败超过这么多分钟就**不再自动重**,交给人。
+     *
+     *  它决定的不是「什么时候重」,而是**会不会重** —— 所以凡是写着
+     *  「不点它也会被放回队列」的地方都得先过这道闸,否则界面会对着一张
+     *  系统永远不会碰的单许一个不会兑现的诺。 */
+    max_age_min: number;
+    /** 一轮最多重几条。只影响快慢(这一轮没轮到的下一轮还在),
+     *  **不影响「会不会被重」,所以界面不拿它写承诺**。 */
+    batch: number;
+  };
 }
 
 export interface Summary {

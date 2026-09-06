@@ -76,8 +76,10 @@ def test_the_ui_reads_auto_retry_from_config_not_from_a_hardcoded_constant(monke
     assert (paths.repo_root() / "workflows" / "task_retry.py").exists(), \
         "注释与文档都说 RETRYABLE 有自动重试在消费,那条链必须真的在"
 
-    monkeypatch.delenv("AMZ_AUTO_RETRY_MAX", raising=False)
-    monkeypatch.delenv("AMZ_AUTO_RETRY_BACKOFF_MIN", raising=False)
+    for var in ("AMZ_AUTO_RETRY_MAX", "AMZ_AUTO_RETRY_BACKOFF_MIN",
+                "AMZ_AUTO_RETRY_MAX_AGE_MIN", "AMZ_AUTO_RETRY_BATCH"):
+        monkeypatch.delenv(var, raising=False)
     assert task_retry.config()["enabled"] is False, "自动重试必须默认关"
     monkeypatch.setenv("AMZ_AUTO_RETRY_MAX", "3")
-    assert task_retry.config() == {"enabled": True, "max": 3, "backoff_min": 10}
+    assert task_retry.config() == {"enabled": True, "max": 3, "backoff_min": 10,
+                                   "max_age_min": 1440, "batch": 20}

@@ -23,17 +23,31 @@ from services import error_codes, task_admin
 #: 一条自动重试在时间线上必须一眼看出没有人参与,不能借用某个运营的名字。
 OPERATOR = "auto_retry"
 
-#: 选单条件。五条**同时**成立才算够格,少任何一条都可能变成重复下单或者无限重试:
+#: 选单条件。前六条是**这一张单**够不够格,六条同时成立才算数,少任何一条都可能
+#: 变成重复下单或者无限重试:
 #:   ① status = 'exception'  —— manual 不碰。manual 的含义就是「等人裁决」,
 #:      系统在这里替人做决定,那道闸就白设了
 #:   ② error_code ∈ RETRYABLE —— 页面慢/结构没等到这一类
 #:   ③ error_code ∉ POSSIBLY_ORDERED —— 见 _retryable_codes():两组按定义不交,
 #:      这里是第二道,防的是有人改了分组还没人发现
-#:   ④ retry_count < 上限 —— 「有界」全靠这个数
+#:   ④ retry_count < 上限 —— 界的是「同一张单重几次」
 #:   ⑤ 失败已经过了 backoff —— 立刻重拍只是拿同一个坏环境再撞一次
+#:   ⑥ 失败**没有太久**(AMZ_AUTO_RETRY_MAX_AGE_MIN)—— 见下
+#:
+#: 第七道不属于任何一张单,属于这一轮:
+#:   ⑦ LIMIT batch —— 一轮最多放这么多条回队列
+#:
+#: **⑥⑦ 拦的是同一件事:「有界」不能只界在单张任务上。** ④ 管的是同一张单重几次,
+#: 管不了一轮放几张单 —— 所有者第一次把 AMZ_AUTO_RETRY_MAX 从 0 改成 N 的那一轮,
+#: 库里积着的**全部历史** exception 的 retry_count 都是 0、都早过了 backoff,
+#: 于是一轮全部退回队列,插件挨个在亚马逊上重拍一遍。⑦ 把这一批摊到多轮里
+#: (照 services/shipment.py 那条 LIMIT 的先例),⑥ 才是真正拦住它的那一道:
+#: 攒了几个月的失败单早就在别处被处置掉了,不该由一条定时任务替人重新买回来。
+#: 「跑之前先 --dry-run 看看会动到谁」是给人的提醒,不是护栏 —— 它靠人记得敲。
 #:
 #: 时间基准取 `updated_at`:失败那一刻 task_queue.fail 会把它更新成 now()。
-#: 它也会被改地址之类的人工动作推后 —— 推后只是让这一条晚一点被重,方向是安全的;
+#: 它也会被改地址之类的人工动作推后 —— 推后让这一条晚一点被 ⑤ 放行、又让它在 ⑥
+#: 眼里更年轻,两个方向都是「有人刚碰过这一单」,与这两道闸的意思一致;
 #: 没有任何路径会把它提前。
 _CANDIDATE_SQL = """
 SELECT t.id, t.upstream_order_no, t.error_code, t.retry_count, t.updated_at,
@@ -45,20 +59,29 @@ SELECT t.id, t.upstream_order_no, t.error_code, t.retry_count, t.updated_at,
    AND NOT (t.error_code = ANY(%(never)s))
    AND t.retry_count < %(max)s
    AND t.updated_at < now() - make_interval(mins => %(backoff)s)
+   AND t.updated_at > now() - make_interval(mins => %(max_age)s)
  ORDER BY t.updated_at, t.id
+ LIMIT %(batch)s
 """
 
 
 def config() -> dict[str, Any]:
-    """输入:无 → 输出:{enabled, max, backoff_min}。
+    """输入:无 → 输出:{enabled, max, backoff_min, max_age_min, batch}。
 
     界面文案、工作流选单、运营台「这条链要不要盯着」读的都是这一份 ——
     三处各自去读环境变量的话,迟早出现「界面说系统会自动重试、而那条链根本没开」。
     界面上不许写系统不会做的承诺,这是那条承诺的唯一出处。
+
+    `max_age_min` 也要下发给界面:它决定的不是「什么时候重」,而是**会不会重** ——
+    一条失败超过它的单,系统永远不会碰。界面要是不知道这道闸,就会对着一张
+    没人会再管的单继续写「不点它也会被放回队列」。`batch` 只影响快慢
+    (这一轮没轮到的下一轮还在),所以界面拿到了也不拿它写承诺。
     """
     n = settings.auto_retry_max()
     return {"enabled": n > 0, "max": n,
-            "backoff_min": settings.auto_retry_backoff_minutes()}
+            "backoff_min": settings.auto_retry_backoff_minutes(),
+            "max_age_min": settings.auto_retry_max_age_minutes(),
+            "batch": settings.auto_retry_batch()}
 
 
 def _retryable_codes() -> list[str]:
@@ -95,6 +118,8 @@ def candidates(conn, *, cfg: dict[str, Any] | None = None) -> list[dict[str, Any
         "never": sorted(error_codes.POSSIBLY_ORDERED),
         "max": cfg["max"],
         "backoff": cfg["backoff_min"],
+        "max_age": cfg["max_age_min"],
+        "batch": cfg["batch"],
     }).fetchall()]
 
 
