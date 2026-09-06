@@ -75,6 +75,11 @@ export interface TaskRow {
    *  「已试 0/2、机器待会儿会来重」和「已试 2/2、机器再也不会碰」
    *  在列表上原先是同一行。 */
   retry_count: number;
+  /** 距上次变动过了多久(秒)。判「这一单还在不在自动重试射程里」要用它 ——
+   *  列表与详情用的是同一个函数(lib/utils.autoRetryApplies),
+   *  少一条判据的话,同一张单在两处会得出相反的结论。
+   *  由**服务端**用库里的 now() 算,不是前端拿浏览器时钟减出来的。 */
+  updated_age_seconds: number;
 }
 
 export interface SearchOut {
@@ -203,7 +208,20 @@ export interface InstanceRow {
   /** 登录态这一项拦不拦派单(= login_state 为 signed_out)。
    *  服务端算的,与认领那道真闸同一个函数 —— 前端**不自己判**。 */
   login_blocks_dispatch: boolean;
-  /** 与 task_queue.CLAIM_SQL 那道真闸算同一件事:在线、没到日上限、且没被登出。 */
+  /** 派不派得出单。= **真闸的三条 + 一条界面自己加的保守条件**:
+   *
+   *   · `status`(暂停)、`daily_cap`、登录态 —— 这三条与认领那条真闸
+   *     (`services/task_queue.CLAIM_SQL` 加上 `routes/tasks.claim` 那道
+   *     `INSTANCE_SIGNED_OUT`)算的是同一件事;
+   *   · **心跳新鲜度(liveness === "online")—— 真闸不判这一条。**
+   *     CLAIM_SQL 里没有任何心跳条件:一个心跳晚到超过 `AMZ_HEARTBEAT_STALE_SEC`
+   *     (默认 60 秒,而心跳间隔 20 秒、后台标签页会被浏览器节流)的实例,
+   *     这一页写「没有心跳 · 不可派」,它下一次 tick 照样能认领并真的拍单。
+   *
+   *  偏差方向是**保守**的(界面比真闸严),留着是因为「一台失联的机器」确实
+   *  值得在这一页上说出来。但注释不许宣称「与真闸同源」——
+   *  daily_cap 那次分叉的教训正是「界面自己算一遍,算法与真闸不一样」,
+   *  而一句说过头的注释会让下一个人以为不必再核。 */
   dispatchable: boolean;
   /** 最近 24 小时里这个买家号有几单**试着清车但没清动**。
    *
@@ -347,6 +365,13 @@ export interface RunsOut {
     scheduled: boolean;
     expected_seconds: number | null;
     overdue: boolean;
+    /** 「这条链停了会怎样」——**服务端下发,一条链一句话**。
+     *
+     *  界面原先把 task_sweep 的后果写死给了每一条逾期的链,于是 feishu_sync、
+     *  feishu_writeback、task_retry 逾期时都显示「claimed 的任务会一直堆着」——
+     *  对这三条全是假的。三条链三种后果渲染成同一句,而另外两页都在把人往
+     *  这一页引。null = 按需跑的链,界面不写这一句(编不出后果的地方不许编)。 */
+    overdue_consequence: string | null;
   }[];
   stuck_after_seconds: number;
 }

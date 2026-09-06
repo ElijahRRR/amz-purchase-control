@@ -20,16 +20,35 @@ import type { InstanceRow } from "@/types";
  *  能就地改掉,是这一格唯一说得过去的形态。
  *
  *  形状校验在服务端(services/instance.set_expected_card)。这里也拦一道,
- *  但这一道是**便利**不是保证 —— 接口是公开的,curl 一下就绕过去了。 */
+ *  但这一道是**便利**不是保证 —— 接口是公开的,curl 一下就绕过去了。
+ *
+ *  **清空这一格 = 把 PAYMENT_METHOD_UNEXPECTED 这道下单前的闸整个关掉**,
+ *  所以它单独过一次确认。原先是「按了退格再点别处」就生效:没有二次确认、
+ *  没有成功提示,而按 set_expected_card 自己的自述也没有任何审计记录 ——
+ *  这个买家号从此每一单都不再校验支付卡,界面只是把输入框变成灰色的「不校验」。
+ *  对照:同一套界面里危险性小得多的「强制回填单号」必须过一个红色预览步。
+ *  **填一个新值不需要确认**(填错了的表现是每一单都被拦下,吵而安全);
+ *  只有「关掉」这个方向要。 */
 function ExpectedCard({ row, onSaved }: { row: InstanceRow; onSaved: () => void }) {
   const [v, setV] = useState(row.expected_card_last4 ?? "");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  /** 等人确认「确实要关掉这道闸」。null = 没在等。 */
+  const [confirmOff, setConfirmOff] = useState(false);
   // 别人改了库(或者别的标签页改了)时跟着刷新,但正在输入的时候不抢用户的光标
   const [focused, setFocused] = useState(false);
   useEffect(() => {
     if (!focused) setV(row.expected_card_last4 ?? "");
   }, [row.expected_card_last4, focused]);
+
+  const commit = async (next: string) => {
+    setBusy(true);
+    const r = await api.setExpectedCard(row.env_id, next);
+    setBusy(false);
+    setConfirmOff(false);
+    if (r.ok) { setErr(null); onSaved(); }
+    else setErr(r.kind === "transport" ? "没说上话" : r.message);
+  };
 
   const save = async () => {
     const next = v.trim();
@@ -38,11 +57,9 @@ function ExpectedCard({ row, onSaved }: { row: InstanceRow; onSaved: () => void 
       setErr("要 4 位数字,留空表示不校验");
       return;
     }
-    setBusy(true);
-    const r = await api.setExpectedCard(row.env_id, next);
-    setBusy(false);
-    if (r.ok) { setErr(null); onSaved(); }
-    else setErr(r.kind === "transport" ? "没说上话" : r.message);
+    // 从「配着一张卡」变成「留空」= 关掉一道下单前的护栏。先问一句。
+    if (!next && row.expected_card_last4) { setConfirmOff(true); return; }
+    await commit(next);
   };
 
   return (
@@ -60,9 +77,31 @@ function ExpectedCard({ row, onSaved }: { row: InstanceRow; onSaved: () => void 
                           : "border-zinc-200 text-zinc-700 focus:border-sky-400")}
       />
       {err && <span className="text-2xs text-red-600">{err}</span>}
+      {confirmOff && (
+        <span className="inline-flex items-center gap-1.5 text-2xs text-red-700">
+          关掉之后这个买家号的每一单都不再核对支付卡,确定?
+          <button className="px-1.5 py-0.5 rounded border border-red-300 bg-white text-red-700"
+                  disabled={busy}
+                  onClick={() => void commit("")}>关掉</button>
+          <button className="px-1.5 py-0.5 rounded border border-zinc-200 bg-white text-zinc-600"
+                  disabled={busy}
+                  onClick={() => { setConfirmOff(false); setV(row.expected_card_last4 ?? ""); }}>
+            算了
+          </button>
+        </span>
+      )}
     </span>
   );
 }
+
+/** 表头。**提到组件外是为了让空态那两行的 colSpan 跟着它走** ——
+ *  写死一个数字的话,加一列就得记得同时改三处,而漏掉的那次没有任何测试会红:
+ *  HTML 表格的列数取所有行的最大值,colSpan 比真实列数大 1 就会凭空多出一列,
+ *  表头行少一格、列宽整体重算,空态与有数据时的列位置对不上。
+ *  这个 +1 的偏差已经继承了两轮(12 列写 13、14 列写 15)。 */
+const HEADERS = ["买家号", "站点", "实例", "插件版本", "最后心跳", "队列待拍",
+                 "待人工", "今日已拍", "日上限", "支付卡尾号", "状态", "登录态", "清车",
+                 "可派单"];
 
 const LIVENESS: Record<InstanceRow["liveness"], { label: string; tone: Tone; dot: string }> = {
   online: { label: "在线", tone: "solid-emerald", dot: "bg-emerald-500" },
@@ -125,9 +164,7 @@ export default function InstancesPage() {
           <table className="w-full">
             <thead>
               <tr className="bg-zinc-50 border-b border-zinc-200">
-                {["买家号", "站点", "实例", "插件版本", "最后心跳", "队列待拍",
-                  "待人工", "今日已拍", "日上限", "支付卡尾号", "状态", "登录态", "清车",
-                  "可派单"].map((h, i) => (
+                {HEADERS.map((h, i) => (
                   <th key={h} className={cn(
                     "h-th px-3 text-2xs font-medium uppercase tracking-wider text-zinc-500 whitespace-nowrap",
                     // 只有数字列右对齐:数字右对齐是为了让位数对齐着看,
@@ -225,12 +262,12 @@ export default function InstancesPage() {
                 );
               })}
               {rows === null && (
-                <tr><td colSpan={15} className="h-20 text-center text-xs text-zinc-400">
+                <tr><td colSpan={HEADERS.length} className="h-20 text-center text-xs text-zinc-400">
                   {err ? "读不到买家号列表" : "读取中…"}
                 </td></tr>
               )}
               {rows?.length === 0 && (
-                <tr><td colSpan={15} className="h-20 text-center text-xs text-zinc-400">
+                <tr><td colSpan={HEADERS.length} className="h-20 text-center text-xs text-zinc-400">
                   还没有买家号 —— 先在库里建 procure.buyer_envs,再让插件连上来
                 </td></tr>
               )}

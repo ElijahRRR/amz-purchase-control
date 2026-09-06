@@ -634,6 +634,46 @@ def test_every_workflow_declares_whether_it_should_be_scheduled(client, conn):
         f"没声明期望的:{sorted(real - declared)};声明了但文件不存在的:{sorted(declared - real)}")
 
 
+def test_every_workflow_that_can_go_overdue_says_what_happens_if_it_stops(client, conn):
+    """能标红的链都得说得出「停了会怎样」,而且**一条一句**。
+
+    界面原先把 task_sweep 的后果写死给了每一条逾期的链:feishu_sync /
+    feishu_writeback / task_retry 逾期时都显示「它停了,claimed 的任务会一直堆着,
+    而队列看起来一切正常」—— 对这三条全是假的。三条链三种后果渲染成同一句,
+    而运营台另外两页都在把人往这一页引:人来了,读到的是一句与他要处置的
+    那件事无关的话。
+
+    这里断两件事:能定时的链一条都不许缺这句话;而且没有两条链共用同一句
+    (共用就说明又有人在拿一条的后果去套另一条)。
+    """
+    from services import ops_query
+
+    # 「可能被标红的」= 那张期望表里声明了间隔的,以及三条按配置开关的。
+    schedulable = {"task_sweep", "feishu_sync", "feishu_writeback", "task_retry"}
+    missing = schedulable - set(ops_query.OVERDUE_CONSEQUENCE)
+    assert not missing, f"这几条链能标红却说不出停了会怎样:{sorted(missing)}"
+    said = list(ops_query.OVERDUE_CONSEQUENCE.values())
+    assert len(set(said)) == len(said), "有两条链共用同一句「停了会怎样」"
+    # 声明了后果、却根本不会被标红的,同样是错的(界面永远不会显示它)
+    extra = set(ops_query.OVERDUE_CONSEQUENCE) - set(ops_query._workflow_names())
+    assert not extra, f"声明了后果但文件不存在:{sorted(extra)}"
+
+
+def test_runs_ships_the_consequence_with_each_workflow(client, conn):
+    """那句话随 by_workflow 下发,界面不按名字自己编。"""
+    from services.ops_query import OVERDUE_CONSEQUENCE
+
+    def ops_query_consequence(name):
+        return OVERDUE_CONSEQUENCE[name]
+
+    data = client.get("/v1/admin/runs").json()["data"]
+    by = {r["workflow"]: r for r in data["by_workflow"]}
+    assert by["task_sweep"]["overdue_consequence"] == \
+        ops_query_consequence("task_sweep")
+    # 按需跑的链没有这句话 —— 编不出后果的地方不许编
+    assert by["db_init"]["overdue_consequence"] is None
+
+
 def test_only_the_scheduled_workflow_goes_overdue_when_it_never_ran(client, conn):
     """按需跑的从没跑过 ≠ 异常;该定时的从没跑过 = 异常。"""
     data = client.get("/v1/admin/runs").json()["data"]
@@ -702,6 +742,42 @@ def test_export_flattens_multi_product_orders_into_one_row_each(client, conn, se
     lines = [ln for ln in body.splitlines() if ln.strip()]
     assert len(lines) == 5, "3 单,其中一单两个商品 → 4 行 + 表头"
     assert "B0SECOND01" in body
+
+
+def test_list_and_export_tell_the_two_manual_buckets_apart(client, conn, seed):
+    """「越过下单点」必须在**列表和 CSV 上**看得见,不能只在详情里。
+
+    两条单在列表上原先是完全相同的一行:
+      · 越过下单点之后读订单卡抛错 → status=manual + PLUGIN_INTERNAL +
+        may_have_ordered=true(**可能已经花过钱**,重置 = 再买一遍)
+      · 护栏判货款 ≤ 0 拦下          → status=manual + PLUGIN_INTERNAL +
+        may_have_ordered=false(绝没花钱)
+    紧凑档两行都是「待人工」紫标 +「插件内部异常」灰虚线标,CSV 逐列相同。
+    运营扫「待人工」那一桶时,没有任何线索指出哪几条必须先去订单页确认 ——
+    而服务端那四道回队列的闸每一道都判这一位。docs/01 §5.4:「只判码会漏掉一整类」。
+    """
+    _env, _inst, tasks = seed
+    _set(conn, tasks[0], status="manual", error_code="PLUGIN_INTERNAL")
+    _set(conn, tasks[1], status="manual", error_code="PLUGIN_INTERNAL")
+    conn.execute("UPDATE procure.tasks SET may_have_ordered = true WHERE id = %s", (tasks[0],))
+    conn.commit()
+
+    items = client.post("/v1/admin/tasks/search", json={}).json()["data"]["items"]
+    by_id = {r["id"]: r for r in items}
+    assert by_id[tasks[0]]["may_have_ordered"] is True
+    assert by_id[tasks[1]]["may_have_ordered"] is False
+    # 「已试 k/N」那一档要用的两列也得在(判据与详情同一套)
+    assert "retry_count" in by_id[tasks[0]] and "updated_age_seconds" in by_id[tasks[0]]
+
+    body = client.post("/v1/admin/tasks/export", json={}).text
+    header = body.splitlines()[0]
+    assert "越过下单点" in header
+    col = header.split(",").index("越过下单点")
+    rows = {ln.split(",")[0]: ln.split(",") for ln in body.splitlines()[1:] if ln.strip()}
+    up0 = by_id[tasks[0]]["upstream_order_no"]
+    up1 = by_id[tasks[1]]["upstream_order_no"]
+    assert rows[up0][col] == "是"
+    assert rows[up1][col] == "否"
 
 
 def test_export_marks_the_rows_that_went_over_the_cap(client, conn, seed):

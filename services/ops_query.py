@@ -88,6 +88,28 @@ EXPECTED_INTERVAL: dict[str, timedelta | None] = {
 }
 
 
+#: **停了会怎样** —— 一条链一句话,与上面那张期望表一处定义。
+#:
+#: 界面原先把 task_sweep 的后果写死给了每一条逾期的链:feishu_sync、
+#: feishu_writeback、task_retry 逾期时都显示「它停了,claimed 的任务会一直堆着,
+#: 而队列看起来一切正常」—— 对这三条全是假的。三条链三种后果渲染成同一句,
+#: 而运营台另外两页(错误码分布页的可重试卡、任务详情的 retryHint)都在把人往
+#: 这一页引:人来了,读到的是一句与他要处置的那件事无关的话。
+#:
+#: 没有条目的(按需跑的链)界面上就不写这一句 —— 编不出后果的地方不许编。
+OVERDUE_CONSEQUENCE: dict[str, str] = {
+    "task_sweep": "它停了,领走后再没消息的单会一直停在「拍单中」,"
+                  "既不会自己回队列,也不会出现在任何一个人会去看的桶里 —— "
+                  "而队列看起来一切正常",
+    "feishu_sync": "它停了,新单一张都进不来 —— "
+                   "而「队列待拍 0」跟「今天上游确实没派单」长得一模一样",
+    "feishu_writeback": "它停了,上游那张表看到的还是旧状态 —— "
+                        "库里已经拍完的单,在飞书里仍然是「待采购」",
+    "task_retry": "它停了,界面正对运营承诺「系统最多自动重试 N 次」而没人在重 —— "
+                  "那一桶单会安安静静地待在拍单异常里,谁也没在管",
+}
+
+
 def _expected(name: str) -> timedelta | None:
     """输入:工作流名 → 输出:它「多久没跑算不正常」。
 
@@ -190,6 +212,9 @@ def recent(conn, *, limit: int = 60) -> dict[str, Any]:
             "scheduled": expect is not None,
             "expected_seconds": int(expect.total_seconds()) if expect else None,
             "overdue": overdue,
+            # 「停了会怎样」随行下发:界面不按 workflow 名自己编一句,
+            # 也不拿其中一条的后果去套所有链。没有条目就是 None,界面不写这一句。
+            "overdue_consequence": OVERDUE_CONSEQUENCE.get(name),
         })
 
     # 顶栏那个数字要是**真的总数**,不是 items 的长度。

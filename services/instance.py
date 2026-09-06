@@ -313,6 +313,10 @@ def set_expected_card(conn, env_id: int, last4: str | None) -> dict:
     task_events 挂在 task_id 上,这张表没有 task_id,套不进去;buyer_envs
     眼下整张表都没有审计流(daily_cap、status 同样没有)。补它得先给 buyer_envs
     开一条事件流 —— 那是一件独立的事。这里写明白,免得下一个人以为记过。
+
+    运营台那一格现在会为「清空 = 关掉这道闸」单独问一句(填一个新值不问 ——
+    填错的表现是每一单都被拦下,吵而安全;关掉是**静悄悄地**不再校验)。
+    那是界面上的一道拦,不是留痕:谁在什么时候关的,库里仍然答不出。
     """
     v = (last4 or "").strip()
     if v and not (len(v) == 4 and v.isdigit()):

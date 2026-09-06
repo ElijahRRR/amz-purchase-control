@@ -42,6 +42,11 @@ SELECT t.id, t.line_key, t.upstream_order_no, t.marketplace, t.status,
        -- 系统自动重了几次。开着自动重试时,「已试 0/2、机器待会儿会来重」与
        -- 「已试 2/2、机器再也不会碰、要人现在去点」在列表上原先是同一行。
        t.retry_count,
+       -- 距上次变动过了多久。**列表这一层也要有** —— 「这一单还在不在自动重试的
+       -- 射程里」有五条判据(见 web/src/lib/utils.autoRetryApplies),年龄是其中一条。
+       -- 列表少一条判据的话,同一张单在列表和详情里会得出两个相反的结论。
+       -- 由服务端用库里的 now() 算,与选单 SQL 量的是同一把尺子。
+       EXTRACT(EPOCH FROM (now() - t.updated_at))::bigint AS updated_age_seconds,
        t.created_at, t.purchased_at,
        e.code AS env_code, e.amazon_customer_id,
        s.carrier, s.tracking_no, s.status AS shipment_status,

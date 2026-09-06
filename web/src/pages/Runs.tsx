@@ -14,7 +14,7 @@ import { useEffect, useState } from "react";
 import { Card, CardHead } from "@/components/ui/card";
 import { Tag, type Tone } from "@/components/ui/tag";
 import { api } from "@/lib/api";
-import { cn, fullTime, shortTime } from "@/lib/utils";
+import { cn, fullTime, minutesText, shortTime } from "@/lib/utils";
 import type { RunsOut, WorkflowRun } from "@/types";
 
 /** 「多久以前」。这一页看的就是新鲜度,绝对时间反而要在脑子里做一次减法。 */
@@ -112,8 +112,14 @@ export default function RunsPage() {
                 {c.scheduled && (
                   <div className={cn("text-xs+ leading-relaxed",
                                      c.overdue ? "text-red-700" : "text-zinc-500")}>
-                    该每 {Math.floor((c.expected_seconds ?? 0) / 3600)} 小时至少跑一次
-                    {c.overdue && " —— 它停了,claimed 的任务会一直堆着,而队列看起来一切正常"}
+                    {/* 阈值用 minutesText:Math.floor(秒/3600) 在阈值不足一小时时
+                        写出「该每 0 小时至少跑一次」(AMZ_FEISHU_SYNC_MAX_AGE_MIN=30
+                        是运维可调的),90 分钟则被说成「1 小时」——
+                        这一页的职责就是让人据此判断某条链是不是真的逾期。 */}
+                    该每 {minutesText(Math.round((c.expected_seconds ?? 0) / 60))} 至少跑一次
+                    {/* 「停了会怎样」由服务端逐条下发(services/ops_query.OVERDUE_CONSEQUENCE)。
+                        原先这里写死的是 task_sweep 的后果,而它对另外三条链都是假的。 */}
+                    {c.overdue && c.overdue_consequence && ` —— ${c.overdue_consequence}`}
                   </div>
                 )}
               </Card>

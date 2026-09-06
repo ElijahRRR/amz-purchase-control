@@ -18,7 +18,7 @@ import { Box, Home, Mail, MapPin, Phone } from "lucide-react";
 import { CopyText } from "@/components/CopyText";
 import { Tag } from "@/components/ui/tag";
 import { useLabel, useMeta } from "@/lib/meta";
-import { capVerdict, cn, money, shortTime } from "@/lib/utils";
+import { autoRetryApplies, capVerdict, cn, money, shortTime } from "@/lib/utils";
 import type { TaskRow } from "@/types";
 
 export type Density = "detail" | "compact";
@@ -65,6 +65,21 @@ function DL({ k, children, className }: { k: string; children: React.ReactNode; 
  * 跟一张真的只花了 0 元的单**长得一模一样**,而详情弹窗那边说它超了一倍多 ——
  * 同一个事实两个页面两种说法。界面上的红色必须跟真正那道闸算的是同一件事,
  * 否则就是「看起来有护栏」。 */
+/** 「这一单越过了下单点」。**与错误码是两件事** —— 越过下单点之后抛的
+ *  DriverError 用的是它自己的码(PLUGIN_INTERNAL / CART_MISMATCH,都在
+ *  「可重试」那一组),光看码会把一张已经花过钱的单读成「重一下就过」。
+ *  服务端四道回队列的闸都判这一位,列表这一层原先看不见它:
+ *  扫「待人工」那一桶的人没有任何线索知道哪几条必须先去买家号订单页确认。
+ *  紫色与「可能已下单」那组码同色 —— 它们说的是同一件事。 */
+function CrossedTag({ on }: { on: boolean }) {
+  if (!on) return null;
+  return (
+    <span title="下单按钮点过了 —— 重置前必须有人去买家号订单页确认">
+      <Tag tone="solid-violet">已越过下单点</Tag>
+    </span>
+  );
+}
+
 function totalTone(r: TaskRow): string {
   const v = capVerdict(r);
   if (v.state === "unknown") return "text-zinc-400";
@@ -147,6 +162,32 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
     return <Tag tone={tone}>{meta.error_code.labels[code] ?? code}</Tag>;
   };
 
+  /** 「已试 k/N」。**只在这一单真在自动重试射程里时才写上限** ——
+   *  判据复用详情那一套(lib/utils.autoRetryApplies),两边各写一遍的话,
+   *  迟早一边说「系统会来重」、另一边说「要人去点」。
+   *
+   *  为什么列表也要有:开着自动重试时,「已试 0/2、机器待会儿会来重」与
+   *  「已试 2/2、机器再也不会碰、要人现在去点」在列表上原先是同一行
+   *  「拍单异常 · 结算页跳转超时」,而列表正是运营扫桶的地方 ——
+   *  要判断哪几条已经用满、正在没人管地躺着,只能一条条点开。 */
+  const retryBadge = (r: TaskRow) => {
+    if (!meta.auto_retry.enabled) return null;
+    if (r.status !== "exception" || !r.error_code) return null;
+    if (!meta.error_code.retryable.includes(r.error_code)) return null;
+    const inRange = autoRetryApplies(r, meta.auto_retry, meta.error_code.retryable);
+    const used = r.retry_count >= meta.auto_retry.max;
+    return (
+      <span className={cn("text-2xs whitespace-nowrap",
+                          inRange && !used ? "text-zinc-400" : "text-amber-700")}
+            title={inRange
+              ? (used ? "自动重试已经用满,系统不会再动它 —— 要人来点"
+                      : "还在自动重试的射程里,不点它也会被放回队列")
+              : "系统不会自动重它(越过下单点 / 失败太久)—— 要人来点"}>
+        已试 {r.retry_count}{inRange ? `/${meta.auto_retry.max}` : ""}
+      </span>
+    );
+  };
+
   if (density === "compact") {
     return [
       {
@@ -172,7 +213,9 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
         cell: ({ row }) => <CopyText value={row.original.upstream_order_no} className="id" />,
       },
       {
-        id: "ship", header: "收货", size: 224,
+        // 这一格是紧凑档里唯一**可以被截断而不丢信息**的(收件人 + 城市州),
+        // 所以窄屏时让它去让位 —— 见下面 template 那一段。
+        id: "ship", header: "收货", size: 224, meta: { flex: true },
         cell: ({ row }) => {
           const r = row.original;
           return (
@@ -188,13 +231,25 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
         cell: ({ row }) => <span className="text-xs">{row.original.env_code}</span> },
       { id: "cap", header: "限价", size: 74, meta: { align: "right" },
         cell: ({ row }) => <span className="num">{money(row.original.price_cap)}</span> },
-      { id: "paid", header: "实付", size: 74, meta: { align: "right" },
-        cell: ({ row }) => (
-          <span className={cn("num", totalTone(row.original))}
-                title={capVerdict(row.original).text}>
-            {money(row.original.actual_total)}
-          </span>
-        ) },
+      // **红色必须落在它标注的那个数上。** 原先这一格永远显示 actual_total,
+      // 而闸比的是货款:礼品卡抵扣过的单会渲染成「限价 1200.00 / 实付 1141.86(红)」
+      // —— 屏幕上两个数字说「没超」,颜色说「超了」,真正比过的那个数(2241.86)
+      // 在这一档根本不出现。详细档早就多渲染了一行「货款」并把红色标在它上面,
+      // 紧凑档没跟上,而扫桶用的正是紧凑档。
+      { id: "paid", header: "实付/货款", size: 88, meta: { align: "right" },
+        cell: ({ row }) => {
+          const r = row.original;
+          const v = capVerdict(r);
+          // 两个数不同 = 有礼品卡垫过。显示被比过的那个(货款),并加一个
+          // 极小的「货」角标说明这不是卡扣的钱。
+          const isGoods = v.basis !== null && v.basis !== r.actual_total;
+          return (
+            <span className={cn("num", totalTone(r))} title={v.text}>
+              {money(v.basis ?? r.actual_total)}
+              {isGoods && <span className="ml-0.5 text-2xs text-zinc-400 align-super">货</span>}
+            </span>
+          );
+        } },
       { id: "status", header: "状态", size: 104,
         cell: ({ row }) => {
           const r = row.original;
@@ -205,6 +260,7 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
             <span className="flex flex-col items-start gap-0.5">
               <Tag tone={s.tone}>{s.label}</Tag>
               {r.awaiting_manual_verification && <AwaitingVerify since={r.awaiting_since} />}
+              <CrossedTag on={r.may_have_ordered} />
             </span>
           );
         } },
@@ -215,6 +271,7 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
           return (
             <span className="flex items-center gap-1.5 min-w-0">
               {codeTag(r.error_code)}
+              {retryBadge(r)}
               {r.amazon_order_no
                 ? <CopyText value={r.amazon_order_no} className="id text-2xs text-zinc-500" icon={false} />
                 : !r.error_code && <span className="text-xs text-zinc-300">—</span>}
@@ -231,8 +288,38 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
     ];
   }
 
-  // ── 详细:照厂商那一行的 8 组分组与顺序 ──────────────────────────────
+  // ── 详细:照厂商那一行的 8 组分组 ────────────────────────────────────
+  //
+  // **顺序上只改了一处:「其他信息」从最后一格挪到了最前面。**
+  // 那一格是唯一承载状态标、错误码标、「等人工验证」徽标和「已越过下单点」的格子,
+  // 而它原先排在最右:实测 1440 / 1512 / 1680 这些常见笔记本宽度下,
+  // 前面 8 组固定列已经把内容区吃满,这一列被压到 24px、默认滚动位置下整列在屏幕外
+  // —— docs/01 §8.3 把「运营台列表挂『等人工验证』徽标」列为那条功能的四件事之一,
+  // 而在默认密度、默认滚动位置、主流分辨率上它是**看不见的**。
+  // 分组没变,还是厂商那 8 组;窄屏时被挤到屏幕外的换成了「买家号信息」。
   return [
+    {
+      id: "g-other", header: "其他信息", size: 210,
+      cell: ({ row }) => {
+        const r = row.original;
+        const s = statusLabel(r.status);
+        return (
+          <div className="flex flex-col gap-1 min-w-0">
+            <span className="flex items-center gap-1.5 min-w-0">
+              <Tag tone={s.tone}>{s.label}</Tag>
+              {r.awaiting_manual_verification && <AwaitingVerify since={r.awaiting_since} />}
+            </span>
+            <span className="flex items-center gap-1.5 min-w-0 flex-wrap">
+              {codeTag(r.error_code)}
+              {retryBadge(r)}
+            </span>
+            <CrossedTag on={r.may_have_ordered} />
+            <DL k="创建"><span className="id text-xs+ text-zinc-500">{shortTime(r.created_at)}</span></DL>
+            <DL k="采购"><span className="id text-xs+ text-zinc-500">{shortTime(r.purchased_at)}</span></DL>
+          </div>
+        );
+      },
+    },
     {
       id: "g-upstream", header: "上游订单", size: 172,
       cell: ({ row }) => {
@@ -251,7 +338,9 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
       },
     },
     {
-      id: "g-ship", header: "买家信息", size: 236,
+      // 详细档里最能截断的一格(地址那一行本来就 truncate)—— 窄屏让它让位,
+      // 而不是让最后一列被压没。
+      id: "g-ship", header: "买家信息", size: 236, meta: { flex: true },
       cell: ({ row }) => {
         const r = row.original;
         const ic = "w-3 h-3 shrink-0 text-zinc-300 relative top-px";
@@ -390,24 +479,6 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
         );
       },
     },
-    {
-      id: "g-other", header: "其他信息", size: 210,
-      cell: ({ row }) => {
-        const r = row.original;
-        const s = statusLabel(r.status);
-        return (
-          <div className="flex flex-col gap-1 min-w-0">
-            <span className="flex items-center gap-1.5 min-w-0">
-              <Tag tone={s.tone}>{s.label}</Tag>
-              {r.awaiting_manual_verification && <AwaitingVerify since={r.awaiting_since} />}
-            </span>
-            <span className="flex items-center gap-1.5 min-w-0">{codeTag(r.error_code)}</span>
-            <DL k="创建"><span className="id text-xs+ text-zinc-500">{shortTime(r.created_at)}</span></DL>
-            <DL k="采购"><span className="id text-xs+ text-zinc-500">{shortTime(r.purchased_at)}</span></DL>
-          </div>
-        );
-      },
-    },
   ];
 }
 
@@ -458,8 +529,17 @@ export function TaskTable({
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [cursor, rows.length, density]);
 
-  const template = table.getVisibleLeafColumns()
-    .map((c, i, all) => (i === all.length - 1 ? "minmax(0,1fr)" : `${c.getSize()}px`))
+  // **伸缩的是标了 `meta.flex` 的那一列,不是「最后一列」。**
+  // 原先无条件把最后一列写成 minmax(0,1fr):内容区不够宽时,它会被压到
+  // 只剩左右内边距(实测 24px),而那一列恰恰是承载状态标与徽标的那一格 ——
+  // 表格不横向滚动,人也就没有任何提示说「右边还有东西」。
+  // 现在让位的是一个截断了也不丢信息的格子(收货 / 买家信息)。
+  const cols = table.getVisibleLeafColumns();
+  const flexIdx = cols.findIndex(
+    (c) => (c.columnDef.meta as { flex?: boolean } | undefined)?.flex);
+  const stretch = flexIdx >= 0 ? flexIdx : cols.length - 1;
+  const template = cols
+    .map((c, i) => (i === stretch ? "minmax(0,1fr)" : `${c.getSize()}px`))
     .join(" ");
 
   return (

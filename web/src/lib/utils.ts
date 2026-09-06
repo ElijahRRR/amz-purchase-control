@@ -71,6 +71,40 @@ export function capVerdict(t: {
            text: withGift ? `${withGift},未超` : `限价 ${money(t.price_cap)},未超` };
 }
 
+/** 这一单**此刻**在不在自动重试的射程里 —— **界面上唯一的定义处**。
+ *
+ * 条件与 `services/task_retry._CANDIDATE_SQL` 的选单一一对应,少判一条,
+ * 界面就会替系统许一个它不会兑现的诺:
+ *  ① 开着(`meta.auto_retry.enabled`)
+ *  ② `status = 'exception'`(`manual` 那一桶系统不碰 —— 「等人裁决」的单
+ *     由系统替人做决定的话,那道闸就白设了)
+ *  ③ 码在 `RETRYABLE` 那一组
+ *  ④ **没越过下单点**(`AND NOT t.may_have_ordered`)。这一档真实可达:
+ *     越过下单点之后抛 DriverError,码落在 RETRYABLE 里、单却已经花过钱
+ *  ⑤ 失败没超过 `max_age_min`。年龄由服务端用库里的 now() 算好
+ *     (`updated_age_seconds`),前端不拿浏览器时钟去减 —— 两把尺子对不上的话,
+ *     界面会在「系统还会再试」和「太久了,系统不会碰它」之间说错话
+ *
+ * 「已经重满 max 次」**不在这里判**:那时「上限 N 次」这句话仍然成立,
+ * 而且正是要让人看见它已经用满了。
+ *
+ * 收在这一处,是因为详情弹窗与列表都要用它 —— 两边各写一遍的话,迟早一边说
+ * 「系统会来重」、另一边说「要人去点」,而这两句话指向相反的动作。
+ */
+export function autoRetryApplies(
+  t: { status: string; error_code: string | null; may_have_ordered: boolean;
+       updated_age_seconds: number },
+  auto: { enabled: boolean; max_age_min: number },
+  retryable: readonly string[],
+): boolean {
+  return auto.enabled
+    && t.status === "exception"
+    && !!t.error_code
+    && retryable.includes(t.error_code)
+    && !t.may_have_ordered
+    && t.updated_age_seconds < auto.max_age_min * 60;
+}
+
 /** 分钟数说成人话:90 → 「90 分钟」,1440 → 「24 小时」,4320 → 「3 天」。
  *
  * 只在整除时才换单位 —— 「1.5 天」这种说法要人在脑子里再算一次,

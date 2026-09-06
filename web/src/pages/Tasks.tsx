@@ -364,12 +364,29 @@ export default function TasksPage({ summary, onMutate, onSummary }: {
             <span className="ml-auto" />
             <Button size="sm" variant="ghost" onClick={() => setBatchResult(null)}>知道了</Button>
           </div>
+          {/* **逐条印出「为什么」,不只是单号。** 服务端把两半都发过来了
+              (error_code + may_have_ordered),而界面原先只印单号 —— 正是
+              docs/03 §4 批评厂商 priceCheck 的那个形状:字段存在,界面不用。
+              为什么这两半都要露出来:码在「可重试」那一组里却被拦下的那种单
+              (CART_MISMATCH / PLUGIN_INTERNAL + 越过下单点),只报错误码的话,
+              看的人第一反应是「这不就是重一下就过的那种吗,系统是不是抽了」;
+              而真正拦住它的是紫标那一位。 */}
           {batchResult.skipped.length > 0 && (
             <div className="text-xs text-violet-700 leading-relaxed">
               这几条<b className="font-medium">可能已经在亚马逊上真下成了</b>,批量不替你确认 ——
               点开逐条去买家号的订单页看过再重置:
-              <span className="id ml-1">
-                {batchResult.skipped.map((x) => x.upstream_order_no).join(", ")}
+              <span className="flex flex-wrap gap-x-3 gap-y-1 mt-1">
+                {batchResult.skipped.map((x) => (
+                  <span key={x.task_id} className="inline-flex items-center gap-1.5">
+                    <span className="id text-violet-800">{x.upstream_order_no ?? x.task_id}</span>
+                    {x.error_code && (
+                      <span className="text-zinc-500">
+                        {meta.error_code.labels[x.error_code] ?? x.error_code}
+                      </span>
+                    )}
+                    {x.may_have_ordered && <Tag tone="solid-violet">已越过下单点</Tag>}
+                  </span>
+                ))}
               </span>
             </div>
           )}
@@ -377,9 +394,10 @@ export default function TasksPage({ summary, onMutate, onSummary }: {
             <div className="text-xs text-red-700 leading-relaxed">
               这几条服务端拒了:
               {batchResult.failed.map((x) => (
-                <span key={x.task_id} className="ml-1">
+                <span key={x.task_id} className="ml-1 inline-flex items-center gap-1.5">
                   <span className="id">{x.upstream_order_no ?? x.task_id}</span>
                   <span className="text-zinc-500">({x.message})</span>
+                  {x.may_have_ordered && <Tag tone="solid-violet">已越过下单点</Tag>}
                 </span>
               ))}
             </div>

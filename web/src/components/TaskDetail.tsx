@@ -16,7 +16,7 @@ import { Dot, Tag } from "@/components/ui/tag";
 import { Input } from "@/components/ui/input";
 import { api, type ApiResult } from "@/lib/api";
 import { useLabel, useMeta } from "@/lib/meta";
-import { capVerdict, cn, fullTime, minutesText, money, shortTime } from "@/lib/utils";
+import { autoRetryApplies as autoRetryAppliesFn, capVerdict, cn, fullTime, minutesText, money, shortTime } from "@/lib/utils";
 import type { TaskDetail as TD } from "@/types";
 
 function Group({ title, note, right, children, last }: {
@@ -71,9 +71,33 @@ function eventText(e: { kind: string; code: string | null; payload: Record<strin
 
   const rest = Object.entries(pl)
     .filter(([k, v]) => !used.has(k) && v !== null && v !== undefined && v !== "")
-    .map(([k, v]) => `${k}=${typeof v === "object" ? JSON.stringify(v) : String(v)}`);
+    .map(([k, v]) => fmtPayload(k, v));
 
   return [lead, head, ...rest].filter(Boolean).join(" · ");
+}
+
+/** 事件流上那几个**插件写的机器值**说成人话。
+ *
+ *  这一层存在的理由:`deadline_ms=1757183940000` 是一串 13 位 epoch 毫秒 ——
+ *  而那条事件存在的全部意义就是「还有多久、到期会怎样」,运营看不出它几点到期。
+ *  `cap_ms=1200000` 同理,`state=manual_verification` 是个英文枚举。
+ *  载荷里的**键名**照旧铺开(它是机器读的那一份,改名会让人对不上服务端日志),
+ *  改的只是**值**的渲染。
+ *
+ *  认不出的键原样铺开 —— 静默吞掉一个没见过的键,比露出一串机器值更坏。 */
+const PAYLOAD_STATE: Record<string, string> = {
+  manual_verification: "正在等人做发卡行验证",
+  manual_verification_done: "人工验证做完了",
+  plugin_hard_cap: "插件放弃这一单(超过单笔硬顶)",
+};
+
+function fmtPayload(k: string, v: unknown): string {
+  if (k === "deadline_ms" && typeof v === "number") return `到期 ${fullTime(new Date(v).toISOString())}`;
+  if (k === "cap_ms" && typeof v === "number") return `上限 ${minutesText(Math.round(v / 60_000))}`;
+  if (k === "state" && typeof v === "string") return PAYLOAD_STATE[v] ?? `state=${v}`;
+  if (k === "warning" && v === "cart_not_cleared") return "清车没清动";
+  if (k === "cart" && v === "not_touched_after_order_point") return "越过下单点后按规矩没动购物车";
+  return `${k}=${typeof v === "object" ? JSON.stringify(v) : String(v)}`;
 }
 
 /** 可改的收货字段。与 services/task_admin._ADDRESS_FIELDS 一一对应 ——
@@ -236,37 +260,14 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
 
   /** 这一单接下来**是等系统重、还是等人点**。
    *
-   *  三种情况必须说成三句不一样的话:一句「重置一下基本能过」在这三种情况下
-   *  都不算错,但它同时也什么都没说 —— 而这三种的处置方式是不同的。
-   *  开没开、上限几次都从 meta 来(服务端读的是配置本身),前端不存副本、也不自己判。 */
-  /** 这一单**此刻**在不在自动重试的射程里 —— 「上限 N 次」那句承诺只对它成立。
+   *  四种情况必须说成四句不一样的话:一句「重置一下基本能过」在这四种情况下
+   *  都不算错,但它同时也什么都没说 —— 而这四种的处置方式是不同的。
+   *  开没开、上限几次都从 meta 来(服务端读的是配置本身),前端不存副本、也不自己判。
    *
-   *  条件与 services/task_retry.py 的选单一一对应,少判一条,界面就会替系统许一个
-   *  它不会兑现的诺:
-   *   · status 必须是 `exception`。`manual` + RETRYABLE 这种组合是**真实可达**的
-   *     (插件越过下单点之后抛 DriverError,码还在 RETRYABLE 那一组里,单却已经
-   *     转了待人工),这种单机器永远不会碰,要人**现在**去看
-   *   · 码必须在 RETRYABLE 那一组
-   *   · 失败不能太久 —— 超过 `max_age_min` 的交给人。年龄由服务端算好给出
-   *     (`updated_age_seconds`),前端不拿浏览器时钟去减,那把尺子跟选单的不是同一把
-   *
-   *   · **没越过下单点**。`_CANDIDATE_SQL` 的第 ④ 条就是 `AND NOT t.may_have_ordered`,
-   *     `retry_one` 执行前还会再判一次(拒 POSSIBLY_ORDERED)。这一档是真实可达的:
-   *     越过下单点 → ORDER_CONFIRM_TIMEOUT 转 manual → 人带回执重置(reset 不清这一列)
-   *     → 再次认领 → 这次在下单点之前以 CART_MISMATCH 失败、to_manual=false
-   *     → status=exception + 码在 RETRYABLE 里 + may_have_ordered 仍是 true。
-   *     少判这一条,界面就会对一张系统**永远不会碰**的单写「不点它也会被放回队列」,
-   *     运营照着这句话不去点它,这张单永远没人管
-   *
-   *  「已经重满 max 次」**不在这里判**:那时候「上限 N 次」这句话仍然成立,
-   *  而且正是要让人看见它已经用满了。 */
-  const autoRetryApplies =
-    meta.auto_retry.enabled
-    && t.status === "exception"
-    && !!t.error_code
-    && meta.error_code.retryable.includes(t.error_code)
-    && !t.may_have_ordered
-    && t.updated_age_seconds < meta.auto_retry.max_age_min * 60;
+   *  这一单**此刻**在不在自动重试的射程里 —— 判据在 lib/utils.autoRetryApplies,
+   *  列表那一层(TaskTable 的「已试 k/N」)用的是同一个函数。
+   *  两边各写一遍的话,迟早一边说「系统会来重」、另一边说「要人去点」。 */
+  const autoRetryApplies = autoRetryAppliesFn(t, meta.auto_retry, meta.error_code.retryable);
 
   const retryHint = (() => {
     if (t.status !== "exception" || !t.error_code) return null;
@@ -277,7 +278,7 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
     // 说的是另一件事(年龄),而拦住它的是「越过下单点」—— 一个说错了的理由
     // 会让人以为再等等、或者早点点就行,而真相是系统永远不会碰它。
     if (t.may_have_ordered)
-      return `这一单越过了下单点(下单按钮点过了),系统**永远**不会自动重它 —— `
+      return `这一单越过了下单点(下单按钮点过了),系统永远不会自动重它 —— `
            + `要人先去这个买家号的订单页确认过,再决定重不重。`
            + `重置回队列 = 让下一个实例把同一单再买一遍`;
     if (!autoRetryApplies)
