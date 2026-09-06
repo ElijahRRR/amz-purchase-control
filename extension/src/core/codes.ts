@@ -42,7 +42,7 @@ export const ERROR_LABEL: Record<ErrorCode, string> = {
   ADDRESS_STATE_UNMATCHED: "州匹配失败",
   ADDRESS_SUGGESTION_BLOCKED: "Amazon 提示地址不可投递",
   ADDRESS_NOT_APPLIED: "地址填了但没生效",
-  PRICE_CAP_EXCEEDED: "实付超限价",
+  PRICE_CAP_EXCEEDED: "货款超限价",
   PAYMENT_METHOD_UNEXPECTED: "支付卡不符",
   DELIVERY_TOO_LATE: "交期超限",
   DELIVERY_UNPARSEABLE: "交期无法解析",
