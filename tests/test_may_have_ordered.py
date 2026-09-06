@@ -105,6 +105,17 @@ def test_the_plugin_really_sends_the_step_that_arms_those_gates():
 
     # 用 pytest.fail 而不是 assert:`assert x in src` 失败时 pytest 会把整个
     # run.ts 的内容打进报告里,真正要说的那句话被淹掉。
+    #
+    # 「压根没有」与「有、但在 placeOrder 之后」分开说 —— 前者是这条契约还没落地,
+    # 后者是落错了地方(置位在 placeOrder 之前是铁律:点击过程中崩了,
+    # 我们同样不知道单下没下成)。两句一样的话会让人查错方向。
+    if CROSS_KEY in src and CROSS_KEY not in before:
+        pytest.fail(
+            f"extension/src/flow/run.ts 报了 {CROSS_KEY!r},但它出现在 "
+            f"driver.placeOrder() **之后**。置位必须在点击之前 —— "
+            f"点击过程中崩了,我们同样不知道单下没下成,而那一刻服务端还以为"
+            f"这一单没越过下单点,四道闸全放行。"
+        )
     if CROSS_KEY not in before:
         pytest.fail(
             f"extension/src/flow/run.ts 在 driver.placeOrder() 之前没有上报 "
