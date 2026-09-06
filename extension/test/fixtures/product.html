@@ -194,6 +194,25 @@
   </div>
 
   <!-- ====================================================================
+       DISTRACTOR-5  还没 hydrate 的加购按钮副本（disabled + aria-disabled）
+       --------------------------------------------------------------------
+       出处：厂商 v2.5.3:2177-2191 findProductAddToCartButton 新增了
+       `!disabled && aria-disabled !== "true"` 这一道筛 —— 那是他们拿真实页面
+       校准出来的，说明线上确实会出现「按钮画出来了但还点不动」的那一瞬。
+
+       这个副本**同 id、排在真身前面**，而且它是 disabled 的。
+       写松了会怎样：`document.querySelector("#add-to-cart-button")` 取到的就是它；
+       `el.click()` 打在 disabled 元素上 **不抛错、也不派发 click 事件**
+       （SP/wf/payment_atc_probe.mjs 实测）——于是流程以为点成功了，
+       接着等「加购后跳转到购物车」等满 T.addToCart(30s) 才报 ADD_TO_CART_FAILED。
+       每一单白烧一整个超时窗口，而真正的原因在事件流里一个字都看不到。
+       ==================================================================== -->
+  <div class="a-section a-spacing-small">
+    <input type="submit" id="add-to-cart-button" name="submit.add-to-cart"
+           class="a-button-input" value="Add to Cart" disabled aria-disabled="true">
+  </div>
+
+  <!-- ====================================================================
        [报告 §4.2.1 · 加购] #add-to-cart-button
        判定：存在则 .click()；不存在 → updateOrderStatus(99,"未找到加入购物车按钮") :2596
        ================================================================== -->

@@ -1,0 +1,438 @@
+<!doctype html>
+<!--
+================================================================================
+  FIXTURE: address-select.html  —  Amazon US 地址选择页
+================================================================================
+
+  页面        : /checkout/p/p-…/address（点结算页「更改收货地址」之后落到这里）
+  事实来源    : 厂商 v2.5.3 `v253.pretty.js:3169-3244` fillAddressInfo 的地址选择页那一段
+                厂商内部记录 `findings.md:45`（他们在真实买家号上观察到的形态）
+                SP/wf/selector_inventory.md §4「地址选择页」
+
+  ---------------------------------------------------------------------------
+  这张夹具存在的理由
+  ---------------------------------------------------------------------------
+  地址是整条链路上**唯一「填错了会把货寄给别人」**的环节，而在这张夹具出现之前，
+  `test/dom.test.mjs` 里关于地址的断言是 **0 条**（`grep -i address` 零命中）——
+  fillAddress 的全部逻辑都塞在 amazon.ts 的时序里，纯函数够不着。
+  「有护栏、但没人证明它还活着」正是本项目反复点名的那一类。
+
+  ---------------------------------------------------------------------------
+  本夹具刻意摆出来的事实（每一条都对应一个真实会咬人的坑）
+  ---------------------------------------------------------------------------
+  ① **页面本身不含姓名输入框。** `findings.md:45` 的实测结论：/address 页只有
+     地址列表，表单要点入口之后才**异步注入**。所以「等 #address-…FullName」
+     不能当作「到了地址选择页」的判据 —— 它在这一页上永远不会出现。
+     → 断言：findAddressFormNameField(document) === null
+
+  ② **55 个编辑入口，编号从 0 开始。** 厂商 v253:3210 的循环是 `for (i = 1; …)`，
+     第 0 条永远选不中。我们不复用已有地址（一律新建，见 selectors.address.addNew
+     的注释），把编号摆出来是为了让「哪天真要做复用」的人一眼看见这个坑。
+     55 这个数字本身也是个事实：那是「每单新建一条」在真实买家号上攒出来的。
+
+  ③ **同一个 id 的新增地址入口在这一页上有三份，真身排在最后。**
+     写松了会怎样：`querySelector` 取到前两份里的一个，click() 不报错也不跳转，
+     然后等一个永远不会出现的表单，30 秒后报 ADDRESS_FORM_TIMEOUT。
+     三份各自考的是**不同的隐藏机制**，缺一种判据就会被对应的那一份骗到：
+
+       第 1 份  折叠的地址簿，靠 **CSS 类** `aok-hidden` 隐藏（**没有 inline style**）
+                → 只看 `el.style.display` / 往上找 `[style*=display:none]` 的写法
+                  完全看不见它。必须看 computed style 或布局。
+                → 注意隐藏的是**父级**：子 <a> 自己的 computed display 仍是 inline
+                  （SP/wf/address_probe.mjs 实测），所以只看自己那一格也不行。
+       第 2 份  `visibility:hidden`
+                → 它**占位**，`getClientRects().length` 仍然大于 0，
+                  只有单独判 visibility 才拦得住。
+       第 3 份  ✅ 真身
+
+  ④ 地址列表区 `[aria-labelledby="delivery-addresses-section-header-id"]` 是
+     **渲染出来的**（对照 checkout.html 上那个折叠着的同名节点）。
+     两张夹具合起来才说明「地址区加载」这条判据必须配合 URL 判据用。
+================================================================================
+-->
+<html lang="en">
+<head>
+  <meta charset="utf-8"><title>Select a shipping address</title>
+  <!-- Amazon 真实存在的工具类。放在这里而不是写成 inline style，是刻意的：
+       靠 class 隐藏的节点，任何「往上找 [style*=display:none]」的写法都看不见。 -->
+  <style>.aok-hidden { display: none !important; }</style>
+</head>
+<body>
+
+  <div class="a-container">
+    <h1 class="a-size-large">Select a shipping address</h1>
+  </div>
+
+  <!-- ======================================================================
+       干扰项 A-1：折叠着的「地址簿」壳子，**靠 CSS 类隐藏，没有 inline style**
+       里面有一份同 id 的新增地址入口，排在真身前面
+       ==================================================================== -->
+  <div class="a-section collapsed-address-book aok-hidden">
+    <div class="a-row">
+      <span class="a-size-mini a-color-secondary">Your addresses (collapsed)</span>
+    </div>
+    <a id="add-new-address-desktop-sasp-tango-link" class="a-link-normal" href="#">Add a new address</a>
+  </div>
+
+  <!-- ======================================================================
+       干扰项 A-2：visibility:hidden 的那一份。
+       它**占着位置**——getClientRects().length 大于 0，只判布局矩形拦不住它。
+       ==================================================================== -->
+  <div class="a-section" style="visibility:hidden">
+    <a id="add-new-address-desktop-sasp-tango-link" class="a-link-normal" href="#">Add a new address</a>
+  </div>
+
+  <!-- ======================================================================
+       ✅ 正主：地址列表区
+       ==================================================================== -->
+  <div aria-labelledby="delivery-addresses-section-header-id" class="a-section">
+    <div class="a-row">
+      <span id="delivery-addresses-section-header-id" class="a-size-medium">Your addresses</span>
+    </div>
+
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-0" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/0&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1400 S Bristol St, Santa Ana, CA 92700, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-1" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/1&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1401 S Bristol St, Santa Ana, CA 92701, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-2" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/2&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1402 S Bristol St, Santa Ana, CA 92702, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-3" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/3&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1403 S Bristol St, Santa Ana, CA 92703, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-4" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/4&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1404 S Bristol St, Santa Ana, CA 92704, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-5" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/5&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1405 S Bristol St, Santa Ana, CA 92705, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-6" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/6&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1406 S Bristol St, Santa Ana, CA 92706, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-7" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/7&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1407 S Bristol St, Santa Ana, CA 92707, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-8" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/8&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1408 S Bristol St, Santa Ana, CA 92708, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-9" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/9&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1409 S Bristol St, Santa Ana, CA 92709, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-10" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/10&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1410 S Bristol St, Santa Ana, CA 92710, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-11" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/11&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1411 S Bristol St, Santa Ana, CA 92711, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-12" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/12&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1412 S Bristol St, Santa Ana, CA 92712, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-13" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/13&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1413 S Bristol St, Santa Ana, CA 92713, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-14" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/14&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1414 S Bristol St, Santa Ana, CA 92714, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-15" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/15&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1415 S Bristol St, Santa Ana, CA 92715, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-16" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/16&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1416 S Bristol St, Santa Ana, CA 92716, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-17" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/17&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1417 S Bristol St, Santa Ana, CA 92717, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-18" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/18&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1418 S Bristol St, Santa Ana, CA 92718, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-19" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/19&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1419 S Bristol St, Santa Ana, CA 92719, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-20" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/20&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1420 S Bristol St, Santa Ana, CA 92720, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-21" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/21&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1421 S Bristol St, Santa Ana, CA 92721, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-22" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/22&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1422 S Bristol St, Santa Ana, CA 92722, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-23" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/23&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1423 S Bristol St, Santa Ana, CA 92723, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-24" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/24&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1424 S Bristol St, Santa Ana, CA 92724, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-25" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/25&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1425 S Bristol St, Santa Ana, CA 92725, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-26" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/26&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1426 S Bristol St, Santa Ana, CA 92726, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-27" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/27&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1427 S Bristol St, Santa Ana, CA 92727, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-28" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/28&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1428 S Bristol St, Santa Ana, CA 92728, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-29" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/29&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1429 S Bristol St, Santa Ana, CA 92729, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-30" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/30&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1430 S Bristol St, Santa Ana, CA 92730, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-31" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/31&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1431 S Bristol St, Santa Ana, CA 92731, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-32" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/32&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1432 S Bristol St, Santa Ana, CA 92732, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-33" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/33&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1433 S Bristol St, Santa Ana, CA 92733, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-34" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/34&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1434 S Bristol St, Santa Ana, CA 92734, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-35" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/35&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1435 S Bristol St, Santa Ana, CA 92735, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-36" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/36&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1436 S Bristol St, Santa Ana, CA 92736, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-37" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/37&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1437 S Bristol St, Santa Ana, CA 92737, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-38" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/38&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1438 S Bristol St, Santa Ana, CA 92738, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-39" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/39&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1439 S Bristol St, Santa Ana, CA 92739, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-40" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/40&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1440 S Bristol St, Santa Ana, CA 92740, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-41" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/41&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1441 S Bristol St, Santa Ana, CA 92741, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-42" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/42&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1442 S Bristol St, Santa Ana, CA 92742, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-43" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/43&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1443 S Bristol St, Santa Ana, CA 92743, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-44" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/44&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1444 S Bristol St, Santa Ana, CA 92744, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-45" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/45&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1445 S Bristol St, Santa Ana, CA 92745, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-46" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/46&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1446 S Bristol St, Santa Ana, CA 92746, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-47" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/47&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1447 S Bristol St, Santa Ana, CA 92747, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-48" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/48&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1448 S Bristol St, Santa Ana, CA 92748, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-49" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/49&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1449 S Bristol St, Santa Ana, CA 92749, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-50" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/50&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1450 S Bristol St, Santa Ana, CA 92750, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-51" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/51&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1451 S Bristol St, Santa Ana, CA 92751, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-52" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/52&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1452 S Bristol St, Santa Ana, CA 92752, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-53" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/53&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1453 S Bristol St, Santa Ana, CA 92753, United States</span>
+      </div>
+      <div class="a-row address-row">
+        <a id="edit-address-desktop-tango-sasp-54" class="a-declarative a-link-normal"
+           data-action="checkout-view-modal"
+           data-checkout-view-modal="{&quot;viewType&quot;:&quot;ADDRESS_EDIT&quot;,&quot;url&quot;:&quot;/address/edit/54&quot;,&quot;isAsync&quot;:1}" href="#">Edit</a>
+        <span class="a-size-small">Marcus Delgado, 1454 S Bristol St, Santa Ana, CA 92754, United States</span>
+      </div>
+
+    <!-- ✅ 正主：新增地址入口（渲染出来的那一个） -->
+    <div class="a-row">
+      <a id="add-new-address-desktop-sasp-tango-link" class="a-link-normal" href="#">Add a new address</a>
+    </div>
+  </div>
+
+  <!-- ======================================================================
+       干扰项 B：**这一页没有姓名输入框**。
+       下面这个是隐藏的模板壳子，里面连表单都没有 —— 摆在这里是为了说明
+       「页面上有个 address-ui-widgets 前缀的节点」不等于「表单来了」。
+       ==================================================================== -->
+  <div id="address-ui-widgets-form-shell" style="display:none"></div>
+
+</body>
+</html>

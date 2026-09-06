@@ -206,6 +206,31 @@ export function findQuantityOption(doc: Document, quantity: number): { has: bool
   return { has: true, matched };
 }
 
+/** 输入:商品页 → 输出:**现在真的点得动**的加入购物车按钮,没有就是 null。
+ *
+ *  三道筛,缺一道都会白烧一个超时窗口:
+ *   1. 两种形态都试(SEL.product.addToCart,第二条出自厂商 v2.5.3:2180);
+ *   2. 渲染出来的才算(隐藏的模板副本常排在真身前面);
+ *   3. `disabled` / `aria-disabled="true"` 的不算 —— 这一道是关键:
+ *      `el.click()` 打在 disabled 按钮上**不抛错、返回 true**,浏览器却根本
+ *      不派发 click 事件(SP/wf/payment_atc_probe.mjs 实测)。于是流程以为
+ *      点成功了,接着等「跳转到购物车」等满 T.addToCart 才报 ADD_TO_CART_FAILED。
+ *      真正的原因(按钮还没 hydrate)在事件流里一个字都看不到。
+ *
+ *  厂商 v2.5.3:2177-2191 同一个做法 —— 他们这一版才补上,而这正是
+ *  「拿真实页面校准」才发现得了的那一类。 */
+export function findAddToCartButton(doc: Document): HTMLElement | null {
+  for (const sel of SEL.product.addToCart) {
+    for (const el of Array.from(doc.querySelectorAll<HTMLElement>(sel))) {
+      if (!isRendered(el)) continue;
+      if ((el as HTMLInputElement | HTMLButtonElement).disabled) continue;
+      if (el.getAttribute("aria-disabled") === "true") continue;
+      return el;
+    }
+  }
+  return null;
+}
+
 /** 报告未记载商品页的配送方选择器,所以这是**尽力而为**:
  *  读到了就返回是否 Amazon 自营,读不到返回 null(未知),留给结算页那道权威判定。 */
 export function readProductShipper(doc: Document): boolean | null {

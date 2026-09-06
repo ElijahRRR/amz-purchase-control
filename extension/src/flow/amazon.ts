@@ -17,7 +17,8 @@ import { SEL, URLS } from "./dom/selectors.js";
 import { openFrame, withFrame, type Frame } from "./dom/frame.js";
 import { sleep, waitFor, waitStable, WaitTimeout } from "./dom/wait.js";
 import {
-  cartMatches, describeMiss, findInterstitialButton, findQuantityOption, findSubmitOrderButton, findTrackingLink,
+  cartMatches, describeMiss, findAddToCartButton,
+  findInterstitialButton, findQuantityOption, findSubmitOrderButton, findTrackingLink,
   pickFirstRendered, pickQuantitySelect, readCarrier, readCartLines, readCartState,
   readCheckoutPanels,
   readDeliveryPromise, readGrandTotal, readInStock, readOrderCards, readOrderState,
@@ -226,7 +227,11 @@ export class AmazonDriver implements PageDriver {
       // 厂商在这里固定等 2 秒。改成等真正要用的那个元素出现 ——
       // 固定等待在慢页面上等不够,在快页面上白等。
       try {
-        await waitFor("商品页买家框", () => f.doc().querySelector(SEL.product.addToCart) ||
+        // 就绪判据与后面那次点击用**同一条规则**(findAddToCartButton):
+        // 判的是可见可用的那个、点的却是隐藏副本,是这类页面上最难查的一种错。
+        // 也因此,按钮渲染出来但还没 hydrate(disabled)的那一瞬不算就绪 ——
+        // 原先只看「元素在不在」,那一瞬就会往下走,然后点一个不会生效的按钮。
+        await waitFor("商品页买家框", () => findAddToCartButton(f.doc()) ||
                                             f.doc().querySelector(SEL.product.outOfStock),
                       { timeoutMs: T.frameLoad });
       } catch (e) {
@@ -256,8 +261,12 @@ export class AmazonDriver implements PageDriver {
 
       const shipperIsAmazon = readProductShipper(f.doc());
 
-      if (!click(f.doc().querySelector(SEL.product.addToCart))) {
-        throw new DriverError("ADD_TO_CART_FAILED", `${asin} 页面上没有加入购物车按钮`);
+      if (!click(findAddToCartButton(f.doc()))) {
+        throw new DriverError(
+          "ADD_TO_CART_FAILED",
+          `${asin} 页面上没有可点的加入购物车按钮:` +
+          `${describeMiss(f.doc(), SEL.product.addToCart)}` +
+          `(命中但点不动的常见原因是 disabled / aria-disabled —— click() 打上去不报错也不生效)`);
       }
 
       try {

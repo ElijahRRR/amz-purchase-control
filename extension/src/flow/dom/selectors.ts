@@ -54,7 +54,13 @@ export const SEL = {
     quantitySelect: "#quantity",
     couponCheckbox: "input[id^=checkboxpctch]",
     couponClickMe: "span[id^=clickMepctch] input",
-    addToCart: "#add-to-cart-button",
+    /** 加购按钮的两种形态。第二条出自厂商 v2.5.3:2180(2.5.3 新增)。
+     *
+     *  配 parse.findAddToCartButton 用 —— 那里还要再排掉 disabled /
+     *  aria-disabled 的那一个:`click()` 打在 disabled 按钮上**返回 true**
+     *  (元素在),浏览器却根本不派发 click 事件,于是这一单白等满 T.addToCart
+     *  才报 ADD_TO_CART_FAILED,而真正的原因(按钮还没激活)在事件流里看不出来。 */
+    addToCart: ['#add-to-cart-button', 'input[name="submit.add-to-cart"]'],
     warrantyPane: "#attach-warranty-pane",
     warrantyDecline: "#attachSiNoCoverage input",
     /** 报告未记载:商品页上的配送方文案。判不出来时返回"未知",交给结算页那道权威判定。 */

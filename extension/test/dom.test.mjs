@@ -282,6 +282,33 @@ await withFixture("product.html", async (run) => {
   // 隐藏的同 id 副本只有 1 个 option,被选中就会让上面那几条挂掉
   eq("product 选中的是可见的那个 #quantity",
      await run("amzdom.pickQuantitySelect(document).options.length > 2"), true);
+
+  // ── 加购按钮:选中的必须是**点得动**的那一个 ────────────────────────
+  //
+  // 夹具里有一个 disabled + aria-disabled 的同 id 副本**排在真身前面**。
+  // click() 打在 disabled 元素上不抛错、返回 true,浏览器却不派发 click 事件
+  // (SP/wf/payment_atc_probe.mjs 实测)—— 于是流程以为点成功了,然后等满
+  // T.addToCart(30s) 才报 ADD_TO_CART_FAILED,而真正的原因看不出来。
+  eq("product 加购按钮的干扰项确实存在(disabled 副本排在前面)",
+     await run(`(() => {
+        const all = [...document.querySelectorAll("#add-to-cart-button")];
+        return [all.length, all[0].disabled, all[0].getAttribute("aria-disabled")];
+     })()`), [2, true, "true"]);
+  eq("product 加购按钮选到的是可用的那个",
+     await run(`(() => {
+        const b = amzdom.findAddToCartButton(document);
+        return [!!b, b?.disabled, b?.getAttribute("aria-disabled")];
+     })()`), [true, false, null]);
+  // 第二形态(厂商 v2.5.3:2180 新增)也要认。夹具里没有,现造一张验判据本身
+  eq("product 加购按钮认第二形态 input[name=submit.add-to-cart]",
+     await run(`(() => {
+        const d = document.createElement("div");
+        d.innerHTML = '<input type="submit" name="submit.add-to-cart" value="Add to Cart">';
+        document.body.appendChild(d);
+        document.querySelectorAll("#add-to-cart-button").forEach((e) => e.remove());
+        const b = amzdom.findAddToCartButton(document);
+        return b ? b.getAttribute("name") : null;
+     })()`), "submit.add-to-cart");
 });
 
 await withFixture("product-oos.html", async (run) => {
