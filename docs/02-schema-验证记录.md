@@ -152,3 +152,40 @@ createdb amz_fresh → cli.py db_init → 9 张表
 **留痕能追到人。** 强制回填这个动作在库里留下的是:谁(operator)、
 凭什么(note)、跳过了什么闸(assertion_skipped)、原来卡在哪个码(was_error_code)。
 事后追责时这四样缺一不可。
+
+---
+
+## 登录态实测（2026-09-06）
+
+起真实 uvicorn（8791）+ PostgreSQL 17，用插件自己的 `Loop`/`runTask` 跑
+`--scenario login_lost`（模拟「跑到一半这个买家号被登出」）：
+
+| 验证项 | 结果 |
+|---|---|
+| 执行中发现被登出（未越过下单点） | 任务回到 `ready`，`error_code` **为空** —— 不是拍单异常 |
+| 事件流 | `claimed` → 三条 `step` → **`step`「登录态失效，退回队列」** → `released` |
+| 登录态上报（心跳） | `plugin_instances.login_state = signed_out`，`login_checked_at` 落时刻 |
+| 插件下一轮 | `{"kind":"signed-out"}` —— 自己就不认领了，不去刷服务端 |
+| 绕过插件直接认领 | HTTP 409 `INSTANCE_SIGNED_OUT`，**不是**「没有单」 |
+| `GET /v1/admin/instances` | `login_state=signed_out` / `login_blocks_dispatch=true` / `dispatchable=false`，而 `liveness` 仍是 `online` |
+
+最后一行是这一整件事的要害：**心跳正常、机器却一单也跑不了**，这两条轴必须分开显示。
+
+pytest：**245 passed**（新增 13 条：心跳落库 / 不传不覆盖 / 封闭集 422 / 被登出仍可心跳 /
+认领被拒且不动任务 / 恢复后能派 / unknown 不拦 / 运营台与真闸一致 / 没有实例时归一成 unknown /
+复检节奏 / 三处封闭集一致 / meta 下发 / 「刻意不新增错误码」这个决定）。
+
+### DOM 断言「证明有用」的那一步
+
+解析层新增 15 条断言（共 **97 条**）。断言本身也要验：把判据一条条改坏，看它们是不是真的转红。
+
+| 改坏什么 | 结果 |
+|---|---|
+| 读不到判据时兜底成 `ok` | ✗ 4 条转红（两张无导航栏的夹具 + 认不出的账户入口 + 非英文问候语） |
+| 不挑可见节点（直接 `querySelector`） | ✗ 2 条转红，而且是**两个方向都错**：已登录判成已登出，已登出判成已登录 |
+| 要求 `#nav-item-signout` 可见 | ✗ 1 条转红（真实页面上它在 `display:none` 的账户浮层里） |
+| 文案不再当否决票（先看 signout） | ✗ 1 条转红（模板残留的 signout 会盖过「Hello, sign in」） |
+
+改回去之后 97 条全绿。第二行那个双向失败是夹具里那些干扰项(隐藏的反向导航模板)
+挣来的 —— 没有干扰项的话,写松了的实现照样一路绿灯。
+
