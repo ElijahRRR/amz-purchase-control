@@ -343,10 +343,16 @@ class ExpectedCardReq(BaseModel):
     形状校验放 services/instance.set_expected_card(回一个带名字的业务码),
     不放这里的 pattern:留空是合法的(= 关掉这道闸),而 `pattern` 表达
     「四位数字或者空」既绕又会把「手滑少打一位」和「故意留空」回成同一个 422。
+
+    **这里没有 operator,是有意的。** 别的后台动作(reset / force-backfill /
+    改地址 / 改 ASIN / release)都收 operator 并把它记进 task_events,而
+    buyer_envs 这张表眼下**没有任何审计流** —— daily_cap、status 同样没有。
+    收一个 operator 下来却没地方写,比不收更坏:字段名会让下一个人以为
+    「谁关掉了这个买家号的支付校验」这个问题有地方能答,而实际上答不出来。
+    要补的话得先给 buyer_envs 开一条事件流,那是一件独立的事,不在这里假装做过。
     """
 
     last4: str | None = None
-    operator: str | None = None
 
 
 class AsinReq(BaseModel):

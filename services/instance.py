@@ -291,6 +291,12 @@ def set_expected_card(conn, env_id: int, last4: str | None) -> dict:
     空串与 None 都是「关掉这道闸」,统一存成 NULL:留一个空串在库里,
     `if expected_card_last4:` 那种判断照样是假,但下一个来读库的人会以为
     「配过、只是配成了空」——两种不同的情况不该长成两个值。
+
+    **这一步不留痕,而它值得留痕。** 把 4417 改成 9021、或者干脆清空关掉这道闸,
+    接口 200、库里改了、界面跟着变,没有任何地方答得出是谁在什么时候做的。
+    task_events 挂在 task_id 上,这张表没有 task_id,套不进去;buyer_envs
+    眼下整张表都没有审计流(daily_cap、status 同样没有)。补它得先给 buyer_envs
+    开一条事件流 —— 那是一件独立的事。这里写明白,免得下一个人以为记过。
     """
     v = (last4 or "").strip()
     if v and not (len(v) == 4 and v.isdigit()):

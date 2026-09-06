@@ -39,7 +39,7 @@
 | `amazon_customer_id` | text | 插件从页面提取，**仅作对账**，不作身份判定 |
 | `status` | text | `active` / `paused` / `blocked` / `retired`（封闭集） |
 | `daily_cap` | integer | 日单量上限，`0` = 不限 |
-| `expected_card_last4` | text | **这个买家号该刷哪张卡**的后四位。留空 = 这一道不校验（与 `tasks.require_fba` 同一形态：闸门可关，但关不关是库里的数据说了算，不是代码里的默认值）。填了之后，结算页读到的卡尾号与它不符即 `PAYMENT_METHOD_UNEXPECTED`，**在下单之前拦下**。只校验、不替买家号切卡——改支付配置是人的动作，不是拍单流程的动作 |
+| `expected_card_last4` | text | **这个买家号该刷哪张卡**的后四位。留空 = 这一道不校验（与 `tasks.require_fba` 同一形态：闸门可关，但关不关是库里的数据说了算，不是代码里的默认值）。填了之后，结算页读到的卡尾号与它不符即 `PAYMENT_METHOD_UNEXPECTED`，**在下单之前拦下**。只校验、不替买家号切卡——改支付配置是人的动作，不是拍单流程的动作。**改这一列不留痕**：`task_events` 挂在 `task_id` 上，这张表套不进去，而 `buyer_envs` 眼下整张表都没有审计流（`daily_cap`、`status` 同样没有），所以「谁在什么时候关掉了这个买家号的支付校验」目前答不出来 |
 | `note` | text | |
 | `created_at` / `updated_at` | timestamptz | |
 
