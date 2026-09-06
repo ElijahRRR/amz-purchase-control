@@ -15,6 +15,12 @@ export const STATUS_LABEL: Record<string, string> = {
 export type Phase =
   | "off"        // 没开工:只注册与心跳,不认领
   | "idle"       // 待命:已注册,队列里没有属于本买家号的单
+  /** 认领那一趟**没跟服务端说上话**(超时/断网/响应不是 JSON)。
+   *  **与 idle 分开**:「没有单」是正常的,「问不到」是要人去处理的。
+   *  厂商插件正是在这里把网络失败记成「没有需要同步的订单」,
+   *  运维看着日志会以为系统正常(深度分析 §5.3);
+   *  我们在日志那一层守住了,面板那一层曾经照旧写「队列里没有本买家号的单」。 */
+  | "no-server"
   | "claimed"    // 领到一单,还没动页面
   | "running"    // 正在跑
   | "confirm"    // 护栏放行,停在下单前等人按
@@ -36,6 +42,8 @@ export type Phase =
 export const PHASE_LABEL: Record<Phase, string> = {
   off: "未开工",
   idle: "待命",
+  // 与「待命」必须是两个词:一个是「问过了,没有单」,一个是「根本没问到」。
+  "no-server": "连不上服务端",
   claimed: "已认领",
   running: "执行中",
   confirm: "下单确认",

@@ -35,8 +35,12 @@ export interface RunnerState {
 }
 
 /** 这几个相位表示「这个标签页手里有一单没跑完」。续租时要把它报给 SW ——
- *  正在跑单的标签页即使因为后台节流没能按时续租,也不该被别的标签页抢走租约。 */
-const BUSY_PHASES: ReadonlySet<Phase> = new Set<Phase>(["claimed", "running", "confirm", "verify"]);
+ *  正在跑单的标签页即使因为后台节流没能按时续租,也不该被别的标签页抢走租约。
+ *
+ *  **相位只是兜底,不是判据本体。** 真正的事实由 `Loop.holdsWork()` 给出
+ *  (在跑 / 有一条被掐掉还没落地的 runTask);猜相位漏过一整格 ——
+ *  看门狗掐单之后相位是 `stuck`,不在这张表里,而那条僵尸 runTask 还活着。 */
+const BUSY_PHASES: ReadonlySet<Phase> = new Set<Phase>(["claimed", "running", "confirm", "verify", "stuck"]);
 
 export class Runner {
   readonly log = new Log();
@@ -160,13 +164,19 @@ export class Runner {
       //    之间相位会被 Loop 改成 claimed/running,但**在这之前**有一小段
       //    (刚进闸、还没 claim 到)相位仍是上一轮留下的 idle;物流同步那一轮
       //    也占着 iframe,同样不该让位。
-      //  · 相位 —— 兜住「闸已经放掉、但这一单还没落地」这类情况。
+      //  · `Loop.holdsWork()` —— Loop 自己说的事实:在跑,或者有一条被看门狗
+      //    掐掉、还没走到 finish() 的 runTask。**这一条是判据本体。**
+      //    原先这里只有闸和相位:看门狗掐单之后闸已经放掉、相位是 stuck,
+      //    两条都说不忙,租约 5 分钟一到就被另一个标签页接管走,
+      //    而那条僵尸稍后走到 finish() 会在同一个买家号上再清一次车,
+      //    把新领那一单已经加好的商品删掉。
+      //  · 相位 —— 兜住 Loop 还没建起来、或者我们没想到的那一格。
       //
       // 不能只写「这一轮 tick 在跑」:续租现在发生在闸**外面**,那一位永远是
       // true,任何一个空转的标签页都会声称自己在忙,这道判据就废了。
       const got = await chrome.runtime.sendMessage({
         type: "amz.acquireRunner",
-        busy: this.flight.busy || BUSY_PHASES.has(this.phase),
+        busy: this.flight.busy || !!this.loop?.holdsWork() || BUSY_PHASES.has(this.phase),
       });
       const ok = !!got?.granted;
       // 服务端说「这个买家号有单在等,而且该复检登录态了」。

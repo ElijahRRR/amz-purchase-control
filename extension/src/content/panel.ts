@@ -27,6 +27,9 @@ interface State {
 const PHASE_TAG: Record<Phase, [string, string]> = {
   off:     ["tag tagdash", "background:#fff;color:#52525b;border-color:#d4d4d8"],
   idle:    ["tag tagdash", "background:#fff;color:#52525b;border-color:#d4d4d8"],
+  // 红的:这台机器此刻问不到单,而且多半要人去看服务端。灰色的「待命」
+  // 会让人以为一切正常 —— 而队列里可能正堆着单。
+  "no-server": ["tag", "background:#fef2f2;color:#b91c1c;border-color:#fecaca"],
   claimed: ["tag tagdash", "background:#fff;color:#b45309;border-color:#fde68a"],
   running: ["tag tagdash", "background:#fff;color:#b45309;border-color:#fde68a"],
   confirm: ["tag tagdash", "background:#fff;color:#b45309;border-color:#fde68a"],
@@ -51,7 +54,12 @@ const STEPS = [
   "商品页 · 校验 FBA 与库存",
   "加购并回读购物车",
   "读结算页实付与交期",
-  "护栏 · 实付 ≤ 限价",
+  // 闸比的是**货款**(实付 + 礼品卡抵扣),不是这张卡要扣的钱。写「实付」的话,
+  // 礼品卡全额抵扣的单实付 0.00 ≤ 限价却被 PRICE_CAP_EXCEEDED 拦下,
+  // 照面板学规则的操作员会认为护栏抽了风。
+  // 与 services/price_guard、error_codes.LABELS["PRICE_CAP_EXCEEDED"]、
+  // run.ts 那条放行日志同一句话。
+  "护栏 · 货款 ≤ 限价",
   "下单 · 确认页",
   "回填单号 · ASIN 断言",
 ];
@@ -84,6 +92,26 @@ function id(v: string | undefined | null): string {
     : `<span class="id copy" data-copy="${esc(t)}">${esc(t)}</span>`;
 }
 
+/** 输入:相位 + 手上这一单 → 输出:状态条右边那句副文本。
+ *
+ *  **不许写死成 `task ? "task_id N" : "队列里没有本买家号的单"`。**
+ *  那样的话「没说上话」「已登出」「清车熔断」「上一单未收尾」四种情况
+ *  全配着同一句话,而那句话在这四种情况下**都是假的** —— 队列里可能正堆着单。
+ *  loop.ts 的注释自己写着「『没说上话』绝不能当成『没有单』」:
+ *  日志那一层守住了,这一层曾经没有。 */
+function bandNote(phase: Phase, task: Task | null): string {
+  if (task) return "task_id " + task.task_id;
+  switch (phase) {
+    case "off": return "未开工:只注册与心跳,不认领";
+    case "idle": return "队列里没有本买家号的单";
+    case "no-server": return "和服务端没说上话 —— 这不等于「没有单」";
+    case "signed-out": return "这个浏览器被登出了,认领已暂停";
+    case "cart-blocked": return "连着几单清不动购物车,认领已暂停";
+    case "stuck": return "上一单还没收尾,这期间不认领";
+    default: return "";
+  }
+}
+
 function render(): void {
   const { phase, task, config } = state;
   const [tagCls, tagStyle] = PHASE_TAG[phase];
@@ -111,7 +139,7 @@ function render(): void {
 
     <div class="band">
       <span class="${tagCls}" style="${tagStyle}">${PHASE_LABEL[phase]}</span>
-      <span style="font-size:12px;color:#71717a">${task ? "task_id " + task.task_id : "队列里没有本买家号的单"}</span>
+      <span style="font-size:12px;color:#71717a">${esc(bandNote(phase, task))}</span>
     </div>
 
     ${config?.mode === "simulate" ? `<div class="warnbar">模拟档:页面动作全是假的,只用来自检和服务端说话的时序。不会在 Amazon 上产生任何订单。</div>` : ""}
@@ -120,6 +148,14 @@ function render(): void {
     ${phase === "stuck" ? `<div class="warnbar" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">
       上一单跑过了硬顶,已经强制关掉页面,正在等它收尾。收尾之前不认领新单 ——
       两条流程会动同一个购物车。
+    </div>` : ""}
+    ${phase === "signed-out" ? `<div class="warnbar" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">
+      这个浏览器上的买家号已被登出,认领已暂停。请在<b>本浏览器</b>里重新登录 Amazon ——
+      插件复检到之后会自己继续,不用重启插件。在那之前队列里属于这个买家号的单没人拍。
+    </div>` : ""}
+    ${phase === "no-server" ? `<div class="warnbar" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">
+      认领时没跟服务端说上话(超时/断网/响应不是 JSON)。<b>这不等于「没有单」</b> ——
+      队列里可能正堆着单。请看下面的日志,并确认服务端还活着、地址配对了。
     </div>` : ""}
     ${phase === "cart-blocked" ? `<div class="warnbar" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">
       连着几单清不动购物车,已暂停认领一段时间 —— 多半是 Amazon 改了购物车页的结构。

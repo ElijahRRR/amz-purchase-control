@@ -24,6 +24,8 @@
 一条清理路径,任务就原地回到 ready 并立刻被再次认领。
 """
 
+import re
+
 import pytest
 
 CROSS_EVENT = {"kind": "step", "payload": {"step": "点击下单按钮", "may_have_ordered": True}}
@@ -81,6 +83,51 @@ def test_the_server_and_the_design_doc_agree_on_the_key_name():
     assert CROSS_KEY in doc and CROSS_STEP in doc
 
 
+def _strip_ts_comments(src: str) -> str:
+    """输入:一段 TypeScript 源码 → 输出:去掉 `//` 与 `/* */` 注释之后的代码。
+
+    为什么必须去:下面那条契约用的是**子串搜索**,而 run.ts 里解释这条契约的
+    注释本身就写着 `may_have_ordered` 这个词。不去注释的话,把那一行的键名改成
+    TS 习惯的 `mayHaveOrdered`,搜索照样命中注释里那一处 —— 全套测试仍然全绿,
+    而这正是这条测试点名要防的那一件事。
+
+    字符串字面量里的 `//`(比如一个 http:// 开头的 URL)不算注释,所以要认引号。
+    """
+    out: list[str] = []
+    i, n = 0, len(src)
+    quote = ""
+    while i < n:
+        c = src[i]
+        if quote:
+            out.append(c)
+            if c == "\\" and i + 1 < n:
+                out.append(src[i + 1])
+                i += 2
+                continue
+            if c == quote:
+                quote = ""
+            i += 1
+            continue
+        if c in "\"'`":
+            quote = c
+            out.append(c)
+            i += 1
+            continue
+        if c == "/" and i + 1 < n and src[i + 1] == "/":
+            while i < n and src[i] != "\n":
+                i += 1
+            continue
+        if c == "/" and i + 1 < n and src[i + 1] == "*":
+            j = src.find("*/", i + 2)
+            i = n if j < 0 else j + 2
+            # 注释可能跨行,补回换行免得上下两行粘成一行
+            out.append("\n")
+            continue
+        out.append(c)
+        i += 1
+    return "".join(out)
+
+
 def test_the_plugin_really_sends_the_step_that_arms_those_gates():
     """**这一条盯的是插件那一侧。**
 
@@ -95,13 +142,24 @@ def test_the_plugin_really_sends_the_step_that_arms_those_gates():
     本文件其余的测试全部自己用 HTTP 合成那条事件,所以一条都不会红。
     这与 tests/test_login_state.py 记的那次事故完全同型(「插件那份副本没人比过,
     19 个悄悄分叉了 10 个」),解法也照它:拿源码去比。
+
+    **比的是代码,不是「文件里出现过这个词」。** 先剥掉注释(run.ts 里解释这条
+    契约的注释自己就写着这个键名),再比整段调用的字面量 —— 否则改坏键名时
+    搜索会命中注释,这条测试当场变成招牌。
     """
     from registry import paths
 
-    src = (paths.repo_root() / "extension" / "src" / "flow" / "run.ts").read_text(encoding="utf-8")
+    raw = (paths.repo_root() / "extension" / "src" / "flow" / "run.ts").read_text(encoding="utf-8")
+    src = _strip_ts_comments(raw)
     place = src.find("driver.placeOrder(")
     assert place > 0, "run.ts 里找不到 driver.placeOrder( —— 这条测试的锚点没了,先来修锚点"
     before = src[:place]
+
+    # 整段字面量,不是三个互不相干的子串:键名、步骤名、以及「真的这么发」
+    # 三件事一起钉住。
+    call = re.compile(
+        r'step\(\s*"' + re.escape(CROSS_STEP) + r'"\s*,\s*\{\s*'
+        + re.escape(CROSS_KEY) + r'\s*:\s*true\s*\}\s*\)')
 
     # 用 pytest.fail 而不是 assert:`assert x in src` 失败时 pytest 会把整个
     # run.ts 的内容打进报告里,真正要说的那句话被淹掉。
@@ -109,27 +167,65 @@ def test_the_plugin_really_sends_the_step_that_arms_those_gates():
     # 「压根没有」与「有、但在 placeOrder 之后」分开说 —— 前者是这条契约还没落地,
     # 后者是落错了地方(置位在 placeOrder 之前是铁律:点击过程中崩了,
     # 我们同样不知道单下没下成)。两句一样的话会让人查错方向。
-    if CROSS_KEY in src and CROSS_KEY not in before:
+    if call.search(src) and not call.search(before):
         pytest.fail(
             f"extension/src/flow/run.ts 报了 {CROSS_KEY!r},但它出现在 "
             f"driver.placeOrder() **之后**。置位必须在点击之前 —— "
             f"点击过程中崩了,我们同样不知道单下没下成,而那一刻服务端还以为"
             f"这一单没越过下单点,四道闸全放行。"
         )
-    if CROSS_KEY not in before:
+    if not call.search(before):
         pytest.fail(
             f"extension/src/flow/run.ts 在 driver.placeOrder() 之前没有上报 "
-            f"{CROSS_KEY!r}。服务端那四道闸(人工重置 / 批量重置 / 自动重试选单 / "
-            f"release)全靠这条 step 置位 tasks.may_have_ordered —— 插件不发,"
-            f"四道闸就都是摆设,而界面和文档都在说它管用。\n"
-            f"照契约补上这一行(mayHaveOrdered 置位之后、placeOrder 之前):\n"
-            f'    await step("{CROSS_STEP}", {{ {CROSS_KEY}: true }});\n'
+            f"{CROSS_KEY!r}(注释里写着不算 —— 这里比的是代码)。服务端那四道闸"
+            f"(人工重置 / 批量重置 / 自动重试选单 / release)全靠这条 step 置位 "
+            f"tasks.may_have_ordered —— 插件不发,四道闸就都是摆设,"
+            f"而界面和文档都在说它管用。\n"
+            f"照契约补上这一行(placeOrder 之前):\n"
+            f'    const armed = await step("{CROSS_STEP}", {{ {CROSS_KEY}: true }});\n'
             f"注意是下划线的 {CROSS_KEY},不是 TS 习惯的 mayHaveOrdered —— "
             f"服务端按字面取这个键。"
         )
-    if CROSS_STEP not in before:
-        pytest.fail(f"那条 step 的名字要是 {CROSS_STEP!r} —— "
-                    f"事件时间线上人是照这个名字找它的")
+
+
+def test_the_plugin_does_not_click_place_order_until_that_step_landed():
+    """那条 step 的**返回值必须被消费** —— 它是下单的前置条件,不是旁白。
+
+    发出去不等于落地:`client.events` 走 core/api.post(一次就是一次、不重试),
+    撞上网络抖动 / 服务端重启 / 15 秒超时就回一个 `{ok:false,kind:'transport'}`。
+    返回值一丢,插件照点下单按钮:订单在 Amazon 上真下成了,而
+    `tasks.may_have_ordered` 从没被置上 —— 四道闸一起失效,人一键重置或
+    `task_retry` 自动放回队列,同一张单被再买一遍。触发条件不再是「键名写错」,
+    而是「那一次 POST 没说上话」,后果一模一样。
+
+    这里只钉源码形状(行为那一半在 extension/test/unit.test.mjs 里真的跑了一遍:
+    events 回 transport 失败时 placeOrder 一次都不许被调用)。
+    """
+    from registry import paths
+
+    raw = (paths.repo_root() / "extension" / "src" / "flow" / "run.ts").read_text(encoding="utf-8")
+    src = _strip_ts_comments(raw)
+    place = src.find("driver.placeOrder(")
+    assert place > 0, "run.ts 里找不到 driver.placeOrder( —— 这条测试的锚点没了,先来修锚点"
+    before = src[:place]
+
+    bind = re.search(
+        r'(?:const|let|var)\s+(\w+)\s*=\s*await\s+step\(\s*"' + re.escape(CROSS_STEP) + r'"',
+        before)
+    if bind is None:
+        pytest.fail(
+            "extension/src/flow/run.ts 把那条 step 的返回值直接丢掉了。"
+            "它是**下单的前置条件**,不是旁白:没落地就不许点下单按钮。\n"
+            '照契约写成:const armed = await step("点击下单按钮", '
+            "{ may_have_ordered: true }); 然后判 armed.ok。"
+        )
+    name = bind.group(1)
+    if f"{name}.ok" not in before[bind.end():]:
+        pytest.fail(
+            f"run.ts 接住了那条 step 的返回值({name}),但在 driver.placeOrder() "
+            f"之前没有判过 {name}.ok。接住不判等于没接 —— 那一次 POST 没说上话时,"
+            f"服务端不知道我们要点下单,四道回队列的闸对这一单全是空的。"
+        )
 
 
 # ── 事件 → 库里那一列 ────────────────────────────────────────────────────

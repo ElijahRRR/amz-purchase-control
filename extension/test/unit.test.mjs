@@ -20,6 +20,7 @@ import { Serial } from "../build/core/serial.js";
 import { decideLease, LEASE_DEFAULTS } from "../build/core/lease.js";
 import { Loop } from "../build/background/loop.js";
 import { runTask } from "../build/flow/run.js";
+import { orderHardCapMs } from "../build/flow/amazon.js";
 import { DriverError } from "../build/flow/driver.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
@@ -323,6 +324,47 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
 }
 
 {
+  // **开头那次清车成功、收尾那次失败** —— 这是熔断最该起作用的形状,
+  // 而它曾经完全是死的:清零的时机在「这一单开头那次清车成功」上,
+  // 每一单都从清车开始,于是连续计数在每一单开头就被清回 0,永远到不了 3。
+  //
+  // 真实成因不止一种:AmazonDriver.clearCart 对空车走 emptyMarkers 早退路径、
+  // 根本不碰删除控件,于是 Amazon 改了删除控件的类名之后,「开头(车是空的)成功、
+  // 收尾(车里有东西)失败」每一单都成立;更平常的是失败发生在加购之前
+  // (OUT_OF_STOCK),开头清空车成功、收尾那次因购物车 iframe 抖动失败。
+  const client = fakeClient(10);
+  let inTask = 0;                 // 这一单里第几次调 clearCart
+  const driver = {
+    name: "fake", ready: true,
+    readLoginState: async () => "unknown",
+    clearCart: async () => {
+      inTask += 1;
+      if (inTask >= 2) throw new DriverError("PLUGIN_INTERNAL", "找不到删除控件");
+    },
+    addProduct: async () => { inTask = 1; throw new DriverError("OUT_OF_STOCK", "无货"); },
+    verifyCart: async () => true,
+    proceedToCheckout: async () => {},
+    fillAddress: async () => {},
+    readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
+                                 unitPrices: [] }),
+    placeOrder: async () => {},
+    readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
+    dispose: async () => {},
+  };
+  const loop = new Loop({
+    client, log: silentLog,
+    config: () => ({ mode: "simulate", taskHardCapMs: 60_000 }),
+    driver: () => driver,
+  });
+  const kinds = [];
+  for (let i = 0; i < 4; i += 1) { inTask = 0; kinds.push((await loop.tickOnce()).kind); }
+  eq("开头清车成功、收尾清不动 —— 连着 3 单照样要熔断", kinds,
+     ["ran", "ran", "ran", "cart-blocked"]);
+  check("每一单都报了「试了没清动」",
+        client.fails.every((f) => f.cart_cleared === false && f.cart_clear_attempted === true));
+}
+
+{
   // 越过下单点之后按规矩不清车 —— 那**不是**一次清车失败,不该把熔断计数推上去。
   // 混为一谈的话,三单「可能已下单」就能让一台购物车好好的机器停止认领。
   const client = fakeClient(10);
@@ -389,9 +431,15 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
   const held = await loop.tickOnce();
   eq("收尾之后不许再认领(两条 runTask 会动同一个购物车)", held.kind, "zombie");
   check("说得出是从什么时候开始等的", typeof held.since === "number" && held.since > 0);
+  // 跨标签页那道闸(执行租约)靠的就是这一位。相位此刻是 stuck、单飞闸也已经
+  // 放掉,只靠那两条的话这个标签页会报 busy=false,租约到期被另一个 amazon.com
+  // 标签页接管走 —— 而这条僵尸 runTask 还活着,它的收尾清车会把新领那一单
+  // 已经加好的商品删掉。
+  check("僵尸没落地之前,这个 Loop 手里算「有活」", loop.holdsWork() === true);
 
   releaseHang();
   await new Promise((r) => setTimeout(r, 20));   // 让那条 runTask 走完
+  check("僵尸落地之后手里就没活了", loop.holdsWork() === false);
   const after = await loop.tickOnce();
   check("被掐掉的那一单落地之后恢复认领", after.kind === "ran", after.kind);
 }
@@ -518,7 +566,15 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
 // 长单期间恒为 false ——「持有者忙就不让位」那道闸在真实链路上是死的。
 {
   const RULES = { ttlMs: 300_000, busyGraceMs: 600_000 };
-  const BUSY_PHASES = new Set(["claimed", "running", "confirm", "verify"]);
+  // **不在这里抄一份。** 抄一份的话两边迟早分叉,而分叉的方向恰好是
+  // 「这里绿着、真链路上那个标签页报 busy=false」。runner.ts 不进 build/
+  // (build:node 不编译 src/content),所以退一步从源码里把那一行读出来 ——
+  // 比抄一份强:改了源码这里跟着变。
+  const runnerSrcForPhases = readFileSync(join(here, "..", "src", "content", "runner.ts"), "utf8");
+  const BUSY_PHASES = new Set(
+    (/const BUSY_PHASES[^=]*=\s*new Set<Phase>\(\[([^\]]*)\]\)/.exec(runnerSrcForPhases)?.[1] ?? "")
+      .split(",").map((x) => x.trim().replace(/^"|"$/g, "")).filter(Boolean));
+  check("从 runner.ts 里读到了 BUSY_PHASES", BUSY_PHASES.size >= 4, `读到 ${BUSY_PHASES.size} 个`);
 
   let now = 0;
   let stored = null;                    // SW 那边的 chrome.storage.session
@@ -587,7 +643,7 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
   const driver = {
     name: "fake", ready: true,
     readLoginState: async () => "unknown",
-    clearCart: async () => { await sleep(80); },        // 前面几步故意慢一点
+    clearCart: async () => { await sleep(150); },       // 前面几步故意慢一点
     addProduct: async () => ({ shipperIsAmazon: null }),
     verifyCart: async () => true,
     proceedToCheckout: async () => {},
@@ -603,7 +659,9 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
   check("交给驱动的是一个绝对时刻,不是「还剩几分钟」",
         typeof seen.claimDeadlineMs === "number" && seen.claimTimeoutMin === undefined,
         JSON.stringify(Object.keys(seen)));
-  check("前面几步确实花掉了时间", elapsedAtOrder >= 80, `只用了 ${elapsedAtOrder}ms`);
+  // 阈值比 sleep 松一截:Node 的定时器允许提前一两毫秒回来,
+  // 卡在等号上的话这一条会偶发地红,而偶发红的测试没人会认真看。
+  check("前面几步确实花掉了时间", elapsedAtOrder >= 100, `只用了 ${elapsedAtOrder}ms`);
   const drift = seen.claimDeadlineMs - (t0 + 15 * 60_000);
   check("那个时刻是「认领时刻 + claim_timeout_min」,不跟着前面几步往后挪",
         drift >= -50 && drift < 60, `偏了 ${drift}ms(挪了就说明账是从点下单起算的)`);
@@ -646,12 +704,113 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
     driver: () => driver,
   });
   const t0 = Date.now();
-  const first = await loop.tickOnce();
+  // **上界套在 tickOnce 自己身上。** 断言排在 await 后面的话,闸被改坏时
+  // 这一格不会转红 —— 它会挂在这条 await 上直到 20 分钟的默认硬顶到期,
+  // CI 上表现为整个 job 超时被杀,看的人第一反应是「机器慢」而不是
+  // 「有一道闸被改坏了」。「任何等待都必须有界」这条对测试自己也成立。
+  let first;
+  try {
+    first = await Promise.race([
+      loop.tickOnce(),
+      new Promise((_, rej) => setTimeout(
+        () => rej(new Error("tickOnce 超过 5s 未返回")), 5_000).unref?.()),
+    ]);
+  } catch (e) {
+    first = { kind: `没返回:${e.message}` };
+  }
   const took = Date.now() - t0;
   eq("看门狗按钳过的硬顶触发", first.kind, "hard-cap");
   check("硬顶被钳进了服务端的认领窗口", took < 5_000, `等了 ${took}ms`);
   releaseHang();
   await new Promise((r) => setTimeout(r, 20));
+}
+
+// ── 「上界由服务端反推」那条算式(F3) ──────────────────────────────────
+//
+// docs/01 §8.3 那句「插件永远给服务端留出余量」的本体就是这个纯函数,而它一条
+// 测试都没有过:改成恒取插件自己的 orderHardCap(完全忽略 claimDeadlineMs),
+// typecheck / DOM / unit / pytest 全绿。后果是 placeOrder 从「点下单」那一刻起
+// 再等满 10 分钟,总时长越过 task_sweep 的清扫线 —— 钱花了、货发了,
+// 系统里是一条没有单号的待人工。
+{
+  const OWN = 10 * 60_000;          // T.orderHardCap 默认值
+  const MARGIN = 3 * 60_000;        // T.orderServerMargin 默认值
+  const now = 1_000_000;
+  eq("服务端没给上界(老服务端)→ 用插件自己的",
+     orderHardCapMs(null, now), OWN);
+  eq("认领窗口还很远 → 还是插件自己的更紧",
+     orderHardCapMs(now + 60 * 60_000, now), OWN);
+  eq("认领窗口快到了 → 钳到「窗口 − 余量」",
+     orderHardCapMs(now + 5 * 60_000, now), 5 * 60_000 - MARGIN);
+  eq("窗口已经过了 → 0(只探一次立刻超时,不是负数、也不是插件自己的上限)",
+     orderHardCapMs(now - 1000, now), 0);
+  check("反推出来的上界永远给服务端留着余量",
+        orderHardCapMs(now + 5 * 60_000, now) < 5 * 60_000);
+}
+
+// ── 「越过下单点」那条留痕没落地就不许点下单(GR-01) ─────────────────────
+//
+// 那四道回队列的闸(人工重置 / 批量重置 / 自动重试选单 / 插件自己调的 /release)
+// 没有一道自己看得出「越过下单点了」,全都在等服务端库里那一位;而那一位的
+// 唯一来源就是这条 POST。原先它的返回值被直接丢掉:一次网络抖动,单在 Amazon 上
+// 真下成了,库里那一位还是 false,四道闸一起退化成招牌。
+{
+  const client = fakeClient(1);
+  let armAttempts = 0;
+  let placed = 0;
+  let released = 0;
+  client.events = async (_id, evs) => {
+    if (evs.some((e) => e.payload?.may_have_ordered === true)) {
+      armAttempts += 1;
+      return { ok: false, kind: "transport", message: "请求超时" };
+    }
+    return { ok: true, data: { recorded: evs.length } };
+  };
+  client.release = async () => { released += 1; return { ok: true, data: {} }; };
+  const driver = {
+    name: "fake", ready: true,
+    readLoginState: async () => "unknown",
+    clearCart: async () => {},
+    addProduct: async () => ({ shipperIsAmazon: null }),
+    verifyCart: async () => true,
+    proceedToCheckout: async () => {},
+    fillAddress: async () => {},
+    readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
+                                 unitPrices: [] }),
+    placeOrder: async () => { placed += 1; },
+    readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
+    dispose: async () => {},
+  };
+  const out = await runTask(fakeTask(1), { client, driver, log: silentLog });
+  eq("留痕没落地 → 一次都不许点下单按钮", placed, 0);
+  check("没说上话时会重发一次(服务端那条 UPDATE 是幂等的)", armAttempts === 2,
+        `试了 ${armAttempts} 次`);
+  eq("这一刻还没花钱 —— 清车退回队列", out.kind, "released");
+  eq("而且真的调了 /release", released, 1);
+  eq("一条 /fail 都不该有(这一单没毛病)", client.fails.length, 0);
+}
+
+{
+  // 反过来:留痕落地了就照常点。上面那一条不能靠「反正都不点」蒙对。
+  const client = fakeClient(1);
+  let placed = 0;
+  const driver = {
+    name: "fake", ready: true,
+    readLoginState: async () => "unknown",
+    clearCart: async () => {},
+    addProduct: async () => ({ shipperIsAmazon: null }),
+    verifyCart: async () => true,
+    proceedToCheckout: async () => {},
+    fillAddress: async () => {},
+    readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
+                                 unitPrices: [] }),
+    placeOrder: async () => { placed += 1; },
+    readOrderCard: async () => ({ amazonOrderNo: "X1", observedAsins: [] }),
+    dispose: async () => {},
+  };
+  const out = await runTask(fakeTask(1), { client, driver, log: silentLog });
+  eq("留痕落地了就照常下单", placed, 1);
+  eq("这一单拍成了", out.kind, "purchased");
 }
 
 // ── 接线本身(只验得到源码这一层,说清楚) ──────────────────────────────
@@ -670,8 +829,12 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
   check("续租在闸**外面**(闸关着的整单期间也要续得上)",
         (runnerSrc.match(/if \(!\(await this\.lease\(\)\)\) return;/g) ?? []).length === 2 &&
         !/this\.flight\.run\(async \(\) => \{[\s\S]{0,160}?this\.lease\(/.test(runnerSrc));
-  check("续租时如实报「这个标签页手里有没有活」",
-        /busy: this\.flight\.busy \|\| BUSY_PHASES\.has\(this\.phase\)/.test(runnerSrc));
+  // 判据本体必须是 Loop 自己说的那一位,不是猜相位:看门狗掐单之后相位是 stuck、
+  // 闸也已经放掉,只靠这两条的话这个标签页会报 busy=false,租约被抢走,
+  // 而它手上那条僵尸 runTask 还活着(两条 runTask 动同一个购物车)。
+  check("续租时如实报「这个标签页手里有没有活」(以 Loop.holdsWork() 为准)",
+        /busy: this\.flight\.busy \|\| !!this\.loop\?\.holdsWork\(\) \|\| BUSY_PHASES\.has\(this\.phase\)/
+          .test(runnerSrc));
 
   const swSrc = readFileSync(join(here, "..", "src", "background", "service-worker.ts"), "utf8");
   check("租约落 chrome.storage.session,不再活在模块级变量里",

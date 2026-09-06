@@ -87,8 +87,12 @@ const REVEAL_BANNER =
  *  claimed_at 上。起点由 run.ts 在认领之后取,这里只做减法。
  *
  *  服务端那个值配得特别小、或者前面几步已经把预算吃光的时候这里会算出 0 ——
- *  那就只探一次立刻超时,这是对的:那种情况下本来就没有等的余地。 */
-function orderHardCapMs(claimDeadlineMs: number | null, now: number): number {
+ *  那就只探一次立刻超时,这是对的:那种情况下本来就没有等的余地。
+ *
+ *  **导出是为了让它有测试。** 这条算式是 §8.3 那句「上界由服务端反推」的本体,
+ *  而它整个人在 DOM 夹具那一套之外(纯函数,不碰页面):不导出的话,把它改成
+ *  恒取插件自己的上限,typecheck / DOM / unit / pytest 一条都不会红。 */
+export function orderHardCapMs(claimDeadlineMs: number | null, now: number): number {
   const own = T.orderHardCap;
   if (claimDeadlineMs === null || !Number.isFinite(claimDeadlineMs)) return own;
   return Math.max(0, Math.min(own, claimDeadlineMs - T.orderServerMargin - now));

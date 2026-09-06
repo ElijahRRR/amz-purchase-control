@@ -183,6 +183,18 @@ export class Loop {
     }
   }
 
+  /** 这个 Loop **手里有没有活**(此刻在跑 / 有一条被掐掉但还没落地的 runTask)。
+   *
+   *  执行租约拿它当 busy 报给 SW:租约那条「持有者在跑单就不换手」的判据原先
+   *  靠内容脚本猜相位(BUSY_PHASES),而看门狗掐掉一单之后相位是 stuck、
+   *  不在那张表里 —— 这个标签页从此报 busy=false,租约到期就被另一个
+   *  amazon.com 标签页抢走,而它手上那条僵尸 runTask 还活着:
+   *  那条 runTask 走到 finish() 会在同一个买家号上再清一次车,
+   *  把新领那一单已经加好的商品删掉。相位是给标签用的,这一位才是事实。 */
+  holdsWork(): boolean {
+    return this.busy || this.zombies.size > 0;
+  }
+
   /** 跑一轮:认领 → 执行 → 落终态。同一时刻只允许一轮在跑。 */
   async tickOnce(): Promise<TickResult> {
     if (this.busy) return { kind: "busy" };
@@ -265,7 +277,9 @@ export class Loop {
         // 记成「没有需要同步的订单」,运维看日志会以为系统正常(深度分析 §5.3)。
         const msg = claimed.kind === "transport" ? claimed.message : `${claimed.code} ${claimed.message}`;
         this.deps.log.err("认领失败:" + msg);
-        this.phase("idle");
+        // 相位也要分开,不能落回 idle:面板上「待命 · 队列里没有本买家号的单」
+        // 这一句在这一格是**假话** —— 队列里可能正堆着单,是我们没问到。
+        this.phase("no-server");
         return { kind: "transport-error", message: msg };
       }
 
@@ -298,11 +312,6 @@ export class Loop {
         // Loop 这一层从 claim 到 return 之间一直是 running,分不出「轮到人了」。
         onPhase: (p) => this.phase(p, task),
         onVerifyWindow: (deadlineMs) => this.deps.onVerifyWindow?.(deadlineMs),
-        // 开头那次清车成功了。熔断的连续计数在这里清零,而不是只看终态 ——
-        // 终态里的 cartCleared 只有 failed 才带,purchased / released 这两条路上
-        // 清车明明成功过(它是第一步)。只看终态的话,「失败、失败、成功、失败」
-        // 也会熔断,而它报的原因(「Amazon 改了购物车页的结构」)是假的。
-        onCartCleared: () => { this.cartFailStreak = 0; },
       });
 
       // ── 看门狗 ──
@@ -339,8 +348,14 @@ export class Loop {
    *
    *  **绝不允许算出 0**:那样看门狗会在每一单刚开跑时就触发,而它的表现是
    *  「这一单跑了超过 0 分钟」—— 一道兜底网变成了绞索。所以:配置里没有这一项
-   *  (旧存档、自检脚本给的桩)或被人填坏了就用默认值;认领窗口本身比余量还小的
-   *  极端配置下,退一步取认领窗口本身(赶在清扫那一刻,不再往前留)。 */
+   *  (旧存档、自检脚本给的桩)或被人填坏了就用默认值。
+   *
+   *  **认领窗口本身比余量还小时(claim_timeout_min ≤ 3 分钟)取窗口的一半,
+   *  不是窗口本身。** 取窗口本身等于「余量为零」,而插件这本账的起点比服务端的
+   *  claimed_at 晚一个 HTTP 来回 —— 看门狗开火那一刻任务在服务端**必然**已经过了
+   *  清扫线,giveUp() 那条「插件放弃这一单」的留痕注定被 TASK_NOT_HELD 拒掉,
+   *  事件流里再没有任何地方说过是插件先放弃的。§8.3 承诺的是「插件永远给服务端
+   *  留出余量」,一半虽然不是配出来的余量,至少是真的余量。 */
   private watchdogCapMs(cfg: Config, task: Task): number {
     const own = posOr(cfg.taskHardCapMs, DEFAULTS.taskHardCapMs);
     const min = task.claim_timeout_min;
@@ -348,7 +363,7 @@ export class Loop {
     const window = min * 60_000;
     const margin = posOr(cfg.timeouts?.orderServerMargin, DEFAULTS.timeouts.orderServerMargin);
     const room = window - margin;
-    return Math.min(own, room > 0 ? room : window);
+    return Math.min(own, room > 0 ? room : Math.max(1, Math.floor(window / 2)));
   }
 
   /** 一单跑过了硬顶:强行收尾,把这件事说出去,然后**不再等它**。
@@ -371,6 +386,20 @@ export class Loop {
                       (stillClaimed
                         ? `任务在服务端还是「拍单中」,交给认领超时清扫转待人工`
                         : `服务端的认领超时已经过了,这条多半已经被清扫成待人工`));
+    // 认领窗口比留给服务端的余量还小(claim_timeout_min 配成了 1、2 分钟这种):
+    // 硬顶只能退一步取窗口的一半,余量不再是配出来的那个数。下面那条留痕
+    // 多半写不进去,先把原因说清楚 —— 否则看日志的人只看到一条 TASK_NOT_HELD。
+    const min = task.claim_timeout_min;
+    const cfgMargin = posOr(this.deps.config().timeouts?.orderServerMargin,
+                            DEFAULTS.timeouts.orderServerMargin);
+    if (typeof min === "number" && Number.isFinite(min) && min > 0 &&
+        min * 60_000 - cfgMargin <= 0) {
+      this.deps.log.warn(
+        `认领超时被配成了 ${min} 分钟,比留给服务端的余量(` +
+        `${Math.round(cfgMargin / 1000)} 秒)还紧 —— 硬顶只能取窗口的一半,` +
+        `下面这条「插件放弃这一单」的留痕多半会被 TASK_NOT_HELD 拒掉。` +
+        `要么调大 AMZ_CLAIM_TIMEOUT_MIN,要么调小 orderServerMargin`);
+    }
     // 编号而不是计数:等超时之后我们会把整个集合清掉,那条 runTask 稍后
     // 真走完时不该再去减一个已经归零的数(会减成负数,下一轮判断就废了)。
     const id = ++this.zombieSeq;
@@ -405,16 +434,27 @@ export class Loop {
     return { kind: "hard-cap", task };
   }
 
-  /** 清车熔断的计数。**只数「试了没清动」**(cartCleared === false):
-   *  越过下单点那一路按规矩就不清车(null),把它算进来的话,
-   *  三单「可能已下单」就能让一台购物车好好的机器停止认领。
+  /** 清车熔断的计数。数的是**这一单收尾时有没有把车留干净**,一单一票:
    *
-   *  清零走的是另一条路(runTask 的 onCartCleared,开头那次清车一成功就报)——
-   *  只在这里清的话,成功的那一单(purchased,它的终态里根本没有 cartCleared)
-   *  不会清零,于是「失败、失败、成功、失败」也熔断。 */
+   *   · true(清干净了 / 拍成了)→ 连续计数清零
+   *   · false(试了没清动)→ +1,够数就熔断
+   *   · null(越过下单点,按规矩不动购物车;或者没说上话,不知道)→ 既不加也不清
+   *
+   *  **清零的时机曾经在「这一单开头那次清车成功」上**(runTask 的 onCartCleared),
+   *  而每一单都是从清车开始的:只要开头那次成功过,计数在每一单开头就被清零,
+   *  连续数永远回不到 2。真实形状是「开头那次(车是空的、走空车早退路径)成功、
+   *  收尾那次(车里有东西)失败」—— Amazon 改了购物车删除控件的类名时每一单都成立,
+   *  于是这道熔断在它最该起作用的那一格上完全是死的。
+   *
+   *  purchased 记 true:拍成了说明开头那次清车成功过(它失败会直接抛),
+   *  而下单之后车本来就空了。released 自己带着这一位(见 run.ts 的 Outcome)。 */
   private noteCart(outcome: Outcome): void {
-    if (outcome.kind !== "failed" || outcome.cartCleared === null) return;
-    if (outcome.cartCleared) {
+    const cleared: boolean | null =
+      outcome.kind === "purchased" ? true
+      : outcome.kind === "failed" || outcome.kind === "released" ? outcome.cartCleared
+      : null;                       // unreported:连结局都没说上话,不下结论
+    if (cleared === null) return;
+    if (cleared) {
       this.cartFailStreak = 0;
       return;
     }

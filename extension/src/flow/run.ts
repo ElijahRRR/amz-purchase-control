@@ -6,6 +6,9 @@
  *     不存在"只写本地日志"的出口。(厂商插件有 30+ 条只写日志的失败路径。)
  *  2. **点下单那一刻起,禁止 release。** mayHaveOrdered 一旦置位,任何失败都
  *     to_manual —— 退回队列等于让下一个实例把同一单再买一遍。
+ *     而「越过下单点」这件事必须先在**服务端**留下一行才允许点:那条 step
+ *     没落地就不点(见 placeOrder 之前那一段),否则库里那一位是 false,
+ *     四道回队列的闸对这一单全是空的。
  *  3. **护栏裁决在服务端。** 这里只负责把结算页读到的数报上去,不自己比。
  */
 
@@ -26,7 +29,10 @@ export type Outcome =
    *  Loop 的熔断只数 false;把 null 也数进去的话,每一单「可能已下单」
    *  都会被当成清不动车,三单之后整台机器停止认领,而购物车其实好好的。 */
   | { kind: "failed"; code: ErrorCode; toManual: boolean; cartCleared: boolean | null }
-  | { kind: "released" }
+  /** 退回队列。`cartCleared` 与 failed 那一位同义(true 清干净了 / false 清不动 /
+   *  null 没试过)——Loop 的清车熔断数的是「这一单有没有把车留干净」,
+   *  而这条路上照样清过车,不带这一位的话它在熔断那本账上是一格空白。 */
+  | { kind: "released"; cartCleared: boolean | null }
   /** 没跟服务端说上话。任务此刻仍是 claimed,交给服务端的超时清扫去收
    *  —— 它 15 分钟后转待人工,而不是退回队列。 */
   | { kind: "unreported"; message: string };
@@ -61,14 +67,6 @@ export interface RunDeps {
   /** 进入/离开「等人做发卡行验证」。面板拿 deadlineMs 跑倒计时;
    *  离开时传 null。与 onPhase 分开:相位是给标签用的,这个是给倒计时用的。 */
   onVerifyWindow?: (deadlineMs: number | null) => void;
-  /** 这一单**开头那次清车成功了**。Loop 的清车熔断拿它清零连续计数。
-   *
-   *  为什么不能只看终态里的 cartCleared:那一位只有 failed 才带,
-   *  而 purchased / released 这两条路上清车明明成功过(它是第一步)。
-   *  于是「失败、失败、成功、失败」也会熔断 —— 熔断本身没坏,坏的是它报出来的
-   *  原因:面板会说「连着几单清不动购物车,多半是 Amazon 改了购物车页的结构」,
-   *  而这台机器的购物车其实好好的,运营照着这句话去查一个不存在的故障。 */
-  onCartCleared?: () => void;
 }
 
 class Abort extends Error {
@@ -95,11 +93,16 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
 
   // 点下单那一刻起就是 true。注意置位时机在 placeOrder **之前** ——
   // 如果在点击过程中崩了,我们同样不知道单下没下成。
+  // 置位排在「那条 step 已经落库」之后:留痕没写进去就根本不点,
+  // 那时这一单还没花钱,退回队列才是对的。
   let mayHaveOrdered = false;
 
-  const step = async (text: string, payload: Record<string, unknown> = {}) => {
+  /** 上报一条执行步骤。**返回值是有用的** —— 「点击下单按钮」那一条是下单的
+   *  前置条件(见下面 armOrderLine),调用方要判它落没落地。别的几条是旁白,
+   *  丢掉返回值无妨。 */
+  const step = (text: string, payload: Record<string, unknown> = {}) => {
     log.info(text);
-    await client.events(task.task_id, [{ kind: "step", payload: { step: text, ...payload } }]);
+    return client.events(task.task_id, [{ kind: "step", payload: { step: text, ...payload } }]);
   };
 
   /** 清车,但**清不动不改变这一单的结局**。
@@ -118,7 +121,12 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
       // 先写事件流再返回:调用方接着可能会 release,那之后 /events 就会被
       // TASK_NOT_HELD 拒掉,这条痕迹就永远写不进去了。
       await client.events(task.task_id, [
-        { kind: "step", payload: { step: "清车失败", state: "cart_not_cleared", where, detail } },
+        // 键名是 `warning` 而不是 `state`:服务端在 /fail 那一路写的就是
+        // `warning=cart_not_cleared`(server/routes/tasks.py),运营台实例页那格
+        // cart_fail_24h 数的也是它。同一件事两个生产者用两个键名的话,
+        // 走这两条路(护栏没说上话 / 人按了取消)清不动车的机器在运营台上是隐形的。
+        // `state` 那个键留给「此刻在哪一段」那套语义(manual_verification / plugin_hard_cap)。
+        { kind: "step", payload: { step: "清车失败", warning: "cart_not_cleared", where, detail } },
       ]);
       return false;
     }
@@ -127,10 +135,6 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
   try {
     await step("清空购物车");
     await driver.clearCart();
-    // 清成功了就说一声:Loop 的清车熔断据此把连续计数清零。**在这里说,
-    // 不等到终态** —— purchased / released 的终态里没有 cartCleared 这一位,
-    // 而清车在那两条路上明明成功过。
-    deps.onCartCleared?.();
 
     for (const p of task.products) {
       const added = await driver.addProduct(p.asin, p.quantity);
@@ -245,19 +249,48 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
         log.warn("人按了取消 —— 清车,退回队列");
         // 清不干净也照样 release:这一单本身没毛病,人只是不想现在买它。
         // 把它记成 PLUGIN_INTERNAL 拍单异常,等于用「插件崩了」去表达「人按了取消」。
-        await tryClear("人按了取消");
+        const cleared = await tryClear("人按了取消");
         const rel = await client.release(task.task_id);
-        return rel.ok ? { kind: "released" } : { kind: "unreported", message: "release 失败" };
+        return rel.ok
+          ? { kind: "released", cartCleared: cleared }
+          : { kind: "unreported", message: "release 失败" };
       }
     }
 
+    // **先说,再点 —— 而且是「说上了才点」。** 这条事件不是旁白,是下单的
+    // **前置条件**:服务端收到 may_have_ordered 才会把 tasks.may_have_ordered 置上,
+    // 而那四道「回队列之前先看一眼」的闸(人工重置 / 批量重置 / 自动重试选单 /
+    // 插件自己调的 /release)没有一道自己看得出「越过下单点了」,全都在等这一位。
+    //
+    // 原先这里丢掉了返回值:一次网络抖动、一次服务端重启、一次 15 秒超时,
+    // 这条 POST 就没说上话,而下一行照点不误 —— 单在 Amazon 上真下成了,
+    // 库里那一位却还是 false,四道闸一起退化成招牌,这张已经花过钱的单
+    // 会被人一键重置、或被 task_retry 自动放回队列,在亚马逊上再买一遍。
+    //
+    // 所以:没落地就不点。**这一刻还没花钱**,清车退回队列是安全的那一边;
+    // 点下去才是不安全的那一边。
+    let armed = await step("点击下单按钮", { may_have_ordered: true });
+    if (!armed.ok && armed.kind === "transport") {
+      // 没说上话就重发一次:服务端那条 `UPDATE ... WHERE NOT may_have_ordered`
+      // 是幂等的,事件表只追加 —— 多一条重复的 step,比让四道闸失效便宜太多。
+      log.warn("「点击下单按钮」这条留痕没说上话,重发一次 —— 它没落地就不能点下单");
+      armed = await step("点击下单按钮", { may_have_ordered: true });
+    }
+    if (!armed.ok) {
+      const why = armed.kind === "business" ? `${armed.code} ${armed.message}` : armed.message;
+      log.err(`「越过下单点」这条留痕没能写进服务端(${why}) —— 不点下单,清车退回队列。` +
+              `服务端不知道我们要点下单的话,那四道「重置前先确认」的闸对这一单全是空的`);
+      const cleared = await tryClear("下单点留痕没落地");
+      // release 被 409 POSSIBLY_ORDERED 拒掉是**正常的**:说明第一次 POST 其实
+      // 落了库、只是响应没回来。那时任务停在 claimed,由服务端的超时清扫
+      // 转待人工 —— 比退回队列更该走的那条路。
+      const rel = await client.release(task.task_id);
+      return rel.ok
+        ? { kind: "released", cartCleared: cleared }
+        : { kind: "unreported", message: rel.message };
+    }
+
     mayHaveOrdered = true;               // ← 从这里开始,退回队列是被禁止的
-    // **先说,再点。** 这条事件是「走到了下单按钮」与「根本没走到」之间唯一的分界线:
-    // 没有它的话,一条 ORDER_CONFIRM_TIMEOUT 的时间线最后一条是「读到结算页」,
-    // 看的人无从判断该不该去买家号里查一遍(两种情况的处置完全相反)。
-    // 服务端收到 may_have_ordered 会把 tasks.may_have_ordered 置上,
-    // 那道「重置前必须有人确认过」的闸也认这一位。
-    await step("点击下单按钮", { may_have_ordered: true });
     await driver.placeOrder({
       // 上界由服务端给,不让插件自己拍。见 flow/amazon.orderHardCapMs。
       claimDeadlineMs,
@@ -357,9 +390,12 @@ async function releaseAfterLoginLost(
   ]);
 
   // 清车:没到下单点,车里可能还留着这一单的东西,不清会污染下一单。
-  // 清不掉不改变结局(页面多半已经在登录页上了,本来也清不动)。
+  // 清不掉不改变结局(页面多半已经在登录页上了,本来也清不动),但**要说出来**:
+  // 这一位要带回给 Loop 的清车熔断,那本账上不该有空白格。
+  let cartCleared = false;
   try {
     await driver.clearCart();
+    cartCleared = true;
   } catch (e) {
     log.warn("退回队列前清车失败:" + (e instanceof Error ? e.message : String(e)));
   }
@@ -369,7 +405,7 @@ async function releaseAfterLoginLost(
     // 没说上话:任务仍是 claimed,交给服务端的超时清扫(15 分钟后转待人工)。
     return { kind: "unreported", message: rel.message };
   }
-  return { kind: "released" };
+  return { kind: "released", cartCleared };
 }
 
 /** 唯一的失败出口:先清车,再上报。两件事都做完才算这一单结束。 */
