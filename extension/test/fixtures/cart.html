@@ -46,6 +46,12 @@
       只有报告写的直接子代组合器 `> span >` 才能选中正确的那个。
    6. 干扰区里同样有 Delete 控件——不带 Active Items 前缀的清车循环在这一页
       永远找得到删除按钮，正是缺陷 B5「while(true) 无限点击」的触发形态。
+   7. **车里有货，页面上却挂着一个隐藏的空车提示模板**（干扰项 A-2）。
+      它靠 CSS 类隐藏，**没有 inline style、没有 [hidden]、没有 [aria-hidden]** ——
+      isHidden 那一档判据看不见它，只有 isRendered（看布局）拦得住。
+      写松了会怎样：clearCart 的「车是空的要有正面证据」那道闸、verifyCart 的
+      「页面明说空车就别等了」那条早退，都用这组标志下结论；裸 querySelector
+      命中这个模板 = 车里还有上一单的东西却被判成空车。
 
   订单侧的期望值（跑夹具时对照用）：
       order.products = [ {asin:"B0FB3VS68J", quantity:1},
@@ -97,6 +103,28 @@
         <input class="a-button-input" type="submit" value="Delete">
       </span>
     </div>
+  </div>
+
+  <!-- ========================================================================
+       干扰项 A-2：**隐藏的空车提示模板**（报告未记载；与上面那份行模板同一个做法：
+       Amazon 把两种状态的壳子都发下来，由前端按数据决定画哪一份）
+       ------------------------------------------------------------------------
+       刻意只靠 CSS 类隐藏：没有 inline style、没有 [hidden]、没有 [aria-hidden]。
+       parse.isHidden 那一档（只看标记）看不见它，只有 parse.isRendered（看布局）
+       拦得住 —— 这一份就是为了钉住「取法」而不只是「选择器内容」。
+
+       写松了会怎样（这一页车里明明还有两件在售商品）：
+         · clearCart 的「车是空的要有正面证据」：
+           `SEL.cart.emptyMarkers.some(m => doc.querySelector(m))` → true
+           → 容器选择器一旦失效就直接 return「已清空」，上一单的残留进下一单。
+         · verifyCart 的「页面明说空车，不必等满 15 秒」：
+           同一条裸判据在 t≈0 命中 → 拿一份空读数去判 CART_MISMATCH，
+           而真实原因是购物车行还没渲染出来。
+       ======================================================================== -->
+  <!-- Amazon 真实存在的工具类。写成 <style> 而不是 inline style 是刻意的。 -->
+  <style>.aok-hidden { display: none !important; }</style>
+  <div id="sc-empty-cart" class="aok-hidden">
+    <h1 class="a-size-extra-large">Your Amazon Cart is empty</h1>
   </div>
 
   <!-- 报告未记载，仅作包裹 -->

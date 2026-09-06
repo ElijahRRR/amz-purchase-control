@@ -1,0 +1,72 @@
+<!doctype html>
+<!--
+================================================================================
+  FIXTURE: tracking-events-only.html
+           —— 跟踪页只渲染了**事件区**，顶部的 delivery card 没画出来
+================================================================================
+
+  页面        : /progress-tracker/package/ref=…
+  事实来源    : 厂商 v2.5.3 `v253.pretty.js:4851` extractTrackingEvents 里的
+                `.tracking-event-trackingId-text h4`
+                SP/wf/verify_origin.mjs：这一条 **2.4.1 起三版都有** ——
+                是我们照抄报告时漏掉的老形态，不是新形态
+                SP/wf/selector_inventory.md §13「包裹跟踪页」
+
+  ---------------------------------------------------------------------------
+  这张夹具存在的理由
+  ---------------------------------------------------------------------------
+  我们原先只有两条运单号判据：`.pt-delivery-card-trackingId` 与
+  `#carrierRelatedInfo-container > div h4`。轨迹已经在更新、而顶部的
+  delivery card 还没渲染（或被折叠）时，两条都落空 → readTrackingNumber
+  返回 null。
+
+  返回 null 的后果比「少一个号」严重：`isTrackingUnavailable` 只认 Amazon 那句
+  「暂时给不了轨迹」，所以这种情况会落进「我们没解析出来」那一档 ——
+  而它在库里跟「还没发货」长得一模一样，没有任何地方说「选择器坏了」。
+  这与 selectors.tracking.unavailableText 注释里写的是同一件事，
+  只是那里防的是另一半。
+
+  ---------------------------------------------------------------------------
+  干扰项
+  ---------------------------------------------------------------------------
+  ① 隐藏模板里有一份 `.pt-delivery-card-trackingId`（占位号 0000000000000000），
+     **排在真身前面**。判据不过 isRendered 的话会读出占位号 —— 那比读不到更坏：
+     一个假运单号会被当成真的写进库，物流同步从此追一个不存在的包裹。
+  ② 页面上有 #primaryStatus，所以「跟踪页就绪」这条判据本身是成立的 ——
+     也就是说这一页不会超时，会安安静静地返回一个没有运单号的结果。
+================================================================================
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Track your package</title></head>
+<body>
+
+  <!-- 干扰项①：隐藏模板里的占位运单号，排在最前 -->
+  <div id="pt-template" style="display:none">
+    <span class="pt-delivery-card-trackingId">Tracking ID: 0000000000000000</span>
+  </div>
+
+  <div id="primaryStatus" class="a-size-large">Package has shipped</div>
+
+  <!-- ✅ 正主：只有事件区。顶部 .pt-delivery-card-wrapper 一个都没有 -->
+  <div id="tracking-events-container">
+    <div class="a-container">
+
+      <!-- 厂商 v253:4851 的那一条 -->
+      <div class="tracking-event-trackingId-text">
+        <h4>Tracking ID: 9400111899223197428431</h4>
+      </div>
+
+      <div class="tracking-event-date-header">
+        <span class="tracking-event-date">August 26, 2026</span>
+      </div>
+      <div class="a-row a-spacing-large a-spacing-top-medium">
+        <span class="tracking-event-time">8:42 AM</span>
+        <span class="tracking-event-message">Out for delivery</span>
+        <span class="tracking-event-location">Santa Ana, CA 92707</span>
+      </div>
+
+    </div>
+  </div>
+
+</body>
+</html>

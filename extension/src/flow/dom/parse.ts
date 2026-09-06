@@ -35,6 +35,59 @@ function visible<T extends Element>(doc: Document | Element, selector: string): 
   return null;
 }
 
+/** 输入:一个元素 → 输出:它此刻**真的画在页面上**吗。
+ *
+ *  与上面的 isHidden 是两条不同强度的判据,都要有:
+ *   · isHidden 只看 **inline style / [hidden] / [aria-hidden]** 这些标记,
+ *     解析文本时够用,而且对 `DOMParser` 造出来的离线文档也成立(没有布局);
+ *   · isRendered 看的是**布局结果**(`getClientRects()`),要有真实布局才有意义,
+ *     但它能挡住 isHidden 挡不住的那些:class 带来的 display:none、
+ *     父级折叠、`visibility:hidden`、宽高为 0 的占位。
+ *
+ *  **为什么不能只看 `getComputedStyle(el).display`**:实测(SP/wf/address_probe.mjs)
+ *  父级 `display:none` 时,子 `<a>` 自己的 computed display 仍然是 `inline`——
+ *  只看它等于没判。`getClientRects().length > 0` 才是「有没有被布局出来」。
+ *  这条判据抄的是厂商 v2.5.3:2166-2176 的 isRenderedElement,他们是拿真实页面
+ *  校出来的。
+ *
+ *  拿不到 window(离线文档、跨域)时**退回 !isHidden**:
+ *  「读不到布局」不是「它是隐藏的」,判成隐藏会让每条判据都落空。 */
+export function isRendered(el: Element | null | undefined): boolean {
+  if (!el) return false;
+  if (!el.isConnected) return false;
+  if (isHidden(el)) return false;
+  const view = el.ownerDocument?.defaultView;
+  if (!view || typeof view.getComputedStyle !== "function") return true;
+  let style: CSSStyleDeclaration;
+  try {
+    style = view.getComputedStyle(el);
+  } catch {
+    return true;
+  }
+  if (style.display === "none" || style.visibility === "hidden") return false;
+  return el.getClientRects().length > 0;
+}
+
+/** 输入:一个根节点 + **有序**的选择器数组 → 输出:第一个既命中又渲染出来的元素。
+ *
+ *  数组的顺序是判据的可信度顺序(见 selectors.ts 文件头规矩二),
+ *  所以这里是「按顺序试,谁先给出一个**渲染出来的**元素就用谁」,
+ *  而不是「哪条命中得多用哪条」。
+ *
+ *  同一条选择器命中多个时取第一个渲染出来的 —— Amazon 常把隐藏的模板副本
+ *  排在真身**前面**,裸 querySelector 取到的就是那一个。 */
+export function pickFirstRendered<T extends Element>(
+  root: Document | Element,
+  selectors: readonly string[],
+): T | null {
+  for (const sel of selectors) {
+    for (const el of Array.from(root.querySelectorAll<T>(sel))) {
+      if (isRendered(el)) return el;
+    }
+  }
+  return null;
+}
+
 /** 输入:含金额的文本 → 输出:去掉货币符号与千分位的数字串。认不出返回 undefined。 */
 export function parseMoney(s: string | null | undefined): string | undefined {
   if (!s) return undefined;
@@ -153,6 +206,31 @@ export function findQuantityOption(doc: Document, quantity: number): { has: bool
   return { has: true, matched };
 }
 
+/** 输入:商品页 → 输出:**现在真的点得动**的加入购物车按钮,没有就是 null。
+ *
+ *  三道筛,缺一道都会白烧一个超时窗口:
+ *   1. 两种形态都试(SEL.product.addToCart,第二条出自厂商 v2.5.3:2180);
+ *   2. 渲染出来的才算(隐藏的模板副本常排在真身前面);
+ *   3. `disabled` / `aria-disabled="true"` 的不算 —— 这一道是关键:
+ *      `el.click()` 打在 disabled 按钮上**不抛错、返回 true**,浏览器却根本
+ *      不派发 click 事件(SP/wf/payment_atc_probe.mjs 实测)。于是流程以为
+ *      点成功了,接着等「跳转到购物车」等满 T.addToCart 才报 ADD_TO_CART_FAILED。
+ *      真正的原因(按钮还没 hydrate)在事件流里一个字都看不到。
+ *
+ *  厂商 v2.5.3:2177-2191 同一个做法 —— 他们这一版才补上,而这正是
+ *  「拿真实页面校准」才发现得了的那一类。 */
+export function findAddToCartButton(doc: Document): HTMLElement | null {
+  for (const sel of SEL.product.addToCart) {
+    for (const el of Array.from(doc.querySelectorAll<HTMLElement>(sel))) {
+      if (!isRendered(el)) continue;
+      if ((el as HTMLInputElement | HTMLButtonElement).disabled) continue;
+      if (el.getAttribute("aria-disabled") === "true") continue;
+      return el;
+    }
+  }
+  return null;
+}
+
 /** 报告未记载商品页的配送方选择器,所以这是**尽力而为**:
  *  读到了就返回是否 Amazon 自营,读不到返回 null(未知),留给结算页那道权威判定。 */
 export function readProductShipper(doc: Document): boolean | null {
@@ -173,12 +251,32 @@ export interface CartLine {
   quantity: number | null;
 }
 
-/** 报告 §4.2.2:只数 Active Items 里的行。
+export interface CartState {
+  lines: CartLine[];
+  /** Active Items 那个容器**在不在**。
+   *
+   *  这一位就是「车是空的」与「行容器的选择器坏了」之间的全部区别:
+   *  两种情况下 lines 都是 `[]`,而处置正相反 —— 前者可以继续,
+   *  后者意味着我们对购物车一无所知,再往下走就是拿上一单的残留去结算。 */
+  scopeFound: boolean;
+  /** 容器里**画出来的、看起来像商品行**的节点有几个 —— 不管解析得出 ASIN 与否。
+   *
+   *  只有 scopeFound 是不够的:它只覆盖了「容器改名」这一种改版。行 class 改掉、
+   *  或者行上的 data-asin 换个属性名(同一量级、同一概率的改版),容器照样在,
+   *  lines 照样是 `[]` —— 于是「容器在而 0 行 = 真的空了」这句话不成立,
+   *  而调用方据它认定车是空的,车里却实实在在留着上一单的商品。
+   *
+   *  `rowsSeen > 0 && lines.length === 0` 就是「我们已经读不懂购物车这一页了」。 */
+  rowsSeen: number;
+}
+
+/** 报告 §4.2.2:只数 Active Items 里的行,并**同时告诉调用方那个容器在不在**。
  *  不带这个前缀就会把 "Saved for later" 和推荐位一起算进来。 */
-export function readCartLines(doc: Document): CartLine[] {
+export function readCartState(doc: Document): CartState {
   const scope = doc.querySelector(SEL.cart.activeItems);
-  if (!scope) return [];
-  return Array.from(scope.querySelectorAll(SEL.cart.line))
+  if (!scope) return { lines: [], scopeFound: false, rowsSeen: 0 };
+  const rows = Array.from(scope.querySelectorAll(SEL.cart.line));
+  const lines = rows
     .map((row) => {
       const asin = row.getAttribute("data-asin") ?? "";
       const qtyEl =
@@ -187,6 +285,21 @@ export function readCartLines(doc: Document): CartLine[] {
       return { asin, quantity: Number.isFinite(n) && n > 0 ? n : null };
     })
     .filter((l) => l.asin.length > 0);
+  // 行节点数按两条判据取**并集**:行 class 改名时 `[data-asin]` 还在,
+  // data-asin 换属性名时行 class 还在 —— 两种改版各瞎掉一条,不会同时瞎。
+  // 只数**渲染出来**的:容器里躺着的隐藏行模板不是「车里的东西」,
+  // 数上它会把一辆真空车说成「行解析坏了」。
+  const seen = new Set<Element>([...rows, ...Array.from(scope.querySelectorAll("[data-asin]"))]);
+  let rowsSeen = 0;
+  for (const el of seen) if (isRendered(el)) rowsSeen += 1;
+  return { lines, scopeFound: true, rowsSeen };
+}
+
+/** 只要行、不问容器在不在。**新代码尽量用 readCartState** ——
+ *  这个薄封装留着是因为「车里有什么」和「读得到吗」在大多数调用点上确实是一件事,
+ *  但凡是要拿 `length === 0` 下结论的地方,都必须走 readCartState。 */
+export function readCartLines(doc: Document): CartLine[] {
+  return readCartState(doc).lines;
 }
 
 /** 车里的东西是不是恰好就是本单的东西。多一件少一件、数量对不上都算不符。 */
@@ -348,6 +461,149 @@ export function readPaymentLast4(doc: Document): string | undefined {
   return all ? all[all.length - 1] : undefined;
 }
 
+// ── 地址:结算页 → 地址选择页 → 异步注入的表单 ──────────────────────
+//
+// 这一段原先整个长在 amazon.ts 里(裸 querySelector + 时序混在一起),
+// 于是 test/dom.test.mjs 够不着 —— 地址是整条链路上唯一「填错了会把货寄给别人」
+// 的环节,而它的离线断言曾经是 **0 条**。下沉成纯函数就是为了能对着夹具验。
+//
+// 三个函数**全部走 isRendered**,不是 isHidden:结算页上那个折叠着的地址簿
+// (aok-hidden + display:none)里有一整套同名节点,包括一个「新建地址」<a>。
+// 只按标记判隐藏挡不住它 —— 实测(SP/wf/address_probe.mjs)那个 <a> 自己的
+// computed display 是 inline,父级才是 none。
+
+/** 输入:结算页 → 输出:「更改收货地址」入口,四条判据里第一个渲染出来的。
+ *  全落空返回 null —— 调用方**必须**据此报错,不许继续往下等。 */
+export function findAddressChangeEntry(doc: Document): HTMLElement | null {
+  return pickFirstRendered<HTMLElement>(doc, SEL.address.changeAddress);
+}
+
+/** 输入:地址选择页 → 输出:「新增地址」入口(渲染出来的那个)。
+ *
+ *  这个 id 在结算页折叠着的地址簿里也有一份。**先确认页面真的换到 /address 页**
+ *  再调它(amazon.ts 用 URL 判据把这件事挡在前面),这里的 isRendered 是第二道。 */
+export function findAddNewAddressEntry(doc: Document): HTMLElement | null {
+  return pickFirstRendered<HTMLElement>(doc, [SEL.address.addNew]);
+}
+
+/** 输入:任意页面 → 输出:地址表单的姓名输入框(渲染出来的那个)。
+ *
+ *  它是这条流上的两个判据合一:
+ *   · 结算页上有它 = 买家号还没有任何地址,Amazon 直接给了内联表单,不用点「更改」;
+ *   · 点完「新增地址」之后有它 = 那张**异步注入**的表单到位了。
+ *
+ *  必须走 isRendered:Amazon 的地址表单是从隐藏模板克隆出来的,
+ *  页面上常同时存在一份 display:none 的副本(见 address-form-async.html 夹具)。
+ *  取到隐藏那份的后果是 setInput 往一个没人看的 DOM 里写字,然后保存按钮点下去
+ *  什么都没发生 —— 表现是 ADDRESS_FORM_TIMEOUT,而地址其实一个字都没填进去。 */
+export function findAddressFormNameField(doc: Document): HTMLInputElement | null {
+  return pickFirstRendered<HTMLInputElement>(doc, [SEL.address.fullName]);
+}
+
+/** 输入:地址选择页 → 输出:地址列表区(渲染出来的那个)。 */
+export function findAddressSection(doc: Document): HTMLElement | null {
+  return pickFirstRendered<HTMLElement>(doc, [SEL.address.section]);
+}
+
+/** 输入:任意页面 → 输出:收货地址栏里**画出来的**那份文本(空白已归一);
+ *  没有这一栏就是 null。
+ *
+ *  走 pickFirstRendered 而不是裸 querySelector:结算页上这个 id 可能有隐藏的
+ *  第二份(与地址表单、购物车行同一个模板做法),读到那一份就会拿一段
+ *  跟眼前这一单无关的地址文本去下结论。 */
+export function readAppliedAddressText(doc: Document): string | null {
+  const el = pickFirstRendered(doc, [SEL.checkout.addressText]);
+  return el ? text(el) : null;
+}
+
+/** 点完保存之后,页面上出现的是哪一种结果。三种之外返回 null(还没出结果)。
+ *
+ *  `saved`      收货地址栏**换了内容** = 这次保存生效了
+ *  `alerts`     表单校验提示有文字 = 得再点一次保存
+ *  `suggestion` Amazon 的地址建议弹窗出现了 = 得先选「原始地址」
+ *
+ *  **三条都要求「渲染出来」而不是「节点在」。** Amazon 把建议弹窗的壳子和三条
+ *  校验提示节点一直留在 DOM 里(见 address-form-async.html 夹具),只判
+ *  `querySelector(...)` 非空的话,每一单在保存后的第一次探测就会认定
+ *  「弹窗出现了」,于是去点一个折叠着的 radio、再点一次保存,来回三轮然后失败。
+ *  校验提示那一条还要额外要求**有文字**:空壳节点是常态。
+ *
+ *  **`before` 是点保存之前收货地址栏的文本,必传。** 「页面上有地址栏」不等于
+ *  「这次保存生效了」:更改地址有一种形态是**就地弹窗**(不跳转 /address),
+ *  那条路上文档一直是结算页,而结算页上本来就有生效中的旧地址栏
+ *  (checkout.html:216 摆的就是它)。不比对文本的话,点完保存的第一拍就判 saved,
+ *  校验提示与地址建议弹窗整段处理被跳过 —— 弹窗还挡着、地址根本没换,
+ *  而下游只会说「收货地址栏里没有 收件人 X」,也就是「Amazon 用了别的地址」,
+ *  与真实原因(我们没等保存结果)完全是两回事,却渲染成同一句话。
+ *  页面上没有这一栏时传 null(/address 页那条路),那时「出现了」本身就是变化。
+ *
+ *  做成纯函数是为了能对着夹具验 —— 这三种结果原先是 amazon.ts 里两段
+ *  `sleep(1200)` 之后各看一眼的快照,一条离线断言都覆盖不到。 */
+export type AddressSaveOutcome = "saved" | "alerts" | "suggestion";
+
+export function readAddressSaveOutcome(
+  doc: Document,
+  before: string | null,
+): AddressSaveOutcome | null {
+  // 少传 before 时**当场报错**,不要静默按「页面上有地址栏 = saved」办。
+  // TS 那边这个参数是必填的,这一句拦的是从 JS 调进来的(domkit 就是给测试用的):
+  // 少传一个参数就退回缺陷前的行为、而且照样返回一个看着正常的值,
+  // 正是这条判据当初没被任何断言拦住的那种坏法。
+  if (before === undefined) {
+    throw new Error("readAddressSaveOutcome 缺第二个参数 before:保存前的收货地址栏文本(没有就传 null)");
+  }
+  const now = readAppliedAddressText(doc);
+  if (now !== null && now !== before) return "saved";
+  for (const sel of SEL.address.validationAlerts) {
+    if (text(pickFirstRendered(doc, [sel]))) return "alerts";
+  }
+  if (pickFirstRendered(doc, [SEL.address.suggestionPopup])) return "suggestion";
+  return null;
+}
+
+// ── 「选择器坏了」还是「页面慢」 ──────────────────────────────────────
+
+/** 一组选择器一个都没给出可用元素时,到底是哪种情况。 */
+export type SelectorMiss =
+  /** 一个节点都没匹配到 —— **选择器坏了**(Amazon 改版),重试多少次都一样。 */
+  | { kind: "no_match"; tried: number }
+  /** 匹配到了节点,但没有一个渲染出来 —— **页面慢**,或者入口被折叠着。 */
+  | { kind: "not_rendered"; matched: string; count: number };
+
+/** 输入:根节点 + 那组选择器 → 输出:这次落空属于哪一种。
+ *
+ *  这个函数存在的理由就是 README 反复说的那条:
+ *  **两种不同的情况不许渲染出同一个结果。**「选择器坏了」和「页面慢」
+ *  今天都长成 ADDRESS_FORM_TIMEOUT,而前者要改代码、后者重试就好。
+ *  错误 detail 里带上这一句,运营台上一眼就能分开。 */
+export function diagnoseMiss(root: Document | Element, selectors: readonly string[]): SelectorMiss {
+  for (const sel of selectors) {
+    const n = root.querySelectorAll(sel).length;
+    if (n > 0) return { kind: "not_rendered", matched: sel, count: n };
+  }
+  return { kind: "no_match", tried: selectors.length };
+}
+
+/** diagnoseMiss 的中文说法,直接进 DriverError 的 detail —— 也就是**运营台上的字**。
+ *
+ *  **只说页面上看到了什么,不预告系统会怎么处置这一单。**
+ *  「选择器坏了」这一档今天仍然落在 ADDRESS_FORM_TIMEOUT 上,而那是个可重试码:
+ *  services/task_retry.py 的自动重试正是按 error_codes.RETRYABLE 挑单
+ *  (registry/settings.py 的 auto_retry_max 默认 0,开关一开就生效)。
+ *  detail 里写「重试无用」而系统照样把它重拍 N 次,就是在界面上写一句
+ *  系统不会兑现的话 —— 这条判据本身是给人看的,机器读不到它。
+ *
+ *  要让机器也用上这个区分,得给「选择器坏了」单开一个归 TO_MANUAL 的错误码。
+ *  错误码是封闭集(docs/01 §4 ↔ services/error_codes.py ↔ core/codes.ts),
+ *  开口子是跨线的事,不在这一条里定。 */
+export function describeMiss(root: Document | Element, selectors: readonly string[]): string {
+  const d = diagnoseMiss(root, selectors);
+  return d.kind === "no_match"
+    ? `${d.tried} 条判据在页面上一个节点都没匹配到 —— 多半是 Amazon 改版了:` +
+      `这一条要改选择器,原样重拍同一条判据结果相同`
+    : `「${d.matched}」匹配到 ${d.count} 个节点但没有一个渲染出来 —— 页面还没画完或入口被折叠着`;
+}
+
 // ── 订单历史 ────────────────────────────────────────────────────────
 
 export interface OrderCardRead {
@@ -397,7 +653,16 @@ export function readOrderState(doc: Document): OrderState {
   const heading = Array.from(doc.querySelectorAll(SEL.orderDetails.alertHeading))
     .map(text).join(" | ");
   if (/unable to load your order details/i.test(heading)) return "not_found";
-  if (/cancell?ed/i.test(heading)) return "cancelled";
+  // 「已取消」有两种渲染形态,判据要把两种都盖住:
+  //   ① 顶部的告警框 .a-alert-heading(报告 §4.3 记的那种);
+  //   ② #shipment-top-row 里的状态行 od-status-message —— 厂商 v2.5.3:4057-4070
+  //      专门补的一档,说明线上已经出现了不带告警框的取消页。
+  // 实测(SP/wf/orderstate_probe.mjs,对着我们自己的 dist/domkit.js 跑):
+  // 只有 ② 的那种形态,我们原先判 "ok",厂商判 cancelled ——
+  // 一张已经取消的订单会被当成正常单继续同步物流。
+  // US 站不需要厂商正则里的 キャンセル / annul[ée](CLAUDE.md:首期只做 US)。
+  const status = text(pickFirstRendered(doc, SEL.orderDetails.statusMessage));
+  if (/cancell?ed/i.test(`${heading} | ${status}`)) return "cancelled";
   const top = text(doc.querySelector(SEL.orderDetails.shipmentTopRow));
   if (/refund/i.test(top)) return "cancelled";
   return doc.querySelector(SEL.orderDetails.root) ? "ok" : "loading";
@@ -446,7 +711,7 @@ export function last4FromText(t: string): string | undefined {
 }
 
 export function readOrderPaymentLast4(doc: Document): string | undefined {
-  return last4FromText(text(doc.querySelector(SEL.orderDetails.paymentDetails)));
+  return last4FromText(firstText(doc, SEL.orderDetails.paymentDetails));
 }
 
 /** 一组选择器里第一个取到非空文本的。
@@ -506,7 +771,7 @@ export function isTrackingUnavailable(doc: Document): boolean {
 // ── 包裹跟踪页 ───────────────────────────────────────────────────────
 
 export function readTrackingNumber(doc: Document): string | null {
-  const el = visible(doc, SEL.tracking.trackingId) ?? visible(doc, SEL.tracking.trackingIdFallback);
+  const el = pickFirstRendered(doc, SEL.tracking.trackingIds);
   const m = /tracking\s*id:?\s*([A-Za-z0-9]+)/i.exec(text(el));
   if (m) return m[1];
   // 退化选择器那条常常只有号本身,没有 "Tracking ID:" 前缀

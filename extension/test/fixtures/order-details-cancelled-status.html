@@ -1,0 +1,98 @@
+<!doctype html>
+<!--
+================================================================================
+  FIXTURE: order-details-cancelled-status.html
+           —— 订单详情页「已取消」的**第二种渲染形态**
+================================================================================
+
+  页面        : /gp/your-account/order-details?orderID=…
+  事实来源    : 厂商 v2.5.3 `v253.pretty.js:4057-4070` getOrderStatusText /
+                isCancelledOrderStatus（**2.5.3 新增**，verify_origin.mjs 确认
+                2.4.1 / 2.5.1 都没有）
+                厂商 v2.5.3 `v253.pretty.js:4399` 卡尾号第二形态（2.4.1 起就有）
+                SP/wf/orderstate_probe.mjs：对着我们自己的 dist/domkit.js 实测
+
+  ---------------------------------------------------------------------------
+  这张夹具存在的理由：两种渲染形态，同一个结论
+  ---------------------------------------------------------------------------
+  order-details-cancelled.html 是**第一种**形态：顶部一个 .a-alert-heading 告警框。
+  这一张是**第二种**：没有告警框，状态写在 `#shipment-top-row` 里的
+  `.a-color-base.od-status-message`，而且文案里**不含 refund**（我们原先靠
+  「#shipment-top-row 整块文本含 refund」兜住了带退款字样的那一种）。
+
+  实测（SP/wf/orderstate_probe.mjs）：
+      旧形态（告警框）        我们 cancelled / 厂商 cancelled
+      新形态（od-status-message）我们 **ok** / 厂商 cancelled   ← 就是这一条
+      新形态 + refund 字样    我们 cancelled / 厂商 cancelled
+
+  判成 "ok" 的后果：一张已经被 Amazon 取消的订单会被当成正常单继续同步物流，
+  库里的状态与真实情况永久分叉，而没有任何地方报错。
+  厂商专门补这一档，本身就说明线上已经出现了这种页面。
+
+  ---------------------------------------------------------------------------
+  顺带覆盖：卡尾号的第二形态
+  ---------------------------------------------------------------------------
+  这一页**没有** `.pmts-payments-instrument-details`，只有
+  `[data-component="viewPaymentPlanSummaryWidget"] > div [data-testid="method-details-number"]`
+  （厂商 v253:4399，2.4.1 起就有，是我们照抄报告时漏掉的一条老形态）。
+  漏掉它的表现是 payment_last4 一列静静全空 —— 没有任何地方说「选择器坏了」。
+  文案里同样先出现别的 4 位数（订单年份 2026、"4 payments"），
+  取「第一个 4 位数字」的写法会当场露馅。
+================================================================================
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Order Details</title></head>
+<body>
+
+<div id="orderDetails">
+
+  <!-- 这一页**没有** .a-alert-heading。刻意的：只认告警框的实现在这里判 ok -->
+
+  <!-- ========================================================================
+       ✅ 正主：状态行（厂商 v2.5.3:4067 补的那一档）
+       #shipment-top-row 里混着状态、承运商、按钮文案 —— 拿整块文本判
+       /cancell?ed/ 会被稀释，所以判据要落在 .od-status-message 上
+       ====================================================================== -->
+  <div id="shipment-top-row" class="a-row">
+    <div class="a-column a-span8">
+      <span class="a-color-base od-status-message a-text-bold">Cancelled</span>
+      <span class="a-color-secondary a-size-small">
+        You cancelled this order on August 25, 2026. No further action is needed.
+      </span>
+    </div>
+    <div class="a-column a-span4">
+      <span class="a-button"><a class="a-link-normal" href="/gp/buyagain?asin=B0FB3VS68J">Buy it again</a></span>
+    </div>
+  </div>
+
+  <!-- 商品区（报告 §4.3：ASIN 从商品链接里取） -->
+  <div class="a-fixed-left-grid">
+    <div class="a-fixed-left-grid-col a-col-right">
+      <div class="a-row">
+        <a class="a-link-normal" href="/gp/product/B0FB3VS68J/ref=od_aui">Anker 737 Power Bank</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- ========================================================================
+       ✅ 正主：卡尾号的**第二形态**（厂商 v253:4399）。
+       这一页没有 .pmts-payments-instrument-details —— 只有这一条能读到。
+       ====================================================================== -->
+  <div data-component="viewPaymentPlanSummaryWidget">
+    <div>
+      <span class="a-size-small">Paid in 4 payments · placed 2026</span>
+      <span data-testid="method-details-number">Visa ending in 4417</span>
+    </div>
+  </div>
+
+  <!-- 金额区（形态与 order-details.html 一致，取消单同样有小计） -->
+  <div id="od-subtotals">
+    <div class="a-row od-line-item-row"><div>Item(s) Subtotal:</div><div>$1,292.80</div></div>
+    <div class="a-row od-line-item-row"><div>Shipping &amp; Handling:</div><div>$3.99</div></div>
+    <div class="a-row od-line-item-row"><div>Grand Total:</div><div>$1,299.61</div></div>
+  </div>
+
+</div>
+
+</body>
+</html>

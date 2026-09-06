@@ -1,0 +1,109 @@
+<!doctype html>
+<!--
+================================================================================
+  FIXTURE: address-form-async.html  —  异步注入之后的新建地址表单
+================================================================================
+
+  页面        : /checkout/p/p-…/address 上点完「Add a new address」之后的那一屏
+  事实来源    : 厂商 v2.5.3 `v253.pretty.js:3247-3274`
+                （2.5.1 是 10 秒 while 轮询，2.5.3 改成 30 秒结构轮询 + document 重绑，
+                  说明这张表单在真实环境里确实来得慢）
+                厂商内部记录 `findings.md:45`：/address 页本身不含姓名输入框，
+                表单是 modal 异步加载的
+                报告 §4.2.3 第 2-4 步（字段 id 逐条）
+
+  ---------------------------------------------------------------------------
+  这张夹具刻意摆出来的事实
+  ---------------------------------------------------------------------------
+  ① **隐藏的模板副本排在真身前面**，字段 id 一模一样，而且里面预填着**另一个人**
+     的地址（Priya Raman / 410 Terry Ave N / Seattle WA 98109）。
+     写松了会怎样：`querySelector('#address-ui-widgets-enterAddressFullName')`
+     取到模板那一份 → setInput 往一个没人看的 DOM 里写字 → 点保存什么都没发生
+     → 30 秒后 ADDRESS_FORM_TIMEOUT，而地址其实一个字都没填进去。
+     更坏的分支是模板里预填的地址被 Amazon 直接采用 —— 那就是把货寄给别人。
+
+  ② 隐藏是**父级** display:none：子 input 自己的 computed display 是 inline-block，
+     只看 `getComputedStyle(el).display` 判不出来（SP/wf/address_probe.mjs 实测）。
+     必须靠 `getClientRects().length > 0`（parse.isRendered，抄厂商 v253:2166-2176）。
+
+  ③ 州下拉里 **没有** "Puerto Rico"：ADDRESS_STATE_UNMATCHED 这条判据得有东西可撞。
+
+  ④ 校验提示节点与地址建议弹窗都**在页面上但没有内容/被折叠** ——
+     「节点在」不等于「弹窗出现了」，判据要看有没有文本（validationAlerts 那三条
+     用的就是 textContent.trim()）。
+================================================================================
+-->
+<html lang="en">
+<head><meta charset="utf-8"><title>Add a new address</title></head>
+<body>
+
+  <!-- ======================================================================
+       干扰项 A：隐藏的表单模板副本（同 id，排在真身前面，预填着别人的地址）
+       ==================================================================== -->
+  <div id="address-ui-widgets-template" style="display:none">
+    <form>
+      <input id="address-ui-widgets-enterAddressFullName" value="Priya Raman">
+      <input id="address-ui-widgets-enterAddressPhoneNumber" value="2065550147">
+      <input id="address-ui-widgets-enterAddressLine1" value="410 Terry Ave N">
+      <input id="address-ui-widgets-enterAddressLine2" value="">
+      <input id="address-ui-widgets-enterAddressCity" value="Seattle">
+      <input id="address-ui-widgets-enterAddressPostalCode" value="98109">
+      <select id="address-ui-widgets-enterAddressStateOrRegion-dropdown-nativeId">
+        <option value="WA">Washington</option>
+      </select>
+      <span id="checkout-primary-continue-button-id"><input type="submit" value="Use this address"></span>
+    </form>
+  </div>
+
+  <!-- ======================================================================
+       ✅ 正主：异步注入进来的真表单
+       ==================================================================== -->
+  <div id="pagelet-layout-section">
+    <form class="a-spacing-none">
+      <!-- 报告 §4.2.3 第 2 步：收件人 -->
+      <input id="address-ui-widgets-enterAddressFullName" value="">
+      <!-- 报告 §4.2.3 第 2 步：电话 -->
+      <input id="address-ui-widgets-enterAddressPhoneNumber" value="">
+      <!-- 报告 §4.2.3 第 3 步：街道 -->
+      <input id="address-ui-widgets-enterAddressLine1" value="">
+      <input id="address-ui-widgets-enterAddressLine2" value="">
+      <!-- 报告 §4.2.3 第 3 步：城市 -->
+      <input id="address-ui-widgets-enterAddressCity" value="">
+      <!-- 报告 §4.2.3 第 3 步：邮编 -->
+      <input id="address-ui-widgets-enterAddressPostalCode" value="">
+      <!-- 报告 §4.2.3 第 4 步：州（原生下拉，没有 Puerto Rico —— 留给
+           ADDRESS_STATE_UNMATCHED 那条判据撞） -->
+      <select id="address-ui-widgets-enterAddressStateOrRegion-dropdown-nativeId">
+        <option value="">Choose a state</option>
+        <option value="CA">California</option>
+        <option value="WA">Washington</option>
+        <option value="NY">New York</option>
+      </select>
+
+      <!-- 报告 §4.2.3 第 5 步：保存。注意选择器带 #pagelet-layout-section 前缀 —— 
+           上面那份模板里也有一个同 id 的 #checkout-primary-continue-button-id -->
+      <span id="checkout-primary-continue-button-id">
+        <input type="submit" class="a-button-input" value="Use this address">
+      </span>
+
+      <!-- 报告 §4.2.3 第 5 步：三条校验提示。**节点在、但没有文本** ——
+           判据看的是 textContent.trim()，只判「节点在不在」会每一单都以为有校验错误 -->
+      <div id="address-ui-widgets-enterAddressLine1-full-validation-alerts"></div>
+      <div id="address-ui-widgets-enterAddressLine2-full-validation-alerts"></div>
+      <div id="address-ui-widgets-enterAddressPhoneNumber-full-validation-alerts">
+        <span class="a-size-mini">   </span>
+      </div>
+    </form>
+  </div>
+
+  <!-- ======================================================================
+       干扰项 B：地址建议弹窗的**壳子**，折叠着。
+       「原始地址」那个 radio 在里面 —— 弹窗没弹出来时不该被选中。
+       ==================================================================== -->
+  <div id="address-ui-widgets-original-address-block_id-outer" style="display:none">
+    <input type="radio" name="address-suggestion" value="original" checked>
+    <span class="a-size-small">Marcus Delgado, 1425 S Bristol St Apt 12B, Santa Ana, CA 92707</span>
+  </div>
+
+</body>
+</html>

@@ -1,11 +1,27 @@
-/** 所有 Amazon 选择器集中在这里,每一条都标出处。
- *
- * 出处是 `AMZ-Purchase-Assistant/docs/插件功能深度分析.md` —— 对厂商插件 v2.4.1
- * 的源码级分析,里面记着他们几万单实际在用的选择器。标了「报告未记载」的是我们
- * 自己按 Amazon 常见形态补的,可信度低一档,坏了先怀疑它们。
+/** 所有 Amazon 选择器集中在这里。
  *
  * §10.5 说这套东西对 Amazon 的页面结构是硬依赖:Amazon 改版就得改这里。
  * 集中放的意义就在于改版时只改一个文件。
+ *
+ * ── 这个文件的三条规矩 ────────────────────────────────────────────
+ *
+ * **一、每条都要标出处,而且要标到「哪一版」。** 出处有两种:
+ *   · `报告 §x.x` —— `AMZ-Purchase-Assistant/docs/插件功能深度分析.md`,
+ *     对厂商插件 **v2.4.1** 的源码级分析,记着他们几万单实际在用的选择器;
+ *   · `厂商 v2.5.3:行号` —— 厂商 2.5.3 版 popup.js(`SP/v253.pretty.js`)。
+ *     这一档**可信度最高**:那是他们拿真实 Amazon 页面校准出来的,
+ *     而且能看出哪几条是被他们**换掉**的(换掉说明线上已经变了)。
+ *   · `报告未记载` —— 我们自己按常见形态补的,可信度最低一档,坏了先怀疑它们。
+ *
+ * **二、一样东西有多种形态时写成有序数组,顺序是「结构判据在前、文案判据垫底」。**
+ * 文案判据(`[aria-label="Change delivery address"]`、`input[value="Delete"]`)
+ * 换个站点语言、Amazon 改一版文案就失灵,而且**失灵时不报错**:
+ * querySelector 返回 null,点击静默落空,然后等满一个超时窗口。
+ * 厂商 2.5.3 就是把地址那条 aria-label 整条删掉换成三条结构判据的。
+ *
+ * **三、数组要配 parse.pickFirstRendered 用,不要裸 querySelector。**
+ * Amazon 同一个 id / class 在页面上常有隐藏的模板副本,而且经常**排在真身前面**;
+ * 数组只解决「形态变了」,解决不了「选中的是隐藏副本」。两件事要一起做。
  */
 
 export const SEL = {
@@ -38,7 +54,13 @@ export const SEL = {
     quantitySelect: "#quantity",
     couponCheckbox: "input[id^=checkboxpctch]",
     couponClickMe: "span[id^=clickMepctch] input",
-    addToCart: "#add-to-cart-button",
+    /** 加购按钮的两种形态。第二条出自厂商 v2.5.3:2180(2.5.3 新增)。
+     *
+     *  配 parse.findAddToCartButton 用 —— 那里还要再排掉 disabled /
+     *  aria-disabled 的那一个:`click()` 打在 disabled 按钮上**返回 true**
+     *  (元素在),浏览器却根本不派发 click 事件,于是这一单白等满 T.addToCart
+     *  才报 ADD_TO_CART_FAILED,而真正的原因(按钮还没激活)在事件流里看不出来。 */
+    addToCart: ['#add-to-cart-button', 'input[name="submit.add-to-cart"]'],
     warrantyPane: "#attach-warranty-pane",
     warrantyDecline: "#attachSiNoCoverage input",
     /** 报告未记载:商品页上的配送方文案。判不出来时返回"未知",交给结算页那道权威判定。 */
@@ -52,15 +74,36 @@ export const SEL = {
     qtyValue: '[data-a-selector="value"]',
     qtyNonEditable: ".sc-non-editable-quantity",
     proceed: "#sc-buy-box-ptc-button > span > input",
-    /** 报告未记载:空车页的标志。用来把「车是空的」与「车还没渲染」分开 —— 
-     *  分不开的话,一个没加载完的购物车会被当成已清空。 */
-    emptyMarkers: ["#sc-active-cart", ".sc-your-amazon-cart-is-empty", "#sc-empty-cart"],
-    /** 报告未记载 clearShoppingCart 的选择器,按常见形态推测。 */
+    /** 报告未记载:**购物车页渲染出来了**的标志。只回答「这一页画完了没有」,
+     *  不回答「车里有没有东西」—— 两个问题混在一起正是下面那条要防的事。 */
+    cartRendered: ["#sc-active-cart", '[data-name="Active Items"]', "#sc-buy-box-ptc-button"],
+    /** 报告未记载:**空车页**的标志。用来把「车是空的」与「车还没渲染」分开 ——
+     *  分不开的话,一个没加载完的购物车会被当成已清空,上一单的残留被带进这一单。
+     *
+     *  `#sc-active-cart` 曾经在这个数组里,那是错的:它是购物车页的**外层容器**,
+     *  空车、满车、还在加载都有它。一个「空车标志」在车满的时候也成立,
+     *  等于这道判据不存在 —— 而它看起来在。已挪到上面的 cartRendered。 */
+    emptyMarkers: [".sc-your-amazon-cart-is-empty", "#sc-empty-cart"],
+    /** 删除控件。**前三条出自厂商 v2.5.3:687-703,且 2.4.1 起就在产线上用**
+     *  (SP/wf/verify_origin.mjs 逐版数过),不是这次新加的 ——
+     *  也就是说图标形态才是他们几万单里真正遇到的那种。
+     *
+     *  后三条是我们原先「按常见形态推测」的文字按钮形态,降为垫底:
+     *  `input[value="Delete"]` 是英文文案判据,换个站点语言就失灵。
+     *
+     *  实测(SP/wf/cart_delete_probe.mjs):按厂商形态造的图标购物车上,
+     *  我们原来那四条**全部落空** → clearCart 第一轮就抛
+     *  PLUGIN_INTERNAL「找不到删除控件」,车里的东西原样留着;
+     *  而按「失败必清车」,清车失败会连带废掉后面每一单。
+     *
+     *  注意第三条带 `-active`:我们原先写的 `.sc-action-delete input` 选不中它。 */
     deleteButtons: [
-      'input[value="Delete"]',
+      ".a-declarative > .a-icon.a-icon-small-trash",
+      ".a-declarative > .a-icon.a-icon-small-remove",
+      ".sc-action-delete-active input",
       '[data-action="delete"] input[type="submit"]',
       'input[data-action="delete"]',
-      ".sc-action-delete input",
+      'input[value="Delete"]',
     ],
   },
 
@@ -171,9 +214,40 @@ export const SEL = {
   // ── 地址表单 (报告 §4.2.3) ─────────────────────────────────────────
   address: {
     section: '[aria-labelledby="delivery-addresses-section-header-id"]',
-    changeAddress: '#checkout-deliveryAddressPanel [aria-label="Change delivery address"]',
+    /** 结算页上的「更改收货地址」入口,四条按可信度排。
+     *
+     *  前三条出自**厂商 v2.5.3:3159-3163**,是这一版新增的;第四条
+     *  `[aria-label="Change delivery address"]` 是厂商 2.4.1/2.5.1 用的那条,
+     *  **他们在 2.5.3 里把它整条删掉了**(findings.md:46「不再依赖英/日文 aria-label」)。
+     *
+     *  我们原先只有被删掉的那一条。它失灵的样子是最坏的一种:
+     *  querySelector 返回 null → click 静默什么都不做 → 紧接着等 30 秒
+     *  → 每一单都报 ADDRESS_FORM_TIMEOUT(可重试码,而重试多少次都一样)。
+     *  运营看到「地址表单加载超时」,真实原因是「入口选择器坏了,要改代码」。
+     *
+     *  这里保留它当垫底而不是跟着删:厂商的新形态是他们在自己那批买家号上
+     *  校准出来的,不能确定所有账号都已经换过去。但它排在最后 ——
+     *  前三条命中就用不到它。
+     *
+     *  配 parse.findAddressChangeEntry 用(逐条走 isRendered)。 */
+    changeAddress: [
+      "#checkout-deliveryAddressPanel #change-delivery-link",
+      '#checkout-deliveryAddressPanel a[data-toPage="shipaddressselect"]',
+      '#checkout-deliveryAddressPanel [data-action="page-transit-no-update-action"] a[href*="/address?"]',
+      '#checkout-deliveryAddressPanel [aria-label="Change delivery address"]',
+    ],
+    /** 「新增地址」。**我们一律新建,从不复用地址簿里已有的条目。**
+     *
+     *  这是个明写下来的决定,不是没做:复用要先比对几十条地址文本才能确认
+     *  选中的是哪一条(厂商真实买家号上的样本是 55 条,findings.md:45),
+     *  比对写松一点就寄错人 —— 而寄错人和实付超限价是同一量级的后果。
+     *  新建的代价是地址簿越攒越长、/address 页越来越慢,已知并接受。
+     *
+     *  这里原先还有一条 `editNth: (i) => '#edit-address-desktop-tango-sasp-' + i`
+     *  (厂商 v2.5.3:3222 真在用),而我们全仓库**没有任何调用点**。
+     *  已删:一条躺在选择器表里、看起来在用其实没人取的条目,
+     *  会让下一个读代码的人以为「复用已有地址」这条路径是实现过的。 */
     addNew: "#add-new-address-desktop-sasp-tango-link",
-    editNth: (i: number) => `#edit-address-desktop-tango-sasp-${i}`,
     fullName: "#address-ui-widgets-enterAddressFullName",
     phone: "#address-ui-widgets-enterAddressPhoneNumber",
     line1: "#address-ui-widgets-enterAddressLine1",
@@ -195,9 +269,27 @@ export const SEL = {
     root: "#orderDetails",
     alertHeading: ".a-alert-heading",
     shipmentTopRow: "#shipment-top-row",
+    /** 订单状态行的第二形态。第一条出自**厂商 v2.5.3:4067(这一版新增)** ——
+     *  他们专门补这一档,说明线上已经出现了「状态不在 .a-alert-heading 里」的页面。
+     *
+     *  第二条是同一条判据去掉 `.a-color-base`:那是个纯配色工具类,
+     *  Amazon 换一版主题就可能不一样,而 `od-status-message` 才是语义所在。
+     *
+     *  不裸取 `#shipment-top-row` 的原因:那一整块里混着运单号、商品名、
+     *  按钮文案,拿它去判 /cancell?ed/ 会被稀释(也会被别的词误伤)。 */
+    statusMessage: [
+      "#shipment-top-row .a-color-base.od-status-message",
+      "#shipment-top-row .od-status-message",
+    ],
     subtotalRow: "#od-subtotals .a-row.od-line-item-row",
     productLinks: ".a-fixed-left-grid-col.a-col-right .a-row .a-link-normal",
-    paymentDetails: ".pmts-payments-instrument-details",
+    /** 订单详情页上的卡尾号。第二条出自**厂商 v2.5.3:4399**,verify_origin 确认
+     *  2.4.1 起三版都有 —— 是我们照抄报告时漏掉的一条老形态,不是新形态。
+     *  落空的表现是 payment_last4 一列静静全空,没有任何地方报「选择器坏了」。 */
+    paymentDetails: [
+      ".pmts-payments-instrument-details",
+      '[data-component="viewPaymentPlanSummaryWidget"] > div [data-testid="method-details-number"]',
+    ],
     /** 跟踪链接的**兜底** class 选择器。
      *
      * 正常路径是直接按 href 找(见 parse.findTrackingLink)——
@@ -227,8 +319,17 @@ export const SEL = {
      * 顺带省掉 30 秒:不认它的话,三个就绪选择器一个都等不到,
      * 只能干等满超时。一批 20 单就是白等 10 分钟。 */
     unavailableText: "unable to get the tracking information",
-    trackingId: ".pt-delivery-card-trackingId",
-    trackingIdFallback: "#carrierRelatedInfo-container > div h4",
+    /** 运单号的三种形态。中间那条出自**厂商 v2.5.3:4851**(extractTrackingEvents 里),
+     *  verify_origin 确认 2.4.1 起三版都有 —— 同样是我们照抄报告时漏掉的老形态。
+     *
+     *  漏掉它的表现:跟踪页只渲染了事件区(轨迹已经在更新、顶部的 delivery card
+     *  还没画出来或被折叠)时,前后两条都落空 → readTrackingNumber 返回 null
+     *  → 这一单在库里长得跟「还没发货」一模一样。 */
+    trackingIds: [
+      ".pt-delivery-card-trackingId",
+      ".tracking-event-trackingId-text h4",
+      "#carrierRelatedInfo-container > div h4",
+    ],
     cardWrapper: ".pt-delivery-card-wrapper",
     cardSmall: ".pt-delivery-card-wrapper .a-spacing-small",
     promiseNowrap: ".pt-promise-main-slot .nowrap",
@@ -264,6 +365,13 @@ export const URLS = {
   interstitial: ["checkout/byg/ref", "/cart/byc/ref"],
   /** 最终结算页 */
   finalCheckout: "/checkout/p/p-",
+  /** 地址选择页 `/checkout/p/p-…/address`。
+   *
+   *  点完「更改地址」之后**先确认页面真的换过去了**,再去等地址区 ——
+   *  否则结算页上那个折叠着(display:none)的地址簿会在页面还没跳走的那一刻
+   *  就满足「地址区加载」,于是我们在错误的页面上点一个不可见的「新建地址」。
+   *  这条判据只在结算 iframe 里用,不会撞上账户里的 /gp/css/account/address。 */
+  addressSelect: "/address",
   /** 跟踪页链接的两种形态(报告 §4.3 第 1 步) */
   trackHrefHints: ["/ship-track?", "/progress-tracker/package/"],
   /** 下单成功。**只认 thankyou** —— 厂商把 /gp/cart/view.html 也判成功

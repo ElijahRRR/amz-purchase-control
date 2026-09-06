@@ -49,6 +49,11 @@
       不带 [data-name="Active Items"] 前缀的循环在这一页**永远不会退出**。
    4. 空车页仍有大量 data-asin（推荐位 / 广告位），件数核对绝不能全局数。
    5. 金额仍带 $ 与千分位（$1,049.00 / $2,499.99），供价格解析的负样本使用。
+   6. **在售区容器里躺着一份隐藏的行模板**（靠 CSS 类隐藏，没有 data-asin）。
+      这是给 readCartState.rowsSeen 准备的负样本：rowsSeen 回答的是
+      「容器里看得见几个商品行」，它 > 0 而 lines === 0 会被判成
+      「行选择器坏了」。数上这份没画出来的模板，一辆真空车就会被说成
+      「我们读不懂购物车这一页」——每一单都 PLUGIN_INTERNAL，而车其实是空的。
 
   跑夹具时的期望：
       [data-name="Active Items"] .sc-list-item        → length 0
@@ -88,8 +93,18 @@
        ✅ 正主：在售商品区，容器存在但**一行都没有**。
        [data-name="Active Items"] 是报告 §4.2.2 记载的属性选择器。
        ======================================================================== -->
+  <!-- Amazon 真实存在的工具类。写成 <style> 而不是 inline style 是刻意的：
+       靠 class 隐藏的节点，任何「往上找 [style*=display:none]」的写法都看不见。 -->
+  <style>.aok-hidden { display: none !important; }</style>
   <div data-name="Active Items" class="a-section">
-    <!-- 这里刻意不放任何 .sc-list-item / data-asin / 数量节点 / Delete 按钮。 -->
+    <!-- 这里刻意不放任何**画出来的** .sc-list-item / data-asin / 数量节点 / Delete 按钮。
+         唯一的例外是下面这份隐藏的行模板：它带 .sc-list-item、不带 data-asin，
+         靠 CSS 类隐藏。它在这里是为了钉住 rowsSeen 只数**渲染出来**的行 ——
+         数上它,这一页(真空车)就会被判成「行选择器坏了」。 -->
+    <div class="sc-list-item aok-hidden">
+      <span class="a-size-base a-color-secondary">{{title}}</span>
+      <span class="a-dropdown-prompt" data-a-selector="value">0</span>
+    </div>
   </div>
 
   <!-- 报告未记载，仅作包裹：空车提示区 -->

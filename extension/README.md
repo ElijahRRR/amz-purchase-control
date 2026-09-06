@@ -44,13 +44,34 @@ python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
 真实 Amazon 页面拿不到，所以 DOM 解析对着 `test/fixtures/` 里按逆向报告造的页面跑：
 
 ```bash
-npm run test:dom     # 109 条断言
+npm run test:dom     # 201 条断言
 ```
 
 这一套里有一节不是纯解析:**执行中掉线那条兜底**。它用 route 拦截给 `/ap/signin`
 真发一顶 `X-Frame-Options: DENY` 的帽子,把 iframe 导过去,再让 `guardLogin` 去判 ——
 那是这条兜底的头号场景,而它只有在真有一个 iframe 的浏览器页面里才走得到
 (Node 里没有 document,`npm run smoke` 走的是模拟驱动)。
+
+### 夹具清单
+
+每一张夹具的文件头里都写着：页面是什么、事实出处（报告 §x.x 或厂商 v2.5.3 的行号）、
+以及**它刻意摆了哪些干扰项、写松了会怎样**。新增夹具时照这个格式写。
+
+| 夹具 | 页面 | 主要盯的东西 |
+|---|---|---|
+| `nav-signed-in.html` / `nav-signed-out.html` | 导航栏 | 登录态三档；隐藏的反向模板 |
+| `product.html` / `product-oos.html` | 商品页 | 数量下拉、优惠券、库存；**disabled 的加购按钮副本** |
+| `cart.html` / `cart-empty.html` | 购物车 | 只数 Active Items；「空车」「没渲染」「读不懂这一页」三者分开；**只靠 CSS 类隐藏的空车提示模板 / 行模板** |
+| `cart-icon-delete.html` | 购物车 | **删除控件的三种图标形态**（厂商 v2.5.3:687-703） |
+| `checkout.html` | 结算页 | 金额、卡尾号、下单按钮、地址面板；折叠地址簿干扰项 |
+| `checkout-apex-price.html` | 结算页 | 划线原价与实付价挂同一个类名 |
+| `checkout-thirdparty.html` | 结算页 | FBA 看的是谁发货，不是谁卖 |
+| `checkout-interstitial.html` | 中间页 | 会骗人的 `#submitOrderButtonId` |
+| `address-select.html` | 地址选择页 | **这一页没有姓名框**；同 id 入口三份，三种隐藏机制 |
+| `address-form-async.html` | 异步地址表单 | 预填着**别人地址**的隐藏模板副本；保存后三种结果 |
+| `order-history.html` / `-empty.html` | 订单历史 | 订单号形态校验；空列表不算一张卡 |
+| `order-details*.html` | 订单详情 | 取消的**两种渲染形态**、卡尾号两种形态、跟踪链接三种入口 |
+| `tracking*.html` | 跟踪页 | 运单号三种形态、承运商、轨迹分组、「暂时给不了」 |
 
 夹具里塞满了干扰项——隐藏的同 id 副本、Saved for later、推荐位、`<template>` 模板节点、
 支付文案里先出现的另一个 4 位数。选择器写松了会当场被抓住。实际抓到过两个：
@@ -62,6 +83,25 @@ npm run test:dom     # 109 条断言
 - **FBA 判定看错了对象**：原来的正则把 `Sold by` 也收进判据，遇到
   「Sold by Amazon.com / Ships from ThirdParty Seller」这种排版会把第三方单判成 FBA。
   FBA 的定义是由 Amazon **履约**，看的是谁发货
+- **地址那一整节曾经是 0 条断言**（`grep -i address` 零命中）。地址是整条链路上唯一
+  「填错了会把货寄给别人」的环节，而 `fillAddress` 的逻辑全塞在 `amazon.ts` 的时序里，
+  纯函数够不着。补上夹具之后当场抓到一个真的：结算页上**折叠着的地址簿**会让
+  「地址区加载」在页面还没跳走的那一刻就成立 —— 于是我们在结算页上点了一个不可见的
+  「新建地址」，然后等一个永远不会出现的表单。只要买家号有历史地址（常态），
+  每一单都 `ADDRESS_FORM_TIMEOUT`
+
+**判据落空时要能一眼分出「选择器坏了」和「页面慢」。** 前者要改代码、后者重试就好，
+而它们今天都渲染成同一个可重试错误码。`parse.diagnoseMiss` 把这两种分开写进错误 detail：
+一个节点都没匹配到 = Amazon 改版；匹配到了但没渲染出来 = 页面还没画完。
+⚠ 这条区分**只给人看**：错误码仍然是 `ADDRESS_FORM_TIMEOUT`（属于 `RETRYABLE`），
+自动重试开关一开，系统照样会把这类单再拍几次。所以 detail 的文案只描述页面上看到了
+什么，不写「重试无用」这种系统不会兑现的话。要让机器也用上它，得给这一档单开一个归
+`TO_MANUAL` 的错误码 —— 错误码是封闭集，开口子是跨线的决定。
+
+**驱动级演练。** 有几件事纯函数够不着：清车用哪种方式取「空车」证据、地址保存的
+那段循环有没有在每一轮动作之后真的等状态变化。这两处让 `AmazonDriver` 对着夹具
+真跑一遍（`clearCart` 自己开 iframe；`fillAddress` 自己填字、点保存、等结果），
+断言的是**行为**，不是某个纯函数的返回值。
 
 这不能替代真实页面验证——Amazon 的真实 DOM 一定和夹具有出入。它能保证的是：
 **报告里记着的那些选择器，我们的解析器确实按它们的语义在读。**
