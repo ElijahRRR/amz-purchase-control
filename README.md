@@ -40,7 +40,7 @@ python cli.py db_init
 
 # 2. 跑测试(需要一个可连的 PostgreSQL 17;连不上会整体 skip)
 export AMZ_TEST_ADMIN_DSN="dbname=postgres"
-python -m pytest -q                       # 278 条
+python -m pytest -q                       # 400 条
 
 # 3. 起服务
 python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
@@ -59,7 +59,7 @@ python tools/mock_plugin.py --scenario no_asin     # 一个 ASIN 都没采到:�
 # 6. 插件侧
 cd extension && npm install
 npm run typecheck && npm run build        # → dist/,可加载进 Chrome
-npm run test:dom                          # 109 条 DOM 解析断言(不需要服务端)
+npm run test:dom                          # 225 条 DOM 解析断言(不需要服务端),顺带跑 test:unit 74 条
 npm run smoke                             # 用插件自己的 Loop/runTask 跑闭环
 node tools/smoke.mjs --scenario happy --ship in_transit
 node tools/smoke.mjs --scenario login_lost         # 跑到一半被登出:退回队列,不记异常
@@ -187,10 +187,10 @@ python cli.py feishu_writeback
 
 | | 状态 |
 |---|---|
-| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 278 条 pytest,跑在真 PostgreSQL 17 上 |
+| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 400 条 pytest,跑在真 PostgreSQL 17 上 |
 | 插件与服务端的时序(认领 → 执行 → 护栏 → 回填 → 失败清车) | ✅ 8 个场景实跑,跑的是插件自己的 `Loop`/`runTask` |
 | 物流同步时序 | ✅ 实跑 |
-| DOM 解析层(选择器是否按报告的语义在读) | ✅ 109 条断言,对着按报告造的夹具跑 |
+| DOM 解析层(选择器是否按报告的语义在读) | ✅ 225 条断言,对着按报告造的夹具跑(地址/购物车/商品页从 0 条到有断言);另有 74 条纯 Node 断言盯等待原语、单飞闸、租约、认领循环 |
 | 登录态(被登出 → 拒绝派单 → 重新登录后自愈) | ✅ 心跳落库/认领被拒/恢复/unknown 的 pytest,加一轮 `--scenario login_lost` 实跑 |
 | 下单后的三段等待(发卡行验证 → 露窗口 → 上报 → 有界超时) | ⚠️ **只验到时序那一半**:两条 step 事件、`claim_timeout_min` 下发、列表徽标、新错误码转人工,都有 pytest 与 `--scenario manual_verify / manual_verify_timeout` 实跑;**「iframe 真被导到跨域页之后 `urlState()` 读到什么、`reveal()` 出来的窗口能不能真的输验证码」没验过** —— 那要一个真买家号 |
 | 运营台前端 | ✅ 真库 + 真服务 + 真浏览器跑过四页、详情弹窗、改地址、剪贴板、NEEDS_ACK 流程 |
@@ -462,4 +462,5 @@ python cli.py task_retry
 | P7 | 上游接入:定时从飞书多维表格拉单 + 结果回写 | ✅ 代码完成,**未对着真实表格跑过**(缺凭据) |
 | — | 登录态上报:被登出的买家号不再空转刷认领,运营台上看得见 | ✅ |
 | P8 | 有界自动重试:`RETRYABLE` 那一组终于有 `task_retry` 在消费它 | ✅ **默认关**(`AMZ_AUTO_RETRY_MAX=0`),开了才跑,界面文案跟着配置走 |
+| P9 | 对照厂商 v2.5.3 补的缺口:护栏比**货款**而不是卡扣的钱(礼品卡)、支付面板作用域与期望卡、下单后有界三段等待 + 发卡行验证页露出来给人做、单飞/租约/清车熔断/看门狗、厂商在真实 Amazon 上校准的判据(更改地址入口、购物车删除图标、加购按钮可用性、订单状态第二形态)、交期解析三处、ASIN 断言三态、「越过下单点」在库里留痕并封住四条回队列的路 | ✅ 代码完成,四条线各经一轮对抗式复核;**未在真实 Amazon 上跑过** |
 | 下一步 | 在真实 Amazon 上跑第一单(P3 至今唯一没验过的那一格) | 待定 |
