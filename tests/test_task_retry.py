@@ -532,6 +532,26 @@ def test_detail_carries_how_many_times_the_machine_tried(client, conn, seed, on)
     assert d["retry_count"] == 1
 
 
+def test_detail_carries_the_age_the_web_needs_to_stop_promising(client, conn, seed, on):
+    """详情要带「失败到现在多久」,而且是**服务端**用库里的 now() 算的。
+
+    界面靠它和 meta.auto_retry.max_age_min 决定说哪一句:「不点它也会被放回队列」,
+    还是「失败太久了,系统不再自动重它」。这两句的处置正好相反。
+    让前端拿浏览器时钟去减 updated_at 的话,用的就不是选单 SQL 那把尺子 ——
+    库在 UTC、人在东八区的话差的是八小时,而这里量的单位就是小时。
+    """
+    _env, _inst, tasks = seed
+    old = tasks[0]
+    _fail(conn, old, "CHECKOUT_TIMEOUT", minutes_ago=120 * 24 * 60)   # 120 天前
+    conn.commit()
+
+    d = client.get(f"/v1/admin/tasks/{old}").json()["data"]
+    assert abs(d["updated_age_seconds"] - 120 * 24 * 3600) < 120, d["updated_age_seconds"]
+    # 这一条确实已经出了默认那道年龄闸(1440 分钟),界面据此改口才不算撒谎
+    assert d["updated_age_seconds"] > task_retry.config()["max_age_min"] * 60
+    assert task_retry.candidates(conn) == []
+
+
 # ── 人点的那一下 vs 机器干的那一下 ─────────────────────────────────────
 
 def test_a_manual_reset_does_not_burn_an_automatic_attempt(conn, seed, on):
