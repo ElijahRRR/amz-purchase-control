@@ -467,9 +467,20 @@ export function findAddressSection(doc: Document): HTMLElement | null {
   return pickFirstRendered<HTMLElement>(doc, [SEL.address.section]);
 }
 
+/** 输入:任意页面 → 输出:收货地址栏里**画出来的**那份文本(空白已归一);
+ *  没有这一栏就是 null。
+ *
+ *  走 pickFirstRendered 而不是裸 querySelector:结算页上这个 id 可能有隐藏的
+ *  第二份(与地址表单、购物车行同一个模板做法),读到那一份就会拿一段
+ *  跟眼前这一单无关的地址文本去下结论。 */
+export function readAppliedAddressText(doc: Document): string | null {
+  const el = pickFirstRendered(doc, [SEL.checkout.addressText]);
+  return el ? text(el) : null;
+}
+
 /** 点完保存之后,页面上出现的是哪一种结果。三种之外返回 null(还没出结果)。
  *
- *  `saved`      收货地址栏出现了 = 地址已生效
+ *  `saved`      收货地址栏**换了内容** = 这次保存生效了
  *  `alerts`     表单校验提示有文字 = 得再点一次保存
  *  `suggestion` Amazon 的地址建议弹窗出现了 = 得先选「原始地址」
  *
@@ -479,12 +490,25 @@ export function findAddressSection(doc: Document): HTMLElement | null {
  *  「弹窗出现了」,于是去点一个折叠着的 radio、再点一次保存,来回三轮然后失败。
  *  校验提示那一条还要额外要求**有文字**:空壳节点是常态。
  *
+ *  **`before` 是点保存之前收货地址栏的文本,必传。** 「页面上有地址栏」不等于
+ *  「这次保存生效了」:更改地址有一种形态是**就地弹窗**(不跳转 /address),
+ *  那条路上文档一直是结算页,而结算页上本来就有生效中的旧地址栏
+ *  (checkout.html:216 摆的就是它)。不比对文本的话,点完保存的第一拍就判 saved,
+ *  校验提示与地址建议弹窗整段处理被跳过 —— 弹窗还挡着、地址根本没换,
+ *  而下游只会说「收货地址栏里没有 收件人 X」,也就是「Amazon 用了别的地址」,
+ *  与真实原因(我们没等保存结果)完全是两回事,却渲染成同一句话。
+ *  页面上没有这一栏时传 null(/address 页那条路),那时「出现了」本身就是变化。
+ *
  *  做成纯函数是为了能对着夹具验 —— 这三种结果原先是 amazon.ts 里两段
  *  `sleep(1200)` 之后各看一眼的快照,一条离线断言都覆盖不到。 */
 export type AddressSaveOutcome = "saved" | "alerts" | "suggestion";
 
-export function readAddressSaveOutcome(doc: Document): AddressSaveOutcome | null {
-  if (doc.querySelector(SEL.checkout.addressText)) return "saved";
+export function readAddressSaveOutcome(
+  doc: Document,
+  before: string | null,
+): AddressSaveOutcome | null {
+  const now = readAppliedAddressText(doc);
+  if (now !== null && now !== before) return "saved";
   for (const sel of SEL.address.validationAlerts) {
     if (text(pickFirstRendered(doc, [sel]))) return "alerts";
   }

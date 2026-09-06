@@ -707,6 +707,22 @@ await withFixture("checkout.html", async (run) => {
   eq("address 结算页上没有渲染出来的姓名输入框",
      await run("amzdom.findAddressFormNameField(document)"), null);
 
+  // ②' 结算页**原样**(一次保存都没点过)时不许判 saved。
+  //    「更改地址」的另一种落地形态是就地弹窗:文档一直是这张结算页,
+  //    而这张页上本来就有生效中的旧地址栏 #deliver-to-address-text ——
+  //    只判「这一栏在不在」的话,点完保存的第一拍就 saved,
+  //    校验提示与建议弹窗整段处理被跳过,弹窗还挡着而我们已经往下走了。
+  eq("address 结算页原样(没点过保存)不许判 saved",
+     await run(`(() => {
+        const before = amzdom.readAppliedAddressText(document);
+        return [before !== null, amzdom.readAddressSaveOutcome(document, before)];
+     })()`), [true, null]);
+  eq("address 结算页上确实有一条生效中的旧地址(干扰项确实存在)",
+     await run(`(() => {
+        const el = document.querySelector("#deliver-to-address-text");
+        return [!!el, el.getClientRects().length > 0];
+     })()`), [true, true]);
+
   // ③ 落空时要能一眼分出「选择器坏了」和「页面慢」。
   //    两种情况今天都渲染成 ADDRESS_FORM_TIMEOUT,而前者要改代码、后者重试就好。
   eq("address 落空诊断:命中了但没渲染 = 页面慢",
@@ -811,8 +827,8 @@ await withFixture("address-form-async.html", async (run) => {
   //    原先是 sleep(1200) 各看一眼的定时快照:弹窗晚出现 200ms 就整单失败,
   //    而失败时地址其实已经填好了,重试还要从头再来一遍。
   //    这一页是「刚点完保存、什么都还没出来」的状态 —— 三种都不成立。
-  eq("address-form 刚点完保存、还没出结果 → null", 
-     await run("amzdom.readAddressSaveOutcome(document)"), null);
+  eq("address-form 刚点完保存、还没出结果 → null",
+     await run("amzdom.readAddressSaveOutcome(document, null)"), null);
   // 关键的干扰项:校验提示节点与建议弹窗的壳子**一直在 DOM 里**。
   // 只判「节点在不在」的话,每一单在第一次探测就会认定「弹窗出现了」,
   // 于是去点一个折叠着的 radio、再点一次保存,来回三轮然后失败。
@@ -833,14 +849,14 @@ await withFixture("address-form-async.html", async (run) => {
      await run(`(() => {
         document.querySelector("#address-ui-widgets-enterAddressLine1-full-validation-alerts")
                 .textContent = "Please enter a street address";
-        return amzdom.readAddressSaveOutcome(document);
+        return amzdom.readAddressSaveOutcome(document, null);
      })()`), "alerts");
   eq("address-form 建议弹窗展开 → suggestion",
      await run(`(() => {
         document.querySelector("#address-ui-widgets-enterAddressLine1-full-validation-alerts")
                 .textContent = "";
         document.querySelector(amzdom.SEL.address.suggestionPopup).style.display = "block";
-        return amzdom.readAddressSaveOutcome(document);
+        return amzdom.readAddressSaveOutcome(document, null);
      })()`), "suggestion");
   eq("address-form 收货地址栏出现 → saved(压过还开着的建议弹窗)",
      await run(`(() => {
@@ -848,8 +864,41 @@ await withFixture("address-form-async.html", async (run) => {
         d.id = "deliver-to-address-text";
         d.textContent = "Marcus Delgado, 1425 S Bristol St Apt 12B, Santa Ana, CA 92707";
         document.body.appendChild(d);
-        return amzdom.readAddressSaveOutcome(document);
+        return amzdom.readAddressSaveOutcome(document, null);
      })()`), "saved");
+
+  // ⑩ **「页面上有收货地址栏」不等于「这次保存生效了」。**
+  //    更改地址有一种形态是就地弹窗(不跳 /address),那条路上文档一直是结算页,
+  //    而结算页上本来就有生效中的旧地址栏 —— 不比对文本的话,点完保存的第一拍
+  //    就判 saved:校验提示与建议弹窗整段处理被跳过,弹窗还挡着而我们已经往下走。
+  eq("address-form 地址栏文本与保存前一样 → 不算 saved(这次保存还没生效)",
+     await run(`(() => {
+        const before = amzdom.readAppliedAddressText(document);
+        document.querySelector(amzdom.SEL.address.suggestionPopup).style.display = "block";
+        return [before !== null,
+                amzdom.readAddressSaveOutcome(document, before)];
+     })()`), [true, "suggestion"]);
+  eq("address-form 地址栏换了内容 → 才算 saved",
+     await run(`(() => {
+        const before = amzdom.readAppliedAddressText(document);
+        document.querySelector("#deliver-to-address-text").textContent =
+          "Marcus Delgado, 900 Newport Center Dr, Newport Beach, CA 92660";
+        return amzdom.readAddressSaveOutcome(document, before);
+     })()`), "saved");
+  // 收货地址栏也可能有隐藏的第二份(与表单、购物车行同一个模板做法)。
+  // 注释说三条都要求「渲染出来」,而 saved 这一条原先是裸 querySelector。
+  eq("address-form 隐藏的收货地址栏不算数",
+     await run(`(() => {
+        document.querySelector("#deliver-to-address-text").remove();
+        const d = document.createElement("div");
+        d.id = "deliver-to-address-text";
+        d.style.display = "none";
+        d.textContent = "Priya Raman, 410 Terry Ave N, Seattle, WA 98109";
+        document.body.appendChild(d);
+        return [!!document.querySelector("#deliver-to-address-text"),
+                amzdom.readAppliedAddressText(document),
+                amzdom.readAddressSaveOutcome(document, null)];
+     })()`), [true, null, "suggestion"]);
 });
 
 // ── 订单历史 ────────────────────────────────────────────────────────

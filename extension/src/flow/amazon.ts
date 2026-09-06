@@ -20,7 +20,7 @@ import {
   cartMatches, describeMiss, findAddNewAddressEntry, findAddToCartButton,
   findAddressChangeEntry, findAddressFormNameField, findAddressSection,
   findInterstitialButton, findQuantityOption, findSubmitOrderButton, findTrackingLink,
-  readAddressSaveOutcome,
+  readAddressSaveOutcome, readAppliedAddressText,
   pickFirstRendered, pickQuantitySelect, readCarrier, readCartLines, readCartState,
   readCheckoutPanels,
   readDeliveryPromise, readGrandTotal, readInStock, readOrderCards, readOrderState,
@@ -584,6 +584,16 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
     // 保存按钮同样要挑渲染出来的那个:模板副本里也有一个同 id 的。
     // 注意这里从 doc() 取而不是从表单里取 —— SEL.address.save 带
     // `#pagelet-layout-section` 前缀,那是表单的**祖先**,在表单子树里查不到。
+    // 点保存**之前**先记住收货地址栏现在写的是什么。
+    //
+    // 「页面上有收货地址栏」不等于「这次保存生效了」:更改地址有一种形态是
+    // 就地弹窗(不跳 /address),那条路上文档一直是结算页,而结算页上本来就有
+    // 生效中的旧地址栏。不比对文本的话,点完保存的第一拍就判 saved,
+    // 校验提示与地址建议弹窗整段处理被跳过 —— 弹窗还挡着,地址一个字没换,
+    // 而下游 ADDRESS_NOT_APPLIED 会把它说成「Amazon 用了地址簿里别的地址」。
+    // 这一份快照就是「这次保存」与「页面上本来就有」之间的全部区别。
+    const addressTextBefore = readAppliedAddressText(doc());
+
     const save = () => click(pickFirstRendered(doc(), [SEL.address.save]));
     if (!save()) {
       throw new DriverError("ADDRESS_FORM_TIMEOUT",
@@ -606,7 +616,7 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
     const deadline = Date.now() + T.addressSave;
     let settled = false;
     for (let round = 0; round < 3 && !settled; round += 1) {
-      const hit = await waitFor("地址保存结果", () => readAddressSaveOutcome(doc()),
+      const hit = await waitFor("地址保存结果", () => readAddressSaveOutcome(doc(), addressTextBefore),
                                 { timeoutMs: Math.max(0, deadline - Date.now()), everyMs: 300 })
         .catch(() => null);
 
@@ -638,8 +648,9 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
     // 填完不等于生效。Amazon 可能仍然用着地址簿里原来那条 ——
     // 那就会把货寄到别人家去,后果和实付超限价一样严重,必须当场发现。
     // 厂商只做了「地址文本含邮编」这一条子串判断,姓名/街道/城市/州一概不校验。
-    const applied = (doc().querySelector(SEL.checkout.addressText)?.textContent ?? "")
-      .replace(/\s+/g, " ");
+    // 同样走 readAppliedAddressText:这一栏也可能有隐藏的第二份,
+    // 读到那一份就是拿一段与本单无关的地址去判「寄给谁」。
+    const applied = readAppliedAddressText(doc()) ?? "";
     const zip = shipping.postcode.split("-")[0];   // 页面常只显示 ZIP5,下发的可能是 ZIP+4
     const lower = applied.toLowerCase();
     const has = (v: string) => lower.includes(v.trim().toLowerCase());
