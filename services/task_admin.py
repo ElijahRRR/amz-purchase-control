@@ -92,9 +92,16 @@ def reset_to_queue(conn, task_id: int, *, acknowledged: bool = False,
     if (risky_code or crossed) and not acknowledged:
         why = (f"{t['error_code']} 意味着这一单可能已经真下成了" if risky_code
                else "这一单已经越过下单点(下单按钮点过了),可能已经真下成了")
+        # 这句话是**界面上唯一会说出「为什么拦你」的地方**,所以它必须自己说全:
+        # 运营台那条二次确认条直接把它念给人听(TaskDetail.tsx),
+        # 批量重置的 skipped 清单里它也是单独一条。前端不再按 error_code 自己
+        # 编一句 —— 编出来的那句对「码人畜无害、拦它的是越过下单点」那一类单
+        # 是**假话**,而真正的理由只在这里。
+        # 不写 acknowledged 这个词:它是接口参数名,不是运营看得懂的话。
         raise AdminRefused(
             "NEEDS_ACK",
-            f"{why}。请先去买家号里确认没有这一单,再带 acknowledged 重置。",
+            f"{why}。重置回队列 = 让下一个实例把同一单再买一遍,"
+            f"请先去这个买家号的订单页确认没有这一单。",
         )
 
     conn.execute(

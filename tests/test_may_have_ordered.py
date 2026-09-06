@@ -281,6 +281,36 @@ def test_a_task_past_the_order_button_cannot_be_reset_without_a_receipt(client, 
     assert row["status"] == "manual", "被拒之后状态不许动"
 
 
+def test_the_two_triggers_say_two_different_things(client, conn, seed):
+    """两种拦法必须说成两句不一样的话,而且那句话要能直接念给运营听。
+
+    码触发(ORDER_CONFIRM_TIMEOUT 这类)与越过下单点触发,处置一样但**要找的东西
+    不一样**:前者去订单页看这个码对应的那一步有没有成,后者是「下单按钮已经点过了」。
+    运营台那条二次确认条现在直接渲染这句 message —— 它自己不再按 error_code 编,
+    编出来的那句对后一类是假话(PLUGIN_INTERNAL 并不意味着下过单)。
+    所以这句话必须自己把话说全,而且不许出现 acknowledged 这种接口参数名。
+    """
+    _env, _inst, tasks = seed
+    _cross_the_order_line(client, conn, tasks[0])                       # 越过下单点
+    _claim(client, conn, tasks[1])
+    client.post(f"/v1/tasks/{tasks[1]}/fail", json={                    # 只是码危险
+        "instance_uid": "inst-A", "error_code": "ORDER_CONFIRM_TIMEOUT",
+        "detail": "确认页没等到", "to_manual": True, "cart_cleared": True})
+
+    crossed = client.post(f"/v1/admin/tasks/{tasks[0]}/reset",
+                          json={}).json()["error"]["message"]
+    by_code = client.post(f"/v1/admin/tasks/{tasks[1]}/reset",
+                          json={}).json()["error"]["message"]
+
+    assert crossed != by_code, "两种拦法说成同一句话,等于没分"
+    assert "越过下单点" in crossed and "PLUGIN_INTERNAL" not in crossed
+    assert "ORDER_CONFIRM_TIMEOUT" in by_code
+    for msg in (crossed, by_code):
+        # 后果要说出来 —— 只说「可能已下单」的话,人不知道点下去会发生什么
+        assert "再买一遍" in msg
+        assert "acknowledged" not in msg, "接口参数名不许出现在给人看的话里"
+
+
 def test_the_receipt_still_lets_it_through(client, conn, seed):
     """闸不是死路:人去买家号确认过之后,带回执照样能重。"""
     _env, _inst, tasks = seed
