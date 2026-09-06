@@ -8,6 +8,7 @@ P1 的验收工具 —— 用它确认服务端的状态流转、护栏裁决、
     python tools/mock_plugin.py --env env-172 --scenario over_cap
     python tools/mock_plugin.py --env env-172 --scenario oos
     python tools/mock_plugin.py --env env-172 --scenario wrong_asin
+    python tools/mock_plugin.py --env env-172 --scenario no_asin
 """
 
 import argparse
@@ -22,6 +23,16 @@ sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 from registry import settings  # noqa: E402
 
 UID = "mock-plugin-001"
+
+#: 结算页那条交期文案。**用相对词,不写死月日。**
+#:
+#: 原来这里写的是 "Thursday, August 27" —— 跑到 8 月 27 日之后,它只能靠
+#: 「向未来滚一年」蒙出一个 2027 年的日期,于是这个「验收工具」的 happy 场景
+#: 会在某个平平无奇的早晨开始报 DELIVERY_TOO_LATE,而代码一行都没改。
+#: 滚年现在有上界(services/delivery.MAX_FUTURE_DAYS),那条路直接返回 None,
+#: 症状换成 DELIVERY_UNPARSEABLE —— 更诚实,但同样跑不通。
+#: 一个会随日历自己坏掉的验收工具,坏的那天没人会想到是日历。
+DELIVERY_RAW = "Arriving tomorrow by 10 PM"
 
 
 def call(base: str, path: str, body: dict) -> tuple[int, dict]:
@@ -82,7 +93,7 @@ def run(base: str, env_code: str, scenario: str) -> int:
     total = "99.00" if scenario == "over_cap" else "10.79"
     _, r = call(base, f"/v1/tasks/{tid}/guard-check", {
         "instance_uid": UID, "actual_total": total,
-        "actual_tax": "0.80", "delivery_raw": "Thursday, August 27", "is_fba": True,
+        "actual_tax": "0.80", "delivery_raw": DELIVERY_RAW, "is_fba": True,
         "line_items": [{"asin": p["asin"], "unit_price": "9.99", "quantity": p["quantity"]}
                        for p in task["products"]],
     })
@@ -97,17 +108,27 @@ def run(base: str, env_code: str, scenario: str) -> int:
         log("被拦截 → 清车上报", f"{r['data']['status']}")
         return 0
 
-    observed = ["B0WRONGASIN"] if scenario == "wrong_asin" \
-        else [p["asin"] for p in task["products"]]
+    # no_asin:订单卡上一个 ASIN 都没采到(Amazon 改了商品链接的类名就是这个样子)。
+    # 断言这时**照旧放行**,但会留一条 assert_skipped 事件 ——
+    # 这个场景验的正是「护栏整体失效时,库里看得出来」。
+    if scenario == "wrong_asin":
+        observed = ["B0WRONGASIN"]
+    elif scenario == "no_asin":
+        observed = []
+    else:
+        observed = [p["asin"] for p in task["products"]]
     status, r = call(base, f"/v1/tasks/{tid}/complete", {
         "instance_uid": UID, "amazon_order_no": f"111-{tid:07d}-0000001",
         "actual_total": total, "actual_tax": "0.80", "payment_last4": "7883",
-        "delivery_raw": "Thursday, August 27", "observed_asins": observed,
+        "delivery_raw": DELIVERY_RAW, "observed_asins": observed,
     })
     if not r.get("ok"):
         log("回填被拒", f"{r['error']['code']}: {r['error']['message']}")
         return 0
     log("回填完成", f"status={r['data']['status']}")
+    if scenario == "no_asin":
+        log("注意", "一个 ASIN 都没采到 —— 单照样回填了,"
+                    "库里应有一条 assert_skipped 事件,近 7 日计数见 /v1/admin/error-stats")
 
     _, r = call(base, "/v1/shipments/sync", {
         "instance_uid": UID, "task_id": tid, "carrier": "UPS",
@@ -132,7 +153,7 @@ def main() -> int:
                     help="服务端地址(默认取 AMZ_SERVER_HOST/AMZ_SERVER_PORT)")
     ap.add_argument("--env", default="env-172")
     ap.add_argument("--scenario", default="happy",
-                    choices=["happy", "over_cap", "oos", "wrong_asin"])
+                    choices=["happy", "over_cap", "oos", "wrong_asin", "no_asin"])
     args = ap.parse_args()
     return run(args.base, args.env, args.scenario)
 

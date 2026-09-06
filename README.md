@@ -54,6 +54,7 @@ python cli.py task_intake -p file=rows.json -p release=1
 python tools/mock_plugin.py --scenario happy
 python tools/mock_plugin.py --scenario over_cap    # 超限价被拦
 python tools/mock_plugin.py --scenario wrong_asin  # 订单卡 ASIN 不符,转人工
+python tools/mock_plugin.py --scenario no_asin     # 一个 ASIN 都没采到:照旧回填,但留一条 assert_skipped
 
 # 6. 插件侧
 cd extension && npm install
@@ -390,6 +391,19 @@ python cli.py task_retry
 - 盯目录树那条测试自己也是一例:只查「文件有、文档没提」一个方向,
   而它 docstring 里记的那次事故恰恰是反方向;抓文件名的正则还不分节,
   那个方向也只是个永远成立的超集比较
+- 交期区间的解析只认「空格 + 连字符 + 空格」,于是 `Sep 8 - Sep 20` 拦截、
+  `Sep 8-20` 放行 —— **同一个区间,差两个空格换一个结论**。而无空格那种是 Amazon
+  的常见紧凑写法
+- 同一条解析里还有两处会**凭空造出一个日期**:取全串第一个月日(`Ships Sep 3,
+  arrives Sep 12` 的第一个是发货日),再无上界地向未来滚一年,于是运营台上出现
+  「预计 2027-09-03」—— 一个 Amazon 从未给出、却具体到日的日期。人去核对时会先
+  怀疑亚马逊页面,而不是我们的解析器
+- 回填时那道 ASIN 断言,「一个都没采到」与「比对通过」**返回同一个值**。
+  选择器一坏,断言就整体退化成厂商那套盲取第一张卡,而库里是一批看着完全正常的
+  已拍单 —— 没有任何一条错误码提示护栏已经不工作了
+- 「可能已下单」那道闸改成按错误码判之后**仍然漏一整类**:越过下单点之后抛
+  `DriverError`,落库是「状态 manual + 码 PLUGIN_INTERNAL」,两个字段各说各的,
+  而闸只听其中一个
 
 **不申请 `cookies` 权限。** 登录态留在浏览器 profile 里,不读也不上传。
 这不是暂缓,是架构选择:服务端因此无法脱离操作员的浏览器独立下单 —— 这正是不想具备的能力。
