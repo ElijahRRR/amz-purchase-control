@@ -175,6 +175,10 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
     if (r.status !== "exception" || !r.error_code) return null;
     if (!meta.error_code.retryable.includes(r.error_code)) return null;
     const inRange = autoRetryApplies(r, meta.auto_retry, meta.error_code.retryable);
+    // 射程之外、而且一次都没重过 —— 这一格什么也没得说(「为什么不重」就在旁边那个
+    // 紫标上),写一个孤零零的「已试 0」只是噪音。重过 k 次的那种要写:
+    // 「已试 2、系统再也不会碰」正是运营要一眼看见的东西。
+    if (!inRange && r.retry_count === 0) return null;
     const used = r.retry_count >= meta.auto_retry.max;
     return (
       <span className={cn("text-2xs whitespace-nowrap",
@@ -215,7 +219,7 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
       {
         // 这一格是紧凑档里唯一**可以被截断而不丢信息**的(收件人 + 城市州),
         // 所以窄屏时让它去让位 —— 见下面 template 那一段。
-        id: "ship", header: "收货", size: 224, meta: { flex: true },
+        id: "ship", header: "收货", size: 224, meta: { flex: true, flexMin: 150 },
         cell: ({ row }) => {
           const r = row.original;
           return (
@@ -236,7 +240,7 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
       // —— 屏幕上两个数字说「没超」,颜色说「超了」,真正比过的那个数(2241.86)
       // 在这一档根本不出现。详细档早就多渲染了一行「货款」并把红色标在它上面,
       // 紧凑档没跟上,而扫桶用的正是紧凑档。
-      { id: "paid", header: "实付/货款", size: 88, meta: { align: "right" },
+      { id: "paid", header: "实付/货款", size: 100, meta: { align: "right" },
         cell: ({ row }) => {
           const r = row.original;
           const v = capVerdict(r);
@@ -244,7 +248,7 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
           // 极小的「货」角标说明这不是卡扣的钱。
           const isGoods = v.basis !== null && v.basis !== r.actual_total;
           return (
-            <span className={cn("num", totalTone(r))} title={v.text}>
+            <span className={cn("num whitespace-nowrap", totalTone(r))} title={v.text}>
               {money(v.basis ?? r.actual_total)}
               {isGoods && <span className="ml-0.5 text-2xs text-zinc-400 align-super">货</span>}
             </span>
@@ -260,17 +264,20 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
             <span className="flex flex-col items-start gap-0.5">
               <Tag tone={s.tone}>{s.label}</Tag>
               {r.awaiting_manual_verification && <AwaitingVerify since={r.awaiting_since} />}
-              <CrossedTag on={r.may_have_ordered} />
             </span>
           );
         } },
       {
-        id: "note", header: "错误码 / AMZ 单号", size: 240,
+        // 「已越过下单点」放这一格而不是状态格:紧凑档一行只有 40px,
+        // 状态格已经竖着堆了状态标 + 等验证徽标,再加一条会顶出行外。
+        // 这一格是横排的,而且它本来就是「这一单出了什么事」那一格。
+        id: "note", header: "错误码 / AMZ 单号", size: 300,
         cell: ({ row }) => {
           const r = row.original;
           return (
-            <span className="flex items-center gap-1.5 min-w-0">
+            <span className="flex items-center gap-1.5 min-w-0 whitespace-nowrap">
               {codeTag(r.error_code)}
+              <CrossedTag on={r.may_have_ordered} />
               {retryBadge(r)}
               {r.amazon_order_no
                 ? <CopyText value={r.amazon_order_no} className="id text-2xs text-zinc-500" icon={false} />
@@ -299,7 +306,7 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
   // 分组没变,还是厂商那 8 组;窄屏时被挤到屏幕外的换成了「买家号信息」。
   return [
     {
-      id: "g-other", header: "其他信息", size: 210,
+      id: "g-other", header: "其他信息", size: 190,
       cell: ({ row }) => {
         const r = row.original;
         const s = statusLabel(r.status);
@@ -321,7 +328,7 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
       },
     },
     {
-      id: "g-upstream", header: "上游订单", size: 172,
+      id: "g-upstream", header: "上游订单", size: 150,
       cell: ({ row }) => {
         const r = row.original;
         return (
@@ -340,7 +347,7 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
     {
       // 详细档里最能截断的一格(地址那一行本来就 truncate)—— 窄屏让它让位,
       // 而不是让最后一列被压没。
-      id: "g-ship", header: "买家信息", size: 236, meta: { flex: true },
+      id: "g-ship", header: "买家信息", size: 236, meta: { flex: true, flexMin: 160 },
       cell: ({ row }) => {
         const r = row.original;
         const ic = "w-3 h-3 shrink-0 text-zinc-300 relative top-px";
@@ -367,7 +374,7 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
       },
     },
     {
-      id: "g-product", header: "产品信息", size: 220,
+      id: "g-product", header: "产品信息", size: 196,
       cell: ({ row }) => {
         const r = row.original;
         const p = r.products?.[0];
@@ -393,7 +400,7 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
       },
     },
     {
-      id: "g-order", header: "订单信息", size: 228,
+      id: "g-order", header: "订单信息", size: 200,
       cell: ({ row }) => {
         const r = row.original;
         return (
@@ -409,7 +416,7 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
       },
     },
     {
-      id: "g-fee", header: "费用信息", size: 168,
+      id: "g-fee", header: "费用信息", size: 150,
       cell: ({ row }) => {
         const r = row.original;
         const line = (k: string, v: string | null) => (
@@ -447,7 +454,7 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
       },
     },
     {
-      id: "g-logistics", header: "物流信息", size: 228,
+      id: "g-logistics", header: "物流信息", size: 196,
       cell: ({ row }) => {
         const r = row.original;
         const s = r.shipment_status ? shipLabel(r.shipment_status) : null;
@@ -465,7 +472,7 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
       },
     },
     {
-      id: "g-env", header: "买家号信息", size: 196,
+      id: "g-env", header: "买家号信息", size: 170,
       cell: ({ row }) => {
         const r = row.original;
         return (
@@ -534,12 +541,20 @@ export function TaskTable({
   // 只剩左右内边距(实测 24px),而那一列恰恰是承载状态标与徽标的那一格 ——
   // 表格不横向滚动,人也就没有任何提示说「右边还有东西」。
   // 现在让位的是一个截断了也不丢信息的格子(收货 / 买家信息)。
+  //
+  // 伸缩那一列有**下界**(`meta.flexMin`):写 minmax(0,1fr) 的话,窄到一定程度它
+  // 会塌成零宽,于是「地址在哪儿」这件事静悄悄地从屏幕上消失,而表格照旧不滚动
+  // —— 那只是把同一个毛病从最后一列挪到了这一列。有下界的话,再窄就横向滚动,
+  // 滚动条本身就是「右边还有东西」的提示。
   const cols = table.getVisibleLeafColumns();
-  const flexIdx = cols.findIndex(
-    (c) => (c.columnDef.meta as { flex?: boolean } | undefined)?.flex);
+  const meta0 = (c: typeof cols[number]) =>
+    c.columnDef.meta as { flex?: boolean; flexMin?: number } | undefined;
+  const flexIdx = cols.findIndex((c) => meta0(c)?.flex);
   const stretch = flexIdx >= 0 ? flexIdx : cols.length - 1;
   const template = cols
-    .map((c, i) => (i === stretch ? "minmax(0,1fr)" : `${c.getSize()}px`))
+    .map((c, i) => (i === stretch
+      ? `minmax(${meta0(c)?.flexMin ?? 0}px,1fr)`
+      : `${c.getSize()}px`))
     .join(" ");
 
   return (

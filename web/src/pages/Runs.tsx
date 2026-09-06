@@ -116,7 +116,7 @@ export default function RunsPage() {
                         写出「该每 0 小时至少跑一次」(AMZ_FEISHU_SYNC_MAX_AGE_MIN=30
                         是运维可调的),90 分钟则被说成「1 小时」——
                         这一页的职责就是让人据此判断某条链是不是真的逾期。 */}
-                    该每 {minutesText(Math.round((c.expected_seconds ?? 0) / 60))} 至少跑一次
+                    该每 {minutesText(Math.round((c.expected_seconds ?? 0) / 60))}至少跑一次
                     {/* 「停了会怎样」由服务端逐条下发(services/ops_query.OVERDUE_CONSEQUENCE)。
                         原先这里写死的是 task_sweep 的后果,而它对另外三条链都是假的。 */}
                     {c.overdue && c.overdue_consequence && ` —— ${c.overdue_consequence}`}
