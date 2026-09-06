@@ -1,9 +1,21 @@
-"""运行记录的查询(ops.runs)。只读。
+"""**这套系统本身还在正常干活吗** —— 运维体检的读侧。只读。
 
-这张表一直是**只写不读**的:cli.py 每跑一条 workflow 就写一行,
-但全项目没有任何地方读它。写了没人看的记录等于没写 —— 而其中一条
-(task_sweep)是全项目唯一必须挂定时的,它哪天悄悄停了,
-claimed 的任务会一直堆着没人知道。这个模块就是把那只眼睛装上。
+与 `services/task_query.py` 的分工不是「读哪张表」,是**回答哪个问题**:
+那边回答「这些单怎么样了」(状态桶、错误码分布、某一单的全貌),
+这边回答「护栏和定时链还活着吗」。后者的特征是:出问题时**单子看起来全都正常**,
+所以必须专门去数,不会有人因为某一单不对劲而发现它。
+
+眼下两只眼睛:
+
+  · `recent()` —— 运行记录(`ops.runs`)。这张表一直是只写不读的:cli.py 每跑
+    一条 workflow 就写一行,而全项目没有任何地方读它。写了没人看等于没写 ——
+    而 `task_sweep` 是全项目唯一必须挂定时的一条,它哪天悄悄停了,
+    claimed 的任务会一直堆着没人知道。
+  · `assert_skipped()` —— 回填时那道 ASIN 断言「没能比」的近 7 日计数,
+    **连同同期的回填条数**。它整体失效的样子正是**一批看着完全正常的 purchased**:
+    Amazon 改个类名,插件采到的 ASIN 恒为空,断言退化成盲取第一张卡,而每一单都是绿的。
+    分母不能省:单独一个「1 次没采到」既可能是 500 单里的一次页面没渲染完,
+    也可能是这几天总共就回填了 1 单、而它没采到 —— 两者的处置正好相反。
 """
 
 from datetime import datetime, timedelta, timezone
@@ -192,3 +204,68 @@ def recent(conn, *, limit: int = 60) -> dict[str, Any]:
         "by_workflow": by_workflow,
         "stuck_after_seconds": int(STUCK_AFTER.total_seconds()),
     }
+
+
+#: 「近 7 日」而不是「有史以来」。一个只增不减的总数回答不了「现在坏没坏」。
+ASSERT_SKIPPED_DAYS = 7
+
+#: 多大比例算「该看一眼了」。
+#:
+#: **这个数只能跟同期的回填条数一起读,单看是没有意义的。** 近 7 天回填 500 单、
+#: 其中 1 单没采到(页面没渲染完,无害),与 近 7 天只回填了 1 单、这 1 单没采到
+#: (选择器已经坏了,断言 100% 失效)—— 两者的 count 都是 1。只把 count 发给界面,
+#: 这两件事就渲染成同一个结果,而它们一个该忽略、一个是「护栏整体失效」的唯一信号。
+#:
+#: 所以分母跟着一起算,阈值挂在**比例**上而不是 `count > 0`:后者会让这张卡片
+#: 常年琥珀 —— 而一张常年琥珀的卡片会把人训练成忽略它,恰恰是在它真的该报警的
+#: 那一天。20% = 每五次回填就有一次没能比,已经不是「偶尔没渲染完」能解释的了。
+#:
+#: 判定放在服务端:阈值只有一份,界面照着结果画。前端自己判的话,这个 0.2
+#: 就成了第二份副本,而副本迟早分叉(本项目已经栽过两次)。
+ASSERT_SKIPPED_ALERT_RATIO = 0.2
+
+#: 分子分母同一个窗口、同一张表、同一条 SQL —— 分开查会出现「分子取的是这 7 天、
+#: 分母取的是上一次刷新那 7 天」这种谁也发现不了的错位。
+#: 分母取 `purchased` 事件:回填成功才有这条(services/task_queue.complete),
+#: 而 assert_skipped 与它写在同一个事务里,两个数天然同口径。
+_ASSERT_SKIPPED_SQL = """
+SELECT count(*) FILTER (WHERE kind = 'assert_skipped') AS n,
+       count(*) FILTER (WHERE kind = 'purchased')      AS backfills
+  FROM procure.task_events
+ WHERE kind IN ('assert_skipped', 'purchased')
+   AND created_at >= now() - make_interval(days => %(days)s)
+"""
+
+
+def assert_skipped(conn, *, days: int = ASSERT_SKIPPED_DAYS) -> dict[str, Any]:
+    """输入:连接(+ 回看几天)→ 输出:{count, backfills, ratio, alert, days, label}。
+
+    回填时的 ASIN 断言在「一个 ASIN 都没采到」时**照旧放行**(既定取舍:
+    断言的职责是抓错配,不是制造噪音)。既然放行,这件事就只能靠数出来 ——
+    否则它整体失效时,库里是一批看着完全正常的 purchased,
+    没有任何一条错误码提示那道断言已经不工作了。
+
+    **分母(同期回填条数)必须一起给。** 只给 count 的话,「500 次回填漏了 1 次」
+    与「1 次回填漏了 1 次」在界面上长得一模一样,而后者才是护栏已经整体失效。
+    `ratio` 与 `alert` 也在这里算好:界面不该把除法留给人做,阈值也不该有第二份副本。
+    `backfills = 0` 时 `ratio` 是 None —— 不是 0.0,「这几天没回填过」与
+    「回填了很多次、一次都没漏」是两回事,给 0.0 就把它们抹成同一个数了。
+
+    `label` 一并给出,是因为这个数要显示在错误码分布页上,而那一页的其它文案
+    都从 `/v1/admin/meta` 的封闭集里取;这一个不属于任何封闭集,
+    再让前端自己写一份中文就又多了一处会分叉的副本。出处仍是 services/vocab。
+    """
+    from services import vocab
+
+    row = conn.execute(_ASSERT_SKIPPED_SQL, {"days": days}).fetchone()
+    n, backfills = row["n"], row["backfills"]
+    ratio = (n / backfills) if backfills else None
+    # 键名不写死成 `recent_7d`:窗口是个参数,而一个叫 recent_7d 的字段
+    # 在有人传 days=30 时会**言之凿凿地说错话**。数是 count,窗口是 days,
+    # 界面那句「近 N 天」照 days 写,两者永远对得上。
+    return {"count": n, "backfills": backfills,
+            "ratio": ratio,
+            "alert": ratio is not None and ratio >= ASSERT_SKIPPED_ALERT_RATIO,
+            "alert_ratio": ASSERT_SKIPPED_ALERT_RATIO,
+            "days": days,
+            "label": vocab.OPS_METRIC_LABELS["assert_skipped"]}

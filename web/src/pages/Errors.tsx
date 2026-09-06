@@ -38,6 +38,13 @@ const GROUP = {
 };
 type GroupKey = keyof typeof GROUP;
 
+/** 比例写成百分数。**不四舍五入到 0%** —— 1/500 是 0.2%,写成「0%」就等于说
+ *  一次都没有,而这张卡片存在的理由正是那几次。小于 1% 时保留一位小数。 */
+function pct(r: number | null): string {
+  if (r === null) return "—";
+  return r > 0 && r < 0.01 ? `${(r * 100).toFixed(1)}%` : `${Math.round(r * 100)}%`;
+}
+
 /** 本地日期,不用 toISOString —— 那个先转 UTC,东八区的「今天」会被算成昨天。 */
 function ymd(d: Date): string {
   const p = (n: number) => String(n).padStart(2, "0");
@@ -179,6 +186,66 @@ export default function ErrorsPage() {
             </Card>
           ))}
         </div>
+
+        {/* 这一行不属于上面那五组,它数的东西压根不是失败。
+            回填时那道 ASIN 断言在「一个 ASIN 都没采到」时**照旧放行**
+            (既定取舍:断言的职责是抓错配,不是制造噪音),所以它整体失效的样子
+            是一批**看着完全正常的已拍单** —— error / guard_block 两个口径里
+            一条都不会出现,上面那张图再怎么看也看不出来。
+
+            **这个数必须跟同期的回填条数一起看。** 近 7 天回填 500 单漏了 1 单
+            (页面没渲染完,无害)与 近 7 天只回填 1 单、这 1 单漏了(选择器已坏,
+            断言 100% 失效),count 都是 1 —— 只画这一个数,这两件事就渲染成
+            同一个结果,而一个该忽略、一个是护栏整体失效的唯一信号。
+            所以分母、比例、要不要报警都由服务端算好下发:界面不把除法留给人做,
+            阈值也不在前端存第二份(前端那份迟早跟服务端分叉)。
+
+            琥珀挂在**比例**上而不是 count > 0:后者会让这张卡片常年琥珀,
+            而一张常年琥珀的卡片会把人训练成忽略它 —— 恰恰在它真该报警的那天。
+
+            窗口固定(服务端给),不跟着上面那个「近 N 天」走:
+            它回答的是「那道断言现在还工作吗」,只有最近这几天算数。
+            标签也由服务端下发 —— 它不属于任何封闭集,前端再写一份中文
+            就又多了一处会分叉的副本;没拿到数据时按本页既有写法画占位符。 */}
+        <Card className={cn("px-4 py-3 flex items-center gap-3",
+                            data?.assert_skipped.alert ? "border-amber-300 bg-amber-50" : "")}>
+          <span className="w-2 h-2 rounded-full shrink-0"
+                style={{ background: data?.assert_skipped.alert ? "#f59e0b" : "#d4d4d8" }} />
+          <span className="text-xs text-zinc-600">
+            {data?.assert_skipped.label ?? "—"}
+            <span className="text-zinc-400">
+              {" "}· 近 {data?.assert_skipped.days ?? "—"} 天(与上面的时间范围无关)
+            </span>
+          </span>
+          <span className="font-mono text-lg font-semibold tabular-nums ml-auto">
+            {data ? `${data.assert_skipped.count} / ${data.assert_skipped.backfills}` : "—"}
+            <span className="text-xs text-zinc-400 font-sans font-normal ml-1">次回填</span>
+          </span>
+          <span className="text-xs+ text-zinc-500 leading-relaxed basis-full">
+            订单卡上一个 ASIN 都没采到,断言这次没说上话 ——
+            单<b className="font-medium">照样回填</b>了。
+            {/* 三种情况说三句不一样的话。「这几天没回填过」与「回填了很多次、
+                一次都没漏」都是没有报警,但含义完全不同:前者是这个数说明不了
+                任何事,后者是断言确实在工作。混成一句「一切正常」,
+                第一种情况下人会以为护栏已经验过了。 */}
+            {data && (
+              data.assert_skipped.backfills === 0
+                ? <> 近 {data.assert_skipped.days} 天一次回填都没有,
+                    这个数眼下<b className="font-medium">说明不了任何事</b> ——
+                    它要跟回填条数一起看才有意义。</>
+              : data.assert_skipped.count === 0
+                ? <> 这 {data.assert_skipped.backfills} 次回填每一次都比上了,断言在工作。</>
+                : <> 占同期回填的 <b className="font-medium">
+                      {pct(data.assert_skipped.ratio)}</b>
+                    {data.assert_skipped.alert
+                      ? <>,已经过了 {pct(data.assert_skipped.alert_ratio)} 这条线:
+                          这不是「偶尔没渲染完」能解释的比例,采 ASIN 的选择器多半已经坏了,
+                          那道断言正整体失效 —— 而每一单看起来都是正常的「已拍单」。</>
+                      : <>,还在「零星几条、多半是页面没渲染完」的量级
+                          (超过 {pct(data.assert_skipped.alert_ratio)} 才转琥珀)。</>}</>
+            )}
+          </span>
+        </Card>
 
         <Card className="overflow-hidden">
           <CardHead right={<span className="text-xs text-zinc-400">按码,高的在前</span>}>

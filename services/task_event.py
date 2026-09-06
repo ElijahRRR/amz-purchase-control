@@ -19,6 +19,12 @@ RETURNING id
 
 KINDS = frozenset(
     {"claimed", "step", "guard_block", "error", "purchased", "released", "assert_failed",
+     # 回填时那道 ASIN 断言**没能比**:订单卡上一个 ASIN 都没采到。
+     # 与 assert_failed 分开,因为处置完全不同:那一条是「这一单不对,别写」,
+     # 这一条是「断言这次没说上话,单照写」。两者混成一种事件,
+     # 「这道断言什么时候整体失效」就没法数 —— 而它整体失效的样子正是
+     # 一批看着正常的 purchased(选择器一坏,observed 恒为空)。
+     "assert_skipped",
      # 人在后台动的手。和插件跑出来的结果落在同一条时间线上,但必须分得开 ——
      # 「这个单号是机器读的还是人填的」在事后追责时是第一个要问的问题。
      "admin",

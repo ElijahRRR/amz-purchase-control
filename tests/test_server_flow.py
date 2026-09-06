@@ -125,19 +125,49 @@ def test_guard_block_is_recorded_as_event(client, conn, seed):
 # ── 完成与断言 ──────────────────────────────────────────────────────────
 
 def test_complete_backfills(client, conn, seed):
+    """回填的交期用**相对词**,不用写死的月日。
+
+    原来这里写的是 "August 27" —— 它落在哪一年取决于测试跑的那天,
+    而且在 8 月 27 日之后的每一天,它都只能靠「向未来滚一年」蒙一个日期出来。
+    那一列于是断言了一个凭空捏造的 2027 年日期不为 None。滚年现在有上界
+    (services/delivery.MAX_FUTURE_DAYS),蒙不出来了,这条才露出来。
+    """
+    from datetime import timedelta
+
+    from server.routes.tasks import _site_today
+
     _register(client)
     t = _claim(client)
     r = client.post(f"/v1/tasks/{t['task_id']}/complete", json={
         "instance_uid": UID, "amazon_order_no": "111-2223334-4445556",
         "actual_total": "10.79", "payment_last4": "7883",
-        "delivery_raw": "August 27", "observed_asins": ["B0FB3VS68J"],
+        "delivery_raw": "Arriving tomorrow by 10 PM", "observed_asins": ["B0FB3VS68J"],
     })
     assert r.status_code == 200, r.text
-    row = conn.execute("SELECT status, amazon_order_no, delivery_date FROM procure.tasks "
-                       "WHERE id=%s", (t["task_id"],)).fetchone()
+    row = conn.execute("SELECT status, amazon_order_no, delivery_date, delivery_raw "
+                       "  FROM procure.tasks WHERE id=%s", (t["task_id"],)).fetchone()
     assert row["status"] == "purchased"
     assert row["amazon_order_no"] == "111-2223334-4445556"
-    assert row["delivery_date"] is not None
+    assert row["delivery_date"] == _site_today() + timedelta(days=1)
+
+
+def test_complete_keeps_the_raw_when_the_date_is_unparseable(client, conn, seed):
+    """读不懂的交期原文**照样入库**,只是 delivery_date 留空。
+
+    「不确定就不写」说的是不写一个编出来的日期,不是把线索一起丢掉 ——
+    delivery_raw 正是解析失败时唯一的线索。
+    """
+    _register(client)
+    t = _claim(client)
+    r = client.post(f"/v1/tasks/{t['task_id']}/complete", json={
+        "instance_uid": UID, "amazon_order_no": "111-2223334-4445557",
+        "delivery_raw": "Arriving after Christmas", "observed_asins": ["B0FB3VS68J"],
+    })
+    assert r.status_code == 200, r.text
+    row = conn.execute("SELECT delivery_date, delivery_raw FROM procure.tasks WHERE id=%s",
+                       (t["task_id"],)).fetchone()
+    assert row["delivery_date"] is None
+    assert row["delivery_raw"] == "Arriving after Christmas"
 
 
 def test_complete_rejects_mismatched_asin(client, conn, seed):

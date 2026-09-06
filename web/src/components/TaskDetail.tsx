@@ -127,6 +127,15 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
   /** 哪一个危险动作正在预览。null = 没有。
    *  两个动作共用一条预览条,但绝不共用一个布尔 —— 那样点错按钮会确认成另一件事。 */
   const [confirm, setConfirm] = useState<null | "force" | "reset">(null);
+  /** 服务端拒绝重置时给的那句「为什么拦你」,原样存下来念给人听。
+   *
+   *  不由前端按 error_code 自己编:拦下这一单的可能是码(在「可能已下单」那组里),
+   *  也可能是**越过下单点**(码看着人畜无害,`may_have_ordered` 为 true)。
+   *  照码编出来的那句对后一类是假话 —— 「PLUGIN_INTERNAL 意味着这一单可能已经
+   *  真下成了」既不成立,又把真正的理由丢了,人不知道自己在找什么。
+   *  服务端已经按两种情况分开措辞了(services/task_admin.reset_to_queue),
+   *  这里只负责把它显示出来。 */
+  const [ackWhy, setAckWhy] = useState<string | null>(null);
   const [forceNo, setForceNo] = useState("");
   const [note, setNote] = useState("");
   /** 正在改哪一样。改地址/改 ASIN 的接口早就有、也有测试,只是一直没有入口 ——
@@ -492,6 +501,7 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
                     </span>}
               </KV>
             )}
+            {t.may_have_ordered && <KV k="下单点"><Tag tone="solid-violet">已越过 · 下单按钮点过了</Tag><span className="text-xs text-zinc-500 ml-1.5">重置前必须有人去这个买家号的订单页确认</span></KV>}
             <KV k="创建时间"><span className="id text-xs">{fullTime(t.created_at)}</span></KV>
             <KV k="采购时间"><span className="id text-xs">{fullTime(t.purchased_at)}</span></KV>
             {retryHint && <Hint>{retryHint}</Hint>}
@@ -663,13 +673,20 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
         <div className="border-t border-violet-200 bg-violet-50 px-[18px] py-3 flex items-center gap-3">
           <span className="mt-px"><Dot tone="violet" /></span>
           <div className="text-sm- text-zinc-600 leading-relaxed flex-1">
-            <b className="font-medium text-zinc-900">
-              {t.error_code} 意味着这一单可能已经在亚马逊上真下成了。
-            </b>
-            {" "}重置回队列 = 让下一个实例把同一单再买一遍。
-            请先去买家号 <span className="id text-zinc-700">{t.env_code}</span> 的订单页,
-            确认下面这{(t.products?.length ?? 0) > 1 ? ` ${t.products!.length} 个商品` : "个商品"}
-            都没有下过单,再点确认:
+            {/* **理由念服务端那句,不自己编。**
+                拦下这一单的可能是错误码(在「可能已下单」那组里),也可能是
+                **越过下单点** —— 后者的码往往人畜无害(PLUGIN_INTERNAL、
+                CART_MISMATCH,都在「可重试」那组)。原先这里写死的是
+                「{error_code} 意味着这一单可能已经在亚马逊上真下成了」,
+                对后一类是一句**假话**:PLUGIN_INTERNAL 并不意味着下过单,
+                运营照它学到一条错误的规则;而真正的理由(下单按钮点过了)
+                只在被丢掉的那句 message 里,人不知道自己该找什么。
+                上方那条紫色警告条同样按 error_code 渲染,对这一类单压根不出现,
+                所以这里是唯一说话的地方。 */}
+            <b className="font-medium text-zinc-900">{ackWhy}</b>
+            {" "}要确认的是买家号 <span className="id text-zinc-700">{t.env_code}</span> 的订单页上
+            没有下面这{(t.products?.length ?? 0) > 1 ? ` ${t.products!.length} 个商品` : "个商品"}
+            ,确认了再点:
             {/* **列全部 ASIN,不能只报第一个。** 只报 products[0] 的话,一单三件商品时
                 运营去订单页只找那一个,找不到就如实点下「我已确认没有这一单」——
                 而真下成的那一张订单里另外两件明明在。确认的对象说错了,
@@ -718,7 +735,9 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
                     setBusy(false);
                     if (r.ok) { setErr(null); load(); onMutate(); return; }
                     if (!r.ok && r.kind === "business" && r.code === "NEEDS_ACK") {
-                      setErr(null); setConfirm("reset"); return;
+                      // r.message 就是那句「为什么拦你」,别丢掉它 ——
+                      // 它是这一路上唯一说对了理由的一句话。
+                      setErr(null); setAckWhy(r.message); setConfirm("reset"); return;
                     }
                     setErr(r.kind === "transport" ? `没说上话:${r.message}` : `${r.code} · ${r.message}`);
                   }}>

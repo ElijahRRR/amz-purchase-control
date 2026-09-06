@@ -48,18 +48,218 @@ def test_vendor_defect_1_year_truncation(raw, expected):
 
 @pytest.mark.parametrize("raw,expected", [
     ("Aug 21 - Sep 5", date(2026, 9, 5)),        # 厂商取 8/21
-    ("July 7 - July 10", date(2026, 7, 10)),     # 厂商取 7/7 —— 注意已过期,见下条
     ("Aug 25 - Aug 28", date(2026, 8, 28)),
     ("Aug 21 - 25", date(2026, 8, 25)),          # 结束段只有日号,补月份
+    ("Sep 10 - Sep 30", date(2026, 9, 30)),
 ])
 def test_vendor_defect_2_range_takes_end(raw, expected):
-    got = p(raw)
-    # July 7-10 已过 2026-08-20,按「向未来取最近一年」规则应落到 2027
-    assert got in (expected, expected.replace(year=expected.year + 1))
+    assert p(raw) == expected
 
 
 def test_range_end_date_exact():
     assert p("Aug 21 - Sep 5") == date(2026, 9, 5)
+
+
+# ── 我们自己的缺口 OG-1:区间只认「空格 + 连字符 + 空格」──────────────────
+#
+# 与厂商缺陷 2 同型,只是触发条件更窄:`_RANGE` 要求连字符两侧各至少一个空白,
+# 于是 Amazon 的紧凑写法 `Sep 8-20` 切不动,退回去取全串第一个月日 = **起始日**。
+# 实测(wf/our_gap_proof.py,站点当天 2026-09-06、上限 7 天):同一个区间,
+# 只差连字符两侧那两个空格,闸门从「拦截 DELIVERY_TOO_LATE」翻成「放行」。
+
+SEP6 = date(2026, 9, 6)
+
+
+@pytest.mark.parametrize("raw", [
+    "Sep 8 - Sep 20",
+    "Sep 8 - 20",
+    "Sep 8-20",          # 无空格
+    "Sept 8–20",         # en dash 且无空格
+    "Sep 8 -20",         # 只有左边有空格
+    "Sep 8- 20",         # 只有右边有空格
+    "Arriving Sep 8-20 by 8 PM",
+])
+def test_our_gap_1_compact_range_still_takes_the_end_day(raw):
+    """五种写法必须收敛到同一个日子。差一个空格就换一个结论,那不是护栏是掷骰子。"""
+    assert p(raw, today=SEP6) == date(2026, 9, 20)
+
+
+def test_our_gap_1_compact_range_flips_the_guard_back(): 
+    """闸门层面再断一次 —— 解析对了但没传到裁决上,等于没修。"""
+    from decimal import Decimal
+
+    from services.price_guard import adjudicate
+
+    for raw in ("Sep 8 - Sep 20", "Sep 8-20", "Sept 8–20"):
+        v = adjudicate(price_cap=Decimal("999"), max_delivery_days=7,
+                       actual_total="10.00", is_fba=True,
+                       delivery_raws=[raw], today=SEP6)
+        assert v.allow is False and v.error_code == "DELIVERY_TOO_LATE", raw
+        assert v.delivery_date == date(2026, 9, 20), raw
+
+
+@pytest.mark.parametrize("raw", [
+    "2-4 business days",      # 没有月名,归一化不许碰它
+    "Overnight 12 AM - 8 AM",
+])
+def test_our_gap_1_range_normalisation_does_not_touch_non_dates(raw):
+    """放宽区间正则最容易误伤的两类。它要求连字符**左边必须有月名**,
+    所以 "2-4 business days" 和 ISO 日期都碰不到。"""
+    assert p(raw, today=SEP6) is None
+
+
+@pytest.mark.parametrize("raw", [
+    "Sep 8 - 10 PM",       # 10 是钟点,不是日号
+    "Sep 8 - 10 AM",
+])
+def test_our_gap_1_a_clock_time_is_not_the_end_of_a_range(raw):
+    """区间归一化不许把「几点」读成「几号」。
+
+    "Sep 8 - 10 PM" 归一化成 "Sep 10" 的话,一条我们其实读不懂的文案会变成
+    一个看着很确定的日期,而且比真实交期晚两天 —— 编一个日期出来比返回 None 危险。
+    """
+    assert p(raw, today=SEP6) is None
+
+
+def test_our_gap_1_iso_date_is_not_a_range():
+    """`2026-09-08` 里有两个连字符,但一个月名都没有 —— 归一化不该动它。
+
+    (我们并不解析 ISO 串,这条断的是「没被区间正则拆坏了之后又蒙对/蒙错」。)
+    """
+    assert p("Delivery 2026-09-08", today=SEP6) is None
+
+
+def test_the_bare_day_fallback_still_has_a_shape_it_really_catches():
+    """「结束段只剩一个日号,补上起始段的月份」那条兜底,现在真管的是这种写法。
+
+    它**不**管 "Aug 21 — 25":`_MD_RANGE` 的连字符两侧是 `\\s*`、字符组里也有
+    em dash,那个形状在归一化那一步就被吃掉了(下面第二条断的就是这件事)。
+    真正走得到这条兜底的是月日与连字符之间还隔着别的东西的写法,典型是隔着年份。
+
+    钉住它是因为注释曾经举错了例子 —— 而一条描述与执行路径不一致的注释,
+    会让下一个改 `_MD_RANGE` 的人为了「别破坏 em dash 区间」刻意绕开 em dash。
+    """
+    assert p("Aug 21, 2026 - 25", today=date(2026, 8, 20)) == date(2026, 8, 25)
+    # em dash 那种归一化就吃掉了,压根走不到兜底
+    assert p("Aug 21 — 25", today=date(2026, 8, 20)) == date(2026, 8, 25)
+
+
+# ── 我们自己的缺口 OG-2:取第一个月日 + 无上界地向未来滚一年 ──────────────
+
+def test_our_gap_2_takes_the_latest_month_day_not_the_first():
+    """`Ships Sep 3, arrives Sep 12` —— 第一个月日是**发货日**。
+
+    取第一个的后果不只是差几天:Sep 3 在 9/6 那天已经过去,滚年规则把它变成
+    2027-09-03,daysDiff=362,这一单被误拦转人工,而运营台详情里印着
+    「预计 2027-09-03」—— 一个 Amazon 从未给出的日期。人去核对时会先怀疑
+    亚马逊页面,而不是我们的解析器。
+    """
+    assert p("Ships Sep 3, arrives Sep 12", today=SEP6) == date(2026, 9, 12)
+
+
+def test_our_gap_2_latest_matches_the_guards_own_stance():
+    """取最晚与 price_guard「多条交期取最晚」是同一个立场,不该只在跨条时成立。"""
+    assert p("Sep 9 or Sep 14", today=SEP6) == date(2026, 9, 14)
+    assert p("Sep 14 or Sep 9", today=SEP6) == date(2026, 9, 14)
+
+
+def test_our_gap_2_rolling_a_year_forward_has_an_upper_bound():
+    """滚过 300 天就返回 None —— 不产出一个 Amazon 从没说过的日期。
+
+    `Aug 21 - Sep 5` 在 2026-09-06 看到:结束日 9/5 昨天刚过,滚一年是 364 天后。
+    那不是一条送达日期,是我们读错了段(或者页面本身是旧的)。
+    与「带年份那条路解析出过去的日期」一样归 DELIVERY_UNPARSEABLE 转人工。
+    """
+    assert p("Aug 21 - Sep 5", today=SEP6) is None
+
+
+def test_our_gap_2_expired_range_is_unparseable_not_a_2027_date():
+    """`July 7 - July 10` 在 8/20 看到:滚一年是 324 天后,超界。"""
+    assert p("July 7 - July 10") is None
+
+
+def test_our_gap_2_the_bound_does_not_break_year_rollover():
+    """反面:真正的跨年场景必须照旧过 —— 上界拦的是「滚过头」,不是「跨年」。"""
+    assert p("Wednesday, January 7", today=SEP6) == date(2027, 1, 7)
+    assert p("January 4", today=date(2026, 12, 28)) == date(2027, 1, 4)
+
+
+def test_our_gap_2_explicit_year_is_never_rolled():
+    """页面自己写了年份就照它写的算,上界不适用 —— 那是我们**推断**年份时的闸。
+
+    `August 21, 2026` 在 2026-09-06 是过去的日期,解析照实返回,
+    由 price_guard 判成「解析出过去的日期」→ DELIVERY_UNPARSEABLE。
+    结论与滚年超界那条一致,但理由不同,不能混成一处。
+    """
+    from decimal import Decimal
+
+    from services.price_guard import adjudicate
+
+    assert p("August 21, 2026", today=SEP6) == date(2026, 8, 21)
+    v = adjudicate(price_cap=Decimal("999"), max_delivery_days=7,
+                   actual_total="10.00", is_fba=True,
+                   delivery_raws=["August 21, 2026"], today=SEP6)
+    assert v.allow is False and v.error_code == "DELIVERY_UNPARSEABLE"
+
+
+# ── 我们自己的缺口 OG-3:相对词抢在显式日期之前 ──────────────────────────
+
+def test_our_gap_3_explicit_date_beats_relative_word():
+    """`Tomorrow, September 8` 必须按页面写出来的 9/8 算,不是 today+1。
+
+    服务端算的站点当天与 Amazon 页面翻页的时刻不会永远一致(美西已经 9/7、
+    我们还是 9/6)。差这一天会同时进闸门判定和回填的 delivery_date,
+    在 max_delivery_days 边界上把一单本该拦下的放行,而库里记的送达日期
+    与 Amazon 订单页对不上 —— 表现为「我们记的日期比亚马逊早一天」这种
+    查不出根因的系统性偏移。页面自己写出的月日永远比相对词可信。
+    """
+    assert p("Or fastest delivery Tomorrow, September 8", today=SEP6) == date(2026, 9, 8)
+    assert p("Or fastest delivery Tomorrow, September 7", today=SEP6) == date(2026, 9, 7)
+
+
+def test_our_gap_3_bare_relative_words_still_work():
+    """反面:没有月日的时候相对词照旧管用 —— 它只是降了优先级,不是被删了。"""
+    assert p("Tomorrow", today=SEP6) == date(2026, 9, 7)
+    assert p("Arriving tomorrow by 10 PM", today=SEP6) == date(2026, 9, 7)
+    assert p("Arriving today", today=SEP6) == SEP6
+
+
+def test_our_gap_3_month_day_still_beats_weekday():
+    """相对词插在显式日期与星期几之间,不许把原来那条顺序挤坏。"""
+    assert p("Monday, September 8", today=SEP6) == date(2026, 9, 8)
+    assert p("Monday", today=SEP6) == date(2026, 9, 7)   # 9/6 是周日
+
+
+# ── wf/our_delivery_fuzz.py 那一批输入,逐条钉死 ────────────────────────
+
+@pytest.mark.parametrize("raw,expected", [
+    ("Sep 8 - 10", date(2026, 9, 10)),
+    ("Sep 8 -10", date(2026, 9, 10)),
+    ("Sep 8- 10", date(2026, 9, 10)),
+    ("Sep 8-10", date(2026, 9, 10)),
+    ("Sept 8–10", date(2026, 9, 10)),
+    ("Sep 8 – 10", date(2026, 9, 10)),
+    ("September 10 - September 30", date(2026, 9, 30)),
+    ("Aug 21 - Sep 5", None),                       # 滚年超界 → 交人工
+    ("Wed, Sep 10 - Fri, Sep 12", date(2026, 9, 12)),
+    ("Arriving Sept 12", date(2026, 9, 12)),
+    ("Sept 12", date(2026, 9, 12)),
+    ("FREE delivery Thursday, September 10", date(2026, 9, 10)),
+    ("Or fastest delivery Tomorrow, September 7", date(2026, 9, 7)),
+    ("Or fastest delivery Tomorrow, September 8", date(2026, 9, 8)),
+    ("Overnight 12 AM - 8 AM", None),
+    ("2-4 business days", None),
+    ("Arriving after Christmas", None),
+    ("Ships Sep 3, arrives Sep 12", date(2026, 9, 12)),
+    ("Monday, Sep 21", date(2026, 9, 21)),
+    ("Monday, September 8", date(2026, 9, 8)),
+    ("Wednesday, January 7", date(2027, 1, 7)),
+    ("August 21, 2026", date(2026, 8, 21)),
+])
+def test_fuzz_corpus_matches_what_a_human_reads(raw, expected):
+    """站点当天 2026-09-06。这一批是 wf/our_delivery_fuzz.py 跑出来的语料,
+    「人读出来的最晚送达日」就是断言值 —— 读不出一个可信年份的那几条断 None。"""
+    assert p(raw, today=SEP6) == expected
 
 
 # ── 厂商缺陷 3:\w{3} 无锚定,"Sept" 被切成 "ept" 落到 2001 年 ───────────

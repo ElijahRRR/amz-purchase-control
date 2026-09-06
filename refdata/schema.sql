@@ -103,6 +103,14 @@ CREATE TABLE IF NOT EXISTS procure.tasks (
     -- 人工重置不计数,也不清零 —— 上限是「这一单一生里被机器自动重拍几次」。
     retry_count       integer NOT NULL DEFAULT 0,
 
+    -- 这一单越过下单点了没有。插件在 placeOrder() **之前**置位 mayHaveOrdered,
+    -- 并立刻上报一条 kind='step'、payload.may_have_ordered=true 的事件,
+    -- 服务端收到就把这一列置 true(追加事件与置位同一事务)。
+    -- **只增不减**:重置回队列不清它 —— 「曾经花过钱」是既成事实。
+    -- 「可能已下单」那道闸判的是 error_code ∈ POSSIBLY_ORDERED **或**这一列,
+    -- 只判码会漏掉「越过下单点之后抛 DriverError」那一整类(码是 PLUGIN_INTERNAL)。
+    may_have_ordered  boolean NOT NULL DEFAULT false,
+
     created_at        timestamptz NOT NULL DEFAULT now(),
     updated_at        timestamptz NOT NULL DEFAULT now()
 );
@@ -110,6 +118,8 @@ CREATE TABLE IF NOT EXISTS procure.tasks (
 -- 已存在的表是彻底的空操作。加列必须另起一句,否则「跑了 db_init 就是最新结构」
 -- 这个所有人都默认成立的前提,只对空库成立。
 ALTER TABLE procure.tasks ADD COLUMN IF NOT EXISTS retry_count integer NOT NULL DEFAULT 0;
+ALTER TABLE procure.tasks
+    ADD COLUMN IF NOT EXISTS may_have_ordered boolean NOT NULL DEFAULT false;
 -- 认领扫描
 CREATE INDEX IF NOT EXISTS idx_tasks_ready
     ON procure.tasks (buyer_env_id, created_at) WHERE status = 'ready';

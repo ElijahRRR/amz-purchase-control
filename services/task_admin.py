@@ -24,7 +24,8 @@ class AdminRefused(Exception):
 
 def _task(conn, task_id: int) -> dict[str, Any]:
     row = conn.execute(
-        "SELECT id, status, error_code, amazon_order_no FROM procure.tasks WHERE id = %s",
+        "SELECT id, status, error_code, amazon_order_no, may_have_ordered "
+        "  FROM procure.tasks WHERE id = %s",
         (task_id,),
     ).fetchone()
     if row is None:
@@ -37,9 +38,10 @@ def reset_to_queue(conn, task_id: int, *, acknowledged: bool = False,
                    payload_extra: dict[str, Any] | None = None) -> dict[str, Any]:
     """输入:任务 id(+ 是否已确认过 + 是人点的还是系统自动重的)→ 输出:{task_id, status}。
 
-    exception 可以直接重置。manual 要看是什么原因转过来的:
-    如果错误码属于「可能已经在 Amazon 上真下了单」那一类,重置就是让下一个实例
-    把同一单再买一遍 —— 必须先有人去买家号里确认过,acknowledged 就是那一步的回执。
+    exception 可以直接重置。要看的是这一单**有没有可能已经在 Amazon 上真花过钱**:
+    错误码属于 POSSIBLY_ORDERED,**或者** tasks.may_have_ordered 为 true(插件报过
+    「点击下单按钮」)—— 任何一条成立,重置就是让下一个实例把同一单再买一遍,
+    必须先有人去买家号里确认过,acknowledged 就是那一步的回执。
 
     `by` 只有两个值,它决定三件事,而这三件事必须一起决定,不能分头写:
       · 事件流里落 `admin`(人)还是 `auto_retry`(机器)—— 两种重置在时间线上
@@ -74,12 +76,32 @@ def reset_to_queue(conn, task_id: int, *, acknowledged: bool = False,
     # **喊完了静默重置**。这正是「看起来有护栏、实际防不住」。
     #
     # 错误码是服务端校验过的封闭集(task_event.validate),比状态可靠。
-    risky = t["error_code"] in error_codes.POSSIBLY_ORDERED
-    if risky and not acknowledged:
+    #
+    # **但光判码还是漏。** run.ts 的 catch 里,DriverError 认得出原因时直接用它自己的码,
+    # 只有认不出来才兜底成 ORDER_CONFIRM_TIMEOUT。于是「点完下单按钮之后读订单卡抛错」
+    # 这一路落库是 status=manual + error_code=PLUGIN_INTERNAL —— 状态说要人裁决,
+    # 码说重一下就过,而这三个码一个都没沾上。判码的闸放行,人点一下重置,
+    # 这张已经花过钱的单被再买一遍。
+    #
+    # 所以第二条判据是 tasks.may_have_ordered:插件在 placeOrder() **之前**报的
+    # 那一条 step 事件把它置成 true(server/routes/tasks.py 的 events 端点),
+    # 它记的是「越没越过下单点」这个事实本身,与失败之后落了哪个码无关。
+    # 两条判据取或,不取与 —— 任何一条成立都要人先去订单页看过。
+    risky_code = t["error_code"] in error_codes.POSSIBLY_ORDERED
+    crossed = bool(t["may_have_ordered"])
+    if (risky_code or crossed) and not acknowledged:
+        why = (f"{t['error_code']} 意味着这一单可能已经真下成了" if risky_code
+               else "这一单已经越过下单点(下单按钮点过了),可能已经真下成了")
+        # 这句话是**界面上唯一会说出「为什么拦你」的地方**,所以它必须自己说全:
+        # 运营台那条二次确认条直接把它念给人听(TaskDetail.tsx),
+        # 批量重置的 skipped 清单里它也是单独一条。前端不再按 error_code 自己
+        # 编一句 —— 编出来的那句对「码人畜无害、拦它的是越过下单点」那一类单
+        # 是**假话**,而真正的理由只在这里。
+        # 不写 acknowledged 这个词:它是接口参数名,不是运营看得懂的话。
         raise AdminRefused(
             "NEEDS_ACK",
-            f"{t['error_code']} 意味着这一单可能已经真下成了。"
-            f"请先去买家号里确认没有这一单,再带 acknowledged 重置。",
+            f"{why}。重置回队列 = 让下一个实例把同一单再买一遍,"
+            f"请先去这个买家号的订单页确认没有这一单。",
         )
 
     conn.execute(
@@ -252,7 +274,9 @@ def batch_reset(conn, task_ids: list[int], *, operator: str | None = None) -> di
     真让它接受,这个按钮就从「省点击」变成「一键重复下单 30 次」。
 
     所以这里的规矩是:能重的都重了,不能重的**原样报回来**,让人逐条去点。
-    报回来的那几条带上错误码,人一眼能看出该先去哪儿确认。
+    报回来的那几条带上错误码与「越没越过下单点」,人一眼能看出该先去哪儿确认 ——
+    后者是因为这两件事**不是同一件**:码在 POSSIBLY_ORDERED 里是一种,
+    码看着人畜无害(PLUGIN_INTERNAL)而下单按钮已经点过了是另一种。
 
     一条失败不牵连其它 —— 每条各自提交。批量动作里最难查的就是
     「前 12 条成了、第 13 条炸了、后面 17 条没跑」,而界面只说了一句「失败」。
@@ -267,13 +291,18 @@ def batch_reset(conn, task_ids: list[int], *, operator: str | None = None) -> di
             done.append(task_id)
         except AdminRefused as exc:
             row = conn.execute(
-                "SELECT upstream_order_no, status, error_code FROM procure.tasks WHERE id = %s",
+                "SELECT upstream_order_no, status, error_code, may_have_ordered "
+                "  FROM procure.tasks WHERE id = %s",
                 (task_id,)).fetchone()
             item = {
                 "task_id": task_id,
                 "upstream_order_no": row["upstream_order_no"] if row else None,
                 "status": row["status"] if row else None,
                 "error_code": row["error_code"] if row else None,
+                # 被跳过的那几条要说清是**因为什么**被跳过的:一条错误码在
+                # RETRYABLE 里、却因为越过下单点被拦下的单,只报错误码的话,
+                # 看的人第一反应是「这不就是重一下就过的那种吗,系统是不是抽了」。
+                "may_have_ordered": bool(row["may_have_ordered"]) if row else False,
                 "code": exc.code,
                 "message": exc.message,
             }

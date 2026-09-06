@@ -60,7 +60,7 @@ export interface SearchOut {
 
 export interface TaskEvent {
   kind: "claimed" | "step" | "guard_block" | "error" | "purchased"
-      | "released" | "assert_failed" | "admin" | "auto_retry" | "shipment";
+      | "released" | "assert_failed" | "assert_skipped" | "admin" | "auto_retry" | "shipment";
   code: string | null;
   payload: Record<string, unknown>;
   created_at: string;
@@ -129,6 +129,12 @@ export interface TaskDetail extends Omit<TaskRow, "carrier" | "tracking_no" | "s
    *  自动重试选单量的是同一把尺子,两把尺子对不上的话,界面就会在
    *  「系统还会再试」和「太久了,系统不会碰它」之间说错话。 */
   updated_age_seconds: number;
+  /** 这一单越没越过下单点(下单按钮点过了没有)。
+   *
+   *  与 error_code 是两件事:越过下单点之后抛 DriverError 落下来的码
+   *  在 RETRYABLE 那一组里(PLUGIN_INTERNAL / CART_MISMATCH),
+   *  光看码会把一张已经花过钱的单读成「重一下就过」。 */
+  may_have_ordered: boolean;
 }
 
 export interface InstanceRow {
@@ -244,6 +250,22 @@ export interface ErrorStats {
    *  折线上那天变成 0,而 0 跟「那天确实一件没出」长得一模一样。 */
   days: string[];
   total: number;
+  /** 「回填时 ASIN 断言没采到」的近 7 日计数,**连同同期的回填条数**。
+   *
+   *  **窗口固定 7 天,不跟着上面那个时间范围走** —— 它回答的不是
+   *  「这段时间出了什么事」,而是「那道断言现在还工作吗」。
+   *  文案(label)也由服务端下发:它不属于任何封闭集,前端再写一份中文
+   *  就又多了一处会分叉的副本。
+   *
+   *  分母、比例、要不要报警都由服务端算好:只发 count 的话,
+   *  「500 次回填漏了 1 次」与「1 次回填漏了 1 次」在界面上长得一模一样,
+   *  而后者是护栏已经整体失效。`ratio` 在 backfills=0 时是 null,不是 0 ——
+   *  「这几天没回填过」与「回填很多次、一次都没漏」不是同一件事。
+   *  `alert_ratio` 是服务端的阈值,前端只用来把它说给人听,不自己判。 */
+  assert_skipped: {
+    count: number; backfills: number; ratio: number | null;
+    alert: boolean; alert_ratio: number; days: number; label: string;
+  };
 }
 
 export interface WorkflowRun {
@@ -285,10 +307,17 @@ export interface RunsOut {
 
 export interface BatchResetOut {
   done: number[];
-  /** 「这一条得你亲自去看」—— 可能已经真下过单,不是失败。界面上要跟 failed 分开说。 */
+  /** 「这一条得你亲自去看」—— 可能已经真下过单,不是失败。界面上要跟 failed 分开说。
+   *
+   *  `may_have_ordered` 是**被跳过的原因**的另一半:码在 RETRYABLE 里
+   *  (CART_MISMATCH、PLUGIN_INTERNAL)却被拦下的那种单,只报错误码的话,
+   *  看的人第一反应是「这不就是重一下就过的那种吗,系统是不是抽了」。
+   *  两个清单同一个形状(服务端拼的是同一个对象),所以 failed 那半也带着它。 */
   skipped: { task_id: number; upstream_order_no: string | null; status: string | null;
-             error_code: string | null; code: string; message: string }[];
+             error_code: string | null; may_have_ordered: boolean;
+             code: string; message: string }[];
   failed: { task_id: number; upstream_order_no: string | null; status: string | null;
-            error_code: string | null; code: string; message: string }[];
+            error_code: string | null; may_have_ordered: boolean;
+            code: string; message: string }[];
   counts: { done: number; skipped: number; failed: number };
 }

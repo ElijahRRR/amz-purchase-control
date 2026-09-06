@@ -63,11 +63,36 @@ def claim(req: schemas.ClaimReq, conn=Depends(conn_ctx)) -> schemas.Envelope:
 @router.post("/{task_id}/events")
 def events(task_id: int, req: schemas.EventsReq, conn=Depends(conn_ctx)) -> schemas.Envelope:
     inst = require_instance(conn, req.instance_uid)
-    require_task_owned(conn, task_id, inst)
+    task = require_task_owned(conn, task_id, inst)
+    crossed = False
     for ev in req.events:
         task_event.record(conn, task_id, ev.kind, instance_id=inst["id"],
                           code=ev.code, payload=ev.payload)
-    return schemas.Envelope(ok=True, data={"recorded": len(req.events)})
+        # 「点击下单按钮」那一条。插件在 placeOrder() **之前**置位 mayHaveOrdered
+        # 并立刻报上来 —— 从这一刻起,这一单是可能已经花过钱的。
+        if ev.kind == "step" and ev.payload.get("may_have_ordered") is True:
+            crossed = True
+    if crossed:
+        # **与追加事件同一事务。** 分开写(比如另起一个连接、或者留给别处补)的话,
+        # 会出现「事件流里写着点过下单按钮、而闸门那一列还是 false」——
+        # 一条留了痕却没人认的痕,比不留更坏:看的人以为它管用。
+        #
+        # 只往 true 写,永远不写回 false:重置回队列不清它,「曾经花过钱」是既成事实。
+        conn.execute(
+            "UPDATE procure.tasks SET may_have_ordered = true "
+            " WHERE id = %s AND NOT may_have_ordered", (task_id,))
+    # 回的是**这条任务此刻的状态**,不是「这一批里有没有那条 step」。
+    #
+    # 原先回的是后者,于是同一条已经越过下单点的任务,下一次报「等待确认页」时
+    # 拿到的是 false —— 而库里那一列是 true。字段名叫 may_have_ordered,
+    # 读的人(插件想据此决定还能不能 release、下一个写运营台或重放工具的人)
+    # 会照字面理解成任务的状态,于是「从没越过下单点」与「上一次请求已经越过了」
+    # 渲染成同一个 false。这一列只会 false → true,所以旧值取或就是新值,
+    # 不必为此再查一次库。
+    return schemas.Envelope(ok=True, data={
+        "recorded": len(req.events),
+        "may_have_ordered": bool(task["may_have_ordered"]) or crossed,
+    })
 
 
 @router.post("/{task_id}/guard-check")
@@ -162,7 +187,17 @@ def complete(task_id: int, req: schemas.CompleteReq,
     expected = [r["asin"] for r in conn.execute(
         "SELECT asin FROM procure.task_products WHERE task_id = %s", (task_id,)
     ).fetchall()]
-    if not order_backfill.asins_match(expected, req.observed_asins):
+    verdict = order_backfill.asins_match(expected, req.observed_asins)
+    if verdict == "not_observed":
+        # 既定取舍:一个 ASIN 都没采到**不阻断回填**(断言的职责是抓错配,
+        # 不是制造噪音)。但它与「对上了」不是同一件事,不能渲染成同一个结果 ——
+        # 选择器一坏,observed 就恒为空,断言整体退化成厂商那套「盲取第一张卡」,
+        # 而回填照常成功。留一条事件,让「这道断言什么时候整体失效」是可数的
+        # (近 7 日计数在 GET /v1/admin/error-stats 上,见 services/ops_query)。
+        task_event.record(conn, task_id, "assert_skipped", instance_id=inst["id"],
+                          payload={"reason": "no_asin_observed", "expected": expected,
+                                   "amazon_order_no": req.amazon_order_no})
+    elif verdict == "mismatch":
         task_event.record(conn, task_id, "assert_failed", instance_id=inst["id"],
                           payload={"expected": expected, "observed": req.observed_asins,
                                    "amazon_order_no": req.amazon_order_no})
@@ -227,7 +262,34 @@ def fail(task_id: int, req: schemas.FailReq, conn=Depends(conn_ctx)) -> schemas.
 @router.post("/{task_id}/release")
 def release(task_id: int, req: schemas.ReleaseReq, conn=Depends(conn_ctx)) -> schemas.Envelope:
     inst = require_instance(conn, req.instance_uid)
-    require_task_owned(conn, task_id, inst)
+    task = require_task_owned(conn, task_id, inst)
+
+    # 「点下单那一刻起,禁止退回队列」—— 这一条在服务端也必须有一份。
+    #
+    # 插件那侧确实判了(run.ts 的 `if (!mayHaveOrdered)`),但那正是这次改动
+    # 全部的立意所在:重置回队列的三条路之所以不再只按 error_code 判,就是因为
+    # 「越没越过下单点」这件事不能只由被管的一方说了算。而 /release 是**最直接的
+    # 第四条路** —— 插件版本旧了、那个 if 被人改坏、或者另写了一条清理路径,
+    # 这一单就原地回到 ready,下一次 claim 立刻把它再派出去,全程没有任何人参与,
+    # 而它已经点过下单按钮了。人工重置那道闸至少还要人点一下,这条连人都没有。
+    #
+    # 判据放在路由层不放 task_queue.release 的 WHERE 里:那个函数返回 False 会被
+    # 这里渲染成 TASK_NOT_HELD —— **说错了原因**,插件日志里留下的是「这一单已经
+    # 不在我手上」,而真相是「它在你手上,但你不许放手」。
+    #
+    # 拒绝之前先留痕:插件试图退回一张越过下单点的单,本身就是插件那侧漏判的证据,
+    # 而这件事在库里不留一行的话,下次只能靠猜。
+    if task["may_have_ordered"]:
+        task_event.record(conn, task_id, "assert_failed", instance_id=inst["id"],
+                          payload={"reason": "release_after_order_line"})
+        # 已经写过库,只能 return 不能 raise(pg_conn 遇异常会把这条留痕一起回滚)。
+        return JSONResponse(status_code=409, content={
+            "ok": False, "data": None,
+            "error": {"code": "POSSIBLY_ORDERED",
+                      "message": f"任务 {task_id} 已经越过下单点(下单按钮点过了),"
+                                 f"不许退回队列。让它超时转人工,或者走后台由人裁决。"},
+        })
+
     if not task_queue.release(conn, task_id, inst["id"]):
         raise HTTPException(409, detail={"code": "TASK_NOT_HELD",
                                          "message": f"任务 {task_id} 已不处于 claimed"})
