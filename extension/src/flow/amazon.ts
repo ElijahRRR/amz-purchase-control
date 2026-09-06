@@ -628,10 +628,13 @@ export class AmazonDriver implements PageDriver {
             // 再去开一张购物车页问「是不是被登出了」,拿回来的结论会把
             // 「验证没做完」改写成 LoginLostError,而后者在 run.ts 里最终落成
             // ORDER_CONFIRM_TIMEOUT —— 刚分出来的这个码当场就被抹掉了。
+            // detail 里写**这一刻**读到的是什么,而不是一句「跨域」了事:
+            // 进了这一格之后页面还可能变成别的读不到的样子(unreadable),
+            // 两种写成同一句的话,运营台上又是一次「两种情况渲染成同一个结果」。
             throw new DriverError("PAYMENT_VERIFICATION_TIMEOUT",
-                                  `点了下单,页面转到发卡行验证页(跨域读不到 URL),` +
+                                  `点了下单,页面转到发卡行验证页等人完成验证,` +
                                   `等了 ${waited} 秒仍未完成` +
-                                  `${overHardCap ? "(已到总硬顶)" : ""}`);
+                                  `${overHardCap ? "(已到总硬顶)" : ""};${describeUrl(s)}`);
           }
           // 落到登录页说明 Amazon 在最后一步要求重新认证 —— 单多半没下成。
           // 但**这里已经越过下单点了**:guardLogin 抛出的 LoginLostError 在 run.ts 里
