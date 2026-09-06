@@ -66,6 +66,7 @@ EVENT_LABELS: dict[str, str] = {
     "released": "退回队列",
     "assert_failed": "断言不通过",
     "admin": "人工操作",
+    "auto_retry": "自动重试",
     "shipment": "物流同步",
 }
 
@@ -81,5 +82,8 @@ EVENT_TONE: dict[str, str] = {
     "released": "zinc",
     "assert_failed": "amber-hollow",
     "admin": "violet",
+    # 紫色在这套界面里表示「有人动了手 / 需要人裁决」。自动重试是机器干的,
+    # 用天蓝(与「还在流转中」同一族),免得运营在时间线上把它读成有人来过。
+    "auto_retry": "sky",
     "shipment": "sky",
 }

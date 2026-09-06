@@ -62,6 +62,11 @@ EXPECTED_INTERVAL: dict[str, timedelta | None] = {
     # 安静地跳过,把它标成逾期就又多了一格永远红着的卡片,
     # 而一格永远红着的卡片会把人训练成忽略红色。
     "feishu_writeback": None,  # ← 同上,见 _expected()
+    # 有界自动重试。**只在真的开了自动重试时才算「必须定时」**(同回写那条理由:
+    # 关着的时候它每轮只是安静地跳过)。开着就必须盯 —— 界面在开着时对运营承诺
+    # 「系统最多自动重试 N 次」,这条链停了那句话就是假的,而界面本身看不出来:
+    # 那一桶单会安安静静地待在拍单异常里,谁也没在管。
+    "task_retry": None,        # ← 同上,见 _expected()
     # 接表前看一眼列名用的,按需跑。
     "feishu_probe": None,
     # 手工/应急投放文件时才跑。没有投放就没有运行,不算异常。
@@ -86,6 +91,11 @@ def _expected(name: str) -> timedelta | None:
     if name == "feishu_writeback":
         return timedelta(minutes=settings.feishu_sync_max_age_minutes()) \
             if _writeback_on() else None
+    if name == "task_retry":
+        # 推荐 */10 挂,阈值给 2 小时(宽 12 倍)。想比这还低频地跑,说明并不真指望
+        # 它自动重 —— 那就把 AMZ_AUTO_RETRY_MAX 调回 0,界面会跟着改回「需人工重置」,
+        # 而不是留一格永远红着的卡片(一格永远红着的卡片会把人训练成忽略红色)。
+        return timedelta(hours=2) if _auto_retry_on() else None
     return EXPECTED_INTERVAL.get(name)
 
 
@@ -95,6 +105,20 @@ def _writeback_on() -> bool:
         from services import feishu_intake
 
         return bool((feishu_intake.load_mapping().get("writeback") or {}).get("enabled"))
+    except Exception:
+        return False
+
+
+def _auto_retry_on() -> bool:
+    """输入:无 → 输出:自动重试开没开。读不到配置就当没开 —— 报警宁可少报。
+
+    与工作流选单、与 /v1/admin/meta 下发给界面的是**同一个** config(),
+    不在这里另判一次「大于 0 算开」。
+    """
+    try:
+        from services import task_retry
+
+        return bool(task_retry.config()["enabled"])
     except Exception:
         return False
 

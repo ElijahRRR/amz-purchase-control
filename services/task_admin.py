@@ -33,13 +33,33 @@ def _task(conn, task_id: int) -> dict[str, Any]:
 
 
 def reset_to_queue(conn, task_id: int, *, acknowledged: bool = False,
-                   operator: str | None = None) -> dict[str, Any]:
-    """输入:任务 id(+ 是否已确认过)→ 输出:{task_id, status}。
+                   operator: str | None = None, by: str = "manual",
+                   payload_extra: dict[str, Any] | None = None) -> dict[str, Any]:
+    """输入:任务 id(+ 是否已确认过 + 是人点的还是系统自动重的)→ 输出:{task_id, status}。
 
     exception 可以直接重置。manual 要看是什么原因转过来的:
     如果错误码属于「可能已经在 Amazon 上真下了单」那一类,重置就是让下一个实例
     把同一单再买一遍 —— 必须先有人去买家号里确认过,acknowledged 就是那一步的回执。
+
+    `by` 只有两个值,它决定三件事,而这三件事必须一起决定,不能分头写:
+      · 事件流里落 `admin`(人)还是 `auto_retry`(机器)—— 两种重置在时间线上
+        长得一样的话,出现重复下单时没人答得上「是谁把它放回队列的」
+      · `retry_count` 加不加 1 —— **只有机器那次加**。人点的重置背后有人在看,
+        不该占掉机器的自动次数;放在这一条 UPDATE 里,是为了不给「重置了但忘了计数」
+        留出任何缝隙(有界重试的「界」全靠这个数)
+      · 机器**永远不许**带 acknowledged(见下面那道拒绝)
+
+    自动重试走这个函数而不是另写一条状态流转:两条路各写一遍,迟早一条改了另一条没改
+    (本项目已经因为「两份副本悄悄分叉」栽过两次),而这条路的分叉后果是重复下单。
     """
+    if by not in ("manual", "auto"):
+        raise ValueError(f"by 只能是 manual / auto,收到 {by!r}")
+    if by == "auto" and acknowledged:
+        # 机器给不了这个回执。acknowledged 的含义是**有人去那个买家号的订单页看过了**,
+        # 自动重试里没有那个人。哪天有人在自动重试那条链上顺手写了 acknowledged=True,
+        # 这里就是最后一道闸 —— 它拦的是「一条定时任务把可能已下单的单反复重拍」。
+        raise AdminRefused("ACK_NOT_FOR_AUTO",
+                           "acknowledged 是人去买家号确认过的回执,自动重试给不了它")
     t = _task(conn, task_id)
     if t["status"] not in ("exception", "manual"):
         raise AdminRefused("BAD_STATUS", f"只有拍单异常/待人工能重置,当前是 {t['status']}")
@@ -65,14 +85,19 @@ def reset_to_queue(conn, task_id: int, *, acknowledged: bool = False,
     conn.execute(
         """UPDATE procure.tasks
               SET status='ready', error_code=NULL, error_detail=NULL,
-                  claimed_by=NULL, claimed_at=NULL, updated_at=now()
-            WHERE id = %s""",
-        (task_id,),
+                  claimed_by=NULL, claimed_at=NULL, updated_at=now(),
+                  retry_count = retry_count + %(bump)s
+            WHERE id = %(task_id)s""",
+        {"task_id": task_id, "bump": 1 if by == "auto" else 0},
     )
-    task_event.record(conn, task_id, "admin",
-                      payload={"action": "reset_to_queue", "from": t["status"],
+    # 重置会把 tasks.error_code 清空,所以「当初是因为什么被重的」只剩事件里这一份
+    # (payload 的 was_error_code)。这条不落 code 列:code 列是失败事件的统计口径
+    # (task_query 的错误码分布按 kind in error/guard_block 取),重置不是一次新的失败。
+    task_event.record(conn, task_id, "auto_retry" if by == "auto" else "admin",
+                      payload={"action": "reset_to_queue", "from": t["status"], "by": by,
                                "was_error_code": t["error_code"],
-                               "acknowledged": acknowledged, "operator": operator})
+                               "acknowledged": acknowledged, "operator": operator,
+                               **(payload_extra or {})})
     return {"task_id": task_id, "status": "ready"}
 
 
