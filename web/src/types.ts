@@ -31,7 +31,7 @@ export interface TaskRow {
   price_cap: string;
   /** **这张卡要扣的钱。** 礼品卡垫过之后它比货款小,全额抵扣时就是 "0.00"。
    *  **不要拿它跟 price_cap 比** —— 那正是这一列曾经把超限价单渲染成
-   *  「未超」的原因。要比就比 goods_total(见 lib/money.capVerdict)。 */
+   *  「未超」的原因。要比就比 goods_total(见 lib/utils.capVerdict)。 */
   actual_total: string | null;
   actual_shipping: string | null;
   actual_tax: string | null;

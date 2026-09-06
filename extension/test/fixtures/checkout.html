@@ -590,7 +590,10 @@
            形态），逼解析器按 label 文案定位再取同行的值单元格；
          · 末行的 label 是 `Order total:`，**不是** §4.3 那张表里的 `grand total`
            —— 直接复用 §4.3 的 label 列表，总额一行必然落空。
-       表格外壳 #subtotals-marketplace-table 是报告未记载的推测形态，仅作包裹。
+       表格外壳 #subtotals-marketplace-table **不是包裹，是 readOrderSummary 的首选扫描容器**
+       （selectors.ts 的 SEL.checkout.summaryTables；厂商 popup.js 里也正是按这个 id
+       取小结行的，v2.5.3 :2531）。改掉或去掉它，「限容器」那条路径就整个失效——
+       上面那条「小结表 id 被改掉时退回文档级」的断言盯的就是这件事。
 
        金额自洽关系（供断言用）：
          2048.49 + 12.99 = 2061.48 ;  2061.48 + 180.38 = 2241.86
