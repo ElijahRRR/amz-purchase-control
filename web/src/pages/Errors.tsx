@@ -18,7 +18,7 @@ import { Card, CardHead } from "@/components/ui/card";
 import { Tag, type Tone } from "@/components/ui/tag";
 import { api } from "@/lib/api";
 import { useMeta } from "@/lib/meta";
-import { cn } from "@/lib/utils";
+import { cn, minutesText } from "@/lib/utils";
 import type { ErrorStats } from "@/types";
 
 /** 三组各自一个颜色。与列表里的标签色调保持一致 —— 同一个码在两页不该换脸。 */
@@ -154,12 +154,22 @@ export default function ErrorsPage() {
               {/* 这一句**必须跟着配置走**,两个方向都不许写死:
                   关着却说「系统会自己再试」,运营会把一桶其实没人管的单晾在那儿;
                   开着却说「要人工重置」,人会去点已经排着队等系统重的单。
-                  开没开由服务端读配置下发(meta.auto_retry),前端不自己判断。 */}
+                  开没开由服务端读配置下发(meta.auto_retry),前端不自己判断。
+
+                  **而且这一桶不是铁板一块**:它按码分,不按 status 分。同一个码
+                  既可能落在「拍单异常」里(排着队等机器重),也可能落在「待人工」里
+                  ——插件越过下单点之后抛 DriverError,码还在这一组,单却因为
+                  mayHaveOrdered 转了待人工(run.ts)。后者 task_retry 永远不碰,
+                  它等不到那 N 次,要人**现在**去看。所以这句话必须把范围说出来,
+                  否则运营会照着「重满了才要人管」把它们一起晾着。
+                  同理,这句承诺还有个前提:task_retry 那条定时链真的在跑。 */}
               {g === "retryable" && (meta.auto_retry.enabled ? (
                 <div className="text-xs+ text-zinc-500 leading-relaxed">
-                  系统最多自动重试 {meta.auto_retry.max} 次
-                  (失败后至少隔 {meta.auto_retry.backoff_min} 分钟),
-                  重满了还失败的才要人进去点「重置回待拍单」
+                  系统只重「拍单异常」里的这一组:最多 {meta.auto_retry.max} 次,
+                  失败后至少隔 {meta.auto_retry.backoff_min} 分钟,
+                  超过 {minutesText(meta.auto_retry.max_age_min)} 没处理的不再自动重,
+                  重满了才要人进去点「重置回待拍单」。落到「待人工」的不走这条路,
+                  要人现在就去看。前提是 task_retry 那条定时链在跑,「工作流记录」页盯着它
                 </div>
               ) : (
                 <div className="text-xs+ text-amber-700 leading-relaxed">
