@@ -135,7 +135,7 @@ node tools/smoke.mjs --scenario late_delivery   # 交期超限
 node tools/smoke.mjs --scenario cart_mismatch   # 购物车回读与本单不符
 node tools/smoke.mjs --scenario login_lost      # 跑到一半被登出:退回队列,不记异常
 node tools/smoke.mjs --scenario manual_verify   # 转到发卡行验证页,人做完了 → 照常回填
-node tools/smoke.mjs --scenario manual_verify_timeout   # 人没做完 → 支付验证超时,转待人工
+node tools/smoke.mjs --scenario manual_verify_timeout   # 人没做完 → 发卡行验证超时,转待人工
 
 # 物流同步是独立一条流,加 --ship 顺带跑一轮
 node tools/smoke.mjs --scenario happy --ship in_transit

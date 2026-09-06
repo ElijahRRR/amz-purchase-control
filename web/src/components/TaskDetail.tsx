@@ -205,10 +205,15 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
   const bought = !!t.amazon_order_no;
   // 「费用信息」那一组的闸不是 bought,是**有没有任何金额可答**。
   // 服务端在 guard-check 那一步就把 gift_card_amount / goods_total 落库了,
-  // **不管放不放行** —— 就是为了让被拦下的单也能答出「当时护栏比的是哪个数」。
-  // 拿 bought 当闸的话,一张 PRICE_CAP_EXCEEDED 的单(amazon_order_no 为 null)
-  // 会走进 else,界面上写「这几格空着是对的,不是没同步上」,而库里那两个数
-  // 明明有 —— 这批单恰恰是最需要看这两个数的。
+  // **不管放不放行**(FBA / 支付那两道排在算钱之前的闸也带着这两个数,
+  // 见 services/price_guard 的 _money)—— 就是为了让被拦下的单也能答出
+  // 「当时护栏比的是哪个数」。拿 bought 当闸的话,一张 PRICE_CAP_EXCEEDED 的单
+  // (amazon_order_no 为 null)会走进 else,界面上写「这几格空着是对的,
+  // 不是没同步上」,而库里那两个数明明有 —— 这批单恰恰是最需要看这两个数的。
+  //
+  // 剩下唯一落进 else 的失败档是「结算页上的数根本没读出来」
+  // (实付解析不了 / 认出礼品卡抵扣行却读不出金额),那时库里的 NULL 是实话。
+  // 下面的 else 文案因此要分两句说,不能一律写「还没有下单」。
   const hasMoney = t.goods_total !== null || t.actual_total !== null
                    || t.gift_card_amount !== null;
   // 限价这一条核没核过、核出什么 —— 判据只有一处(lib/utils.capVerdict),
@@ -226,7 +231,7 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
     : "solid-red";
 
   /** 「可能已经下单」那一组的处置方式跟别的**相反**:不能直接退回队列重拍。
-   *  这句话必须在按钮旁边说出来,而不是指望人记得住 19 个码分别属于哪一组。 */
+   *  这句话必须在按钮旁边说出来,而不是指望人记得住每个码分别属于哪一组。 */
   const maybeOrdered = !!t.error_code && meta.error_code.possibly_ordered.includes(t.error_code);
 
   /** 这一单接下来**是等系统重、还是等人点**。
@@ -245,6 +250,14 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
    *   · 失败不能太久 —— 超过 `max_age_min` 的交给人。年龄由服务端算好给出
    *     (`updated_age_seconds`),前端不拿浏览器时钟去减,那把尺子跟选单的不是同一把
    *
+   *   · **没越过下单点**。`_CANDIDATE_SQL` 的第 ④ 条就是 `AND NOT t.may_have_ordered`,
+   *     `retry_one` 执行前还会再判一次(拒 POSSIBLY_ORDERED)。这一档是真实可达的:
+   *     越过下单点 → ORDER_CONFIRM_TIMEOUT 转 manual → 人带回执重置(reset 不清这一列)
+   *     → 再次认领 → 这次在下单点之前以 CART_MISMATCH 失败、to_manual=false
+   *     → status=exception + 码在 RETRYABLE 里 + may_have_ordered 仍是 true。
+   *     少判这一条,界面就会对一张系统**永远不会碰**的单写「不点它也会被放回队列」,
+   *     运营照着这句话不去点它,这张单永远没人管
+   *
    *  「已经重满 max 次」**不在这里判**:那时候「上限 N 次」这句话仍然成立,
    *  而且正是要让人看见它已经用满了。 */
   const autoRetryApplies =
@@ -252,6 +265,7 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
     && t.status === "exception"
     && !!t.error_code
     && meta.error_code.retryable.includes(t.error_code)
+    && !t.may_have_ordered
     && t.updated_age_seconds < meta.auto_retry.max_age_min * 60;
 
   const retryHint = (() => {
@@ -259,6 +273,13 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
     if (!meta.error_code.retryable.includes(t.error_code)) return null;
     const { enabled, max, backoff_min, max_age_min } = meta.auto_retry;
     if (!enabled) return "没开自动重试 —— 这一单只能人工重置,系统不会自己再试";
+    // **这一档要自己一句话。** 复用下面那句「失败已经超过 N 分钟」的话,
+    // 说的是另一件事(年龄),而拦住它的是「越过下单点」—— 一个说错了的理由
+    // 会让人以为再等等、或者早点点就行,而真相是系统永远不会碰它。
+    if (t.may_have_ordered)
+      return `这一单越过了下单点(下单按钮点过了),系统**永远**不会自动重它 —— `
+           + `要人先去这个买家号的订单页确认过,再决定重不重。`
+           + `重置回队列 = 让下一个实例把同一单再买一遍`;
     if (!autoRetryApplies)
       return `失败已经超过 ${minutesText(max_age_min)},系统不再自动重它 —— `
            + `接下来要人来点。攒太久的单往往在别处已经处置过了,不该由定时任务`
@@ -346,8 +367,10 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
               <div key={i} className="flex flex-col gap-1 border-b border-zinc-50 last:border-0 pb-1 last:pb-0">
                 <KV k="ASIN"><CopyText value={prod.asin} className="id text-[13px] text-zinc-900" /></KV>
                 <KV k="数量"><span className="num text-sm-">{prod.quantity}</span></KV>
-                {/* 单价不拿限价着色:限价是**整单**的(price_guard 判的是
-                    actual_total > price_cap)。超没超看下面费用信息那一格。 */}
+                {/* 单价不拿限价着色:限价是**整单**的,而且 price_guard 判的是
+                    `goods_total > price_cap`(货款 = 实付 + 礼品卡抵扣),
+                    不是这张卡扣了多少。超没超看下面费用信息那一格 ——
+                    红色标在「货款」那一行上。 */}
                 <KV k="实付单价"><span className="id text-zinc-800">{money(prod.actual_unit_price)}</span></KV>
               </div>
             ))}
@@ -425,6 +448,16 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
                   <span className="text-xs+ text-zinc-600">{verdict.text}</span>
                 </div>
               </>
+            ) : t.error_code ? (
+              // 失败了、却一个金额都没有:护栏要么没跑到这一步,要么跑到了
+              // 而结算页上的数根本没读出来。**与「还没有下单」是两回事** ——
+              // 后者说的是「一切正常,只是还没走到」,而这一档是有东西坏了,
+              // 且插件当时报上来的原始值还留在事件流里。
+              <div className="text-sm- text-zinc-500 leading-relaxed">
+                这一单失败在护栏比数之前,或者结算页上的数根本没读出来 ——
+                库里因此一个金额都没有。插件当时报上去的原始值在下面的事件流里
+                (那条「护栏拦截」/「执行步骤」的载荷)。
+              </div>
             ) : (
               <div className="text-sm- text-zinc-500 leading-relaxed">
                 还没有下单,也就没有实付金额 —— 这几格空着是对的,不是没同步上。

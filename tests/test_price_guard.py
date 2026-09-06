@@ -125,9 +125,53 @@ def test_unreadable_total_still_refused():
 # ── 支付方式:配了期望卡才校验 ────────────────────────────────────────
 
 def test_expected_card_blank_means_this_gate_is_off():
-    """留空 = 这个买家号不校验支付方式,与 require_fba 同一形态。"""
+    """留空 = 这个买家号不校验支付方式,与 require_fba 同一形态。
+
+    **「整条」是这条测试的重点,所以两条判据都要喂到。** 原先只传 payment_last4,
+    于是这条以「整条闸关掉」命名的测试从没验过槽位那一半 —— 而实现里恰好有个
+    半开状态:`if expected_card_last4:` 对 '   ' 为真,strip 之后卡那一支被跳过,
+    拆分支付那一支照样生效。docs/01 §5.3 明说不留「卡不校验但槽位校验」这种半开
+    状态,而那时的现象是「这个买家号明明没配期望卡,却在报支付卡不符」,
+    人会去查买家号的支付方式,查不出任何问题。
+    """
     for blank in (None, "", "   "):
-        assert guard(expected_card_last4=blank, payment_last4="9021").allow is True
+        v = guard(expected_card_last4=blank, payment_last4="9021", payment_slots=4)
+        assert v.allow is True, f"{blank!r} 应当是「整条判据都不看」"
+
+
+def test_gates_that_return_before_the_math_still_answer_which_number():
+    """FBA / 支付那两道闸排在算钱之前,但它们的 Verdict 照样要带上货款。
+
+    docs/01 §5.1:`tasks.gift_card_amount` / `tasks.goods_total` 在 guard-check 那一步
+    落库,**不管放不放行** —— 被护栏拦下的单同样要能答出「当时比的是哪个数」。
+    不带的话,运营台上「插件根本没报过金额」与「插件报了、闸在算货款之前就拦了」
+    渲染成同一句「还没有下单,也就没有实付金额 —— 这几格空着是对的」,
+    而插件明明报了 10.79。PAYMENT_METHOD_UNEXPECTED 尤其如此:
+    被它拦下的单最需要答的就是「当时读到的是什么」。
+    """
+    fba = guard(actual_total="10.79", require_fba=True, is_fba=False)
+    assert fba.error_code == "NOT_FBA" and fba.goods_total == Decimal("10.79")
+
+    card = guard(actual_total="1141.86", gift_card_applied=True, gift_card_amount="1100.00",
+                 expected_card_last4="4417", payment_last4="9021")
+    assert card.error_code == "PAYMENT_METHOD_UNEXPECTED"
+    assert card.goods_total == Decimal("2241.86")
+    assert card.gift_card_amount == Decimal("1100.00")
+
+    slots = guard(actual_total="10.79", expected_card_last4="4417",
+                  payment_last4="4417", payment_slots=2)
+    assert slots.error_code == "PAYMENT_METHOD_UNEXPECTED"
+    assert slots.goods_total == Decimal("10.79")
+
+
+def test_gates_that_truly_cannot_compute_still_say_none():
+    """反过来:货款**真的**算不出来时仍然是 None,不许编一个数出来。
+
+    上一条那种「算得出、只是闸排在前面」与这一条「基数读不出来」是两件事;
+    合成一个的话,record_guard_amounts 会把一个编出来的数写进库。
+    """
+    assert guard(actual_total="$10.79").goods_total is None
+    assert guard(gift_card_applied=True, gift_card_amount=None).goods_total is None
 
 
 def test_card_mismatch_is_blocked_before_the_order_is_placed():

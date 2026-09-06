@@ -28,6 +28,8 @@ import re
 
 import pytest
 
+from services import error_codes
+
 CROSS_EVENT = {"kind": "step", "payload": {"step": "点击下单按钮", "may_have_ordered": True}}
 
 
@@ -411,11 +413,17 @@ def test_the_two_triggers_say_two_different_things(client, conn, seed):
 
     assert crossed != by_code, "两种拦法说成同一句话,等于没分"
     assert "越过下单点" in crossed and "PLUGIN_INTERNAL" not in crossed
-    assert "ORDER_CONFIRM_TIMEOUT" in by_code
+    # 码那一支说的是**中文标签**,不是英文码。docs/01 §4:界面上不出现英文码,
+    # 英文只在库、日志和 API 里露面。原先这里拼的是码本身,于是同一个弹窗上方
+    # 三行处显示「下单后未见确认页」,确认条里却是一串运营不认识的大写英文。
+    assert error_codes.LABELS["ORDER_CONFIRM_TIMEOUT"] in by_code
     for msg in (crossed, by_code):
         # 后果要说出来 —— 只说「可能已下单」的话,人不知道点下去会发生什么
         assert "再买一遍" in msg
         assert "acknowledged" not in msg, "接口参数名不许出现在给人看的话里"
+        # 一个英文码都不许出现在这句话里(封闭集逐个比,不是只比这一个)。
+        for code in error_codes.ERROR_CODES:
+            assert code not in msg, f"给人看的话里出现了英文码 {code}"
 
 
 def test_the_receipt_still_lets_it_through(client, conn, seed):

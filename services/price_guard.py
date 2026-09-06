@@ -69,6 +69,20 @@ def adjudicate(
     插件也算了一份并报上来,但**不采信** —— 「如果价格超过限价就…」这类判断
     放在被管的一方手里,闸门就不成其为闸门。
     """
+    # ── 先把「当时比的是哪个数」算出来,再进闸 ──
+    #
+    # docs/01 §5.1 写着这两个数在 guard-check 那一步落库、**不管放不放行**:
+    # 被护栏拦下的单同样要能答出「当时比的是哪个数」。而 FBA / 支付那两道闸
+    # 排在算钱之前,原先它们的 Verdict 不带这两个数 —— 于是运营台上
+    # 「插件根本没报过金额」与「插件报了、闸在算货款之前就拦了」
+    # 渲染成同一句「还没有下单,也就没有实付金额」,而插件明明报了 10.79。
+    #
+    # 这里算的是**尽力而为**的一份:算得出就挂上,算不出(实付读不出来、
+    # 认出抵扣行却读不出金额)就仍然是 None —— 那时 None 是实话,
+    # 表达的是「这一单的货款真的算不出来」。下面那两条 PLUGIN_INTERNAL
+    # 走的正是这一档,所以它们照旧不带数。
+    known_goods, known_gift = _money(actual_total, gift_card_applied, gift_card_amount)
+
     if require_fba and is_fba is not True:
         # 注意是 `is not True`,不是 `is False`:**读不到配送方(None)也不放行**。
         # 「未知即放行」等于把 require_fba 变成一句愿望 —— 选择器一旦被 Amazon 改版打掉,
@@ -76,7 +90,8 @@ def adjudicate(
         # 与交期那条同一个立场:解析不出来一律不放行,交人裁决。
         detail = ("配送方非 Amazon 自营" if is_fba is False
                   else "结算页读不到配送方,按不通过处理")
-        return Verdict(False, "NOT_FBA", detail)
+        return Verdict(False, "NOT_FBA", detail,
+                       goods_total=known_goods, gift_card_amount=known_gift)
 
     # ── 支付方式:配了期望卡才校验,留空 = 这个买家号不看这一条 ──
     #
@@ -84,15 +99,21 @@ def adjudicate(
     # 再确认下单 —— 改一个买家号的支付配置是人的动作,不是拍单流程的动作。
     # 这道闸放在下单**之前**:此前 payment_last4 是纯写入-展示字段,
     # 换了卡要等对账时有人逐条比库里的尾号和银行流水才会发现。
-    if expected_card_last4:
-        want = expected_card_last4.strip()
-        if want and payment_last4 != want:
+    # **归一化排在开关前面。** 原先是 `if expected_card_last4:` 再在里面 strip:
+    # 纯空白串('   ')过了外层这道闸、want 却是空的,于是卡尾号那一支被跳过、
+    # 拆分支付那一支照样生效 —— 正好是文档明说不该存在的「卡不校验、槽位校验」
+    # 半开状态。三个都表示「留空」的值(None / '' / '   ')必须是同一种行为:
+    # **整条支付判据都不看**。
+    want = (expected_card_last4 or "").strip()
+    if want:
+        if payment_last4 != want:
             got = payment_last4 or "读不出来"
             # 读不到也算不符:一道「读不出来就放行」的闸,在选择器被改版打掉那天
             # 会在无人察觉的情况下整体失效 —— 与 require_fba 那条同一个立场。
             return Verdict(False, "PAYMENT_METHOD_UNEXPECTED",
                            f"结算页选中的卡尾号是 {got},"
-                           f"这个买家号配的是 {want} —— 不下单,交人核对")
+                           f"这个买家号配的是 {want} —— 不下单,交人核对",
+                           goods_total=known_goods, gift_card_amount=known_gift)
 
         # ── 拆分支付:第一张卡对上了不等于只刷了这一张 ──
         #
@@ -113,13 +134,16 @@ def adjudicate(
                 return Verdict(False, "PAYMENT_METHOD_UNEXPECTED",
                                f"{where},第一张是尾号 {payment_last4 or '读不出来'} —— "
                                "这一单被拆到了多张卡上,而这道闸只看得见第一张,"
-                               "不下单,交人核对")
+                               "不下单,交人核对",
+                               goods_total=known_goods, gift_card_amount=known_gift)
 
     total = _to_decimal(actual_total)
     if total is None:
         return Verdict(False, "PLUGIN_INTERNAL", f"实付金额无法解析:{actual_total!r}")
 
     # ── 货款 = 实付 + 礼品卡抵扣 ──
+    # 上面那次 _money 已经算过同一个式子;这里重新展开是为了把三种算不出来的
+    # 原因分别说清楚(它们的 detail 各不相同),数值本身与 known_goods 同源。
     gift = _to_decimal(gift_card_amount) if gift_card_applied else None
     if gift_card_applied and gift is None:
         # 认出了抵扣行却读不出金额:货款基数算不出来。
@@ -231,6 +255,27 @@ def _consistency_note(line_items: Sequence[Mapping] | None,
     return (f"Σ单价×数量 = {total},与货款 {goods} 差 {diff_pct:.1f}%"
             f"(阈值 {tol}%)。不拦单 —— 结算页单价是税前不含运费的,天然有差;"
             f"差得离谱通常意味着少读了几条单价,或者礼品卡抵扣读错了")
+
+
+def _money(actual_total, gift_card_applied: bool,
+           gift_card_amount) -> tuple[Decimal | None, Decimal | None]:
+    """输入:实付 + 有没有礼品卡抵扣 + 抵扣额 → 输出:(货款, 抵扣额),算不出的那个是 None。
+
+    **只做算术,不下结论。** 「货款 ≤ 0」「抵扣读成负数」这些判断留在 adjudicate 里 ——
+    这里答的只有一个问题:「当时护栏比的是哪个数」。FBA / 支付那两道闸排在算钱
+    之前,它们的 Verdict 也要能带上这个数,否则被它们拦下的单在运营台上与
+    「插件根本没报过金额」长得一模一样。
+    """
+    total = _to_decimal(actual_total)
+    if total is None:
+        return None, None
+    gift = _to_decimal(gift_card_amount) if gift_card_applied else None
+    if gift_card_applied and gift is None:
+        # 认出抵扣行却读不出金额:货款基数真的算不出来,None 在这里是实话。
+        return None, None
+    if gift is not None and gift < 0:
+        return None, gift
+    return total + (gift or Decimal(0)), gift
 
 
 def _to_decimal(value) -> Decimal | None:

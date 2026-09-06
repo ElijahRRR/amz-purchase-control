@@ -191,12 +191,27 @@ def record_guard_amounts(conn, task_id: int, *, gift_card_amount, goods_total) -
 
     只更新还在途(claimed)的任务:一条迟到的 guard-check 不该改动一张已经
     流转到终态的单上的金额。
+
+    **算不出来(None)时什么都不写。** 护栏在算出货款之前就返回的那几档
+    (实付读不出来、认出礼品卡抵扣行却读不出金额)本来就答不出「比的是哪个数」,
+    而拿 None 去覆盖的话,上一次 guard-check 已经落库的 5.00 / 15.79 会被抹成 NULL
+    —— 界面上于是从「当时比的是 15.79」退回成「还没有下单,也就没有实付金额」,
+    一个**更旧、而且是假的**结论。两个 None 都为空时这条 UPDATE 一列都不动。
     """
+    sets = []
+    params: dict = {"task_id": task_id}
+    if gift_card_amount is not None:
+        sets.append("gift_card_amount = %(gift)s")
+        params["gift"] = gift_card_amount
+    if goods_total is not None:
+        sets.append("goods_total = %(goods)s")
+        params["goods"] = goods_total
+    if not sets:
+        return
     conn.execute(
-        """UPDATE procure.tasks
-              SET gift_card_amount = %(gift)s, goods_total = %(goods)s, updated_at = now()
-            WHERE id = %(task_id)s AND status = 'claimed'""",
-        {"task_id": task_id, "gift": gift_card_amount, "goods": goods_total},
+        "UPDATE procure.tasks SET " + ", ".join(sets) + ", updated_at = now()"
+        " WHERE id = %(task_id)s AND status = 'claimed'",
+        params,
     )
 
 

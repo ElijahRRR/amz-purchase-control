@@ -33,6 +33,15 @@ SELECT t.id, t.line_key, t.upstream_order_no, t.marketplace, t.status,
        t.gift_card_amount, t.goods_total,
        t.payment_last4, t.delivery_date, t.amazon_order_no,
        t.error_code, t.error_detail,
+       -- 「这一单越没越过下单点」。**列表这一层也要有**:只判码会漏掉一整类
+       -- (越过下单点之后抛的 DriverError 用的是 PLUGIN_INTERNAL / CART_MISMATCH,
+       -- 都在「可重试」那一组),于是「可能已经花过钱、重置 = 再买一遍」的单
+       -- 与「护栏在下单前拦下、绝没花钱」的单在列表和 CSV 上是**完全相同的一行**。
+       -- 服务端四道闸都补了这一位,扫桶的人却看不见它。
+       t.may_have_ordered,
+       -- 系统自动重了几次。开着自动重试时,「已试 0/2、机器待会儿会来重」与
+       -- 「已试 2/2、机器再也不会碰、要人现在去点」在列表上原先是同一行。
+       t.retry_count,
        t.created_at, t.purchased_at,
        e.code AS env_code, e.amazon_customer_id,
        s.carrier, s.tracking_no, s.status AS shipment_status,
@@ -509,6 +518,9 @@ EXPORT_COLUMNS: list[tuple[str, str]] = [
     ("gift_card_amount", "礼品卡抵扣"),
     ("goods_total", "货款(护栏比的就是这个数)"),
     ("over_cap", "是否超限价"),
+    # 与「状态」「错误码」都不是一回事:状态说要人裁决,码可能还说「重一下就过」,
+    # 而这一列答的是「重置 = 会不会再买一遍」。
+    ("may_have_ordered", "越过下单点"),
     ("amazon_order_no", "AMZ 单号"),
     ("env_code", "买家号"),
     ("amazon_customer_id", "买家号ID"),
@@ -543,7 +555,7 @@ def export_rows(conn, *, page_size: int, **filters) -> Any:
     多商品的单会展开成多行(一行一个 ASIN),每行都带上整单的费用与单号 ——
     表格软件里按 ASIN 筛的人要的就是这个。整单金额因此会在多行里重复,
     对这几列求和会重复计算;列名写的是「实付总计」而不是「金额」,
-    并且这件事在 docs 里记了一笔。
+    并且这件事写在 `web/README.md` 的导出那一段里(给用表的人看的地方)。
     """
     from services import error_codes, vocab
 
@@ -575,6 +587,10 @@ def export_rows(conn, *, page_size: int, **filters) -> Any:
                     "quantity": p.get("quantity"),
                     "actual_unit_price": p.get("actual_unit_price"),
                     "over_cap": over_cap(t),
+                    # 渲染成「是/否」而不是 True/False:这一列是给人看的
+                    # (与 over_cap 同一档),英文只在「状态(库里的值)」
+                    # 「错误码(英文)」那两列里露面。
+                    "may_have_ordered": "是" if t.get("may_have_ordered") else "否",
                 }
         # 游标 = 这一页最后那条的 id。不管这期间前面增删了多少行,
         # 下一页永远接着它往下走 —— 不漏也不重。

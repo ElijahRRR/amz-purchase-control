@@ -87,10 +87,18 @@ def test_fail_rejects_unknown_code(conn, seed):
 
 
 def test_error_codes_table_matches_docs():
-    """docs/01 §4 那张表与 services/error_codes.py 必须一字不差。
+    """docs/01 §4 那张表与 services/error_codes.py 必须一字不差 —— **码名和标签都比**。
 
     两处副本是字段错位的温床 —— 厂商那套「文档写 subTotal、插件发 subtotal」
     就是这么来的。这条测试让副本至少不会悄悄分叉。
+
+    **原先只比码名。** 于是那张表的「界面标签」一列成了一列死数据:界面渲染的是
+    `error_codes.LABELS`,而表里那一列 21 个码有 8 个跟它不是同一句话,
+    照那一列去改标签的人会改一个没人读的地方 —— 而这条测试的 docstring
+    当时就写着「一字不差」。声称有测试盯着、实际没盯,比不写那句话更危险。
+
+    第三列(说明)**刻意不比**:它是这份文档里的长解释,不出现在任何界面上。
+    这件事在 §4 的表下面写明了,免得下一个人以为漏了一列。
     """
     import re
 
@@ -98,11 +106,50 @@ def test_error_codes_table_matches_docs():
     from services import error_codes
 
     doc = (paths.repo_root() / "docs" / "01-系统设计.md").read_text(encoding="utf-8")
-    in_doc = set(re.findall(r"^\| `([A-Z_]+)` \|", doc, re.M))
+    rows = re.findall(r"^\| `([A-Z_]+)` \| ([^|]*?) \|", doc, re.M)
+    in_doc = {code for code, _ in rows}
     assert in_doc == set(error_codes.ERROR_CODES), (
         f"只在文档里:{sorted(in_doc - set(error_codes.ERROR_CODES))};"
         f"只在代码里:{sorted(set(error_codes.ERROR_CODES) - in_doc)}"
     )
+    bad = {code: (label, error_codes.LABELS[code])
+           for code, label in rows if label != error_codes.LABELS[code]}
+    assert not bad, (
+        "docs/01 §4 的「界面标签」列与 services/error_codes.LABELS 不一致 "
+        "(左=文档,右=代码):" + "; ".join(f"{c}: {d!r} vs {p!r}" for c, (d, p) in bad.items())
+    )
+
+
+def test_design_canvas_shows_every_error_code():
+    """`design/DesignSystem.dc.html` 上的错误码必须不多不少就是那个封闭集。
+
+    design/README 自己写着这条规矩(「画布上的东西必须是库里真有的…改库先改文档,
+    再改画布」),而它此前没有任何东西盯着:这一轮加了两个码,画布一个都没跟上,
+    照画布建处置 SOP 的人会漏掉它们 —— 其中 `PAYMENT_VERIFICATION_TIMEOUT`
+    还属于「可能已下单」,漏掉它的后果是重置一张钱很可能已经扣了的单。
+
+    顺带比标签:画布上那几个字也必须是 `LABELS` 里那一句(照 codes.ts 的先例)。
+    画布上写「实付超限价」而库里是「货款超限价」的话,两处说的就不是同一件事了。
+    """
+    import re
+
+    from registry import paths
+    from services import error_codes
+
+    canvas = (paths.repo_root() / "design" / "DesignSystem.dc.html").read_text(encoding="utf-8")
+    pairs = re.findall(
+        r'<span class="tag[^"]*" style="[^"]*">([^<]*)</span>'
+        r'<span class="id" style="font-size:10px;color:#a1a1aa">([A-Z_]+)</span>',
+        canvas)
+    on_canvas = {code for _, code in pairs}
+    assert on_canvas == set(error_codes.ERROR_CODES), (
+        f"只在画布上:{sorted(on_canvas - set(error_codes.ERROR_CODES))};"
+        f"只在库里(画布漏了):{sorted(set(error_codes.ERROR_CODES) - on_canvas)}"
+    )
+    bad = {code: (label, error_codes.LABELS[code])
+           for label, code in pairs if label != error_codes.LABELS[code]}
+    assert not bad, ("画布上的标签与 error_codes.LABELS 不一致(左=画布,右=代码):"
+                     + "; ".join(f"{c}: {d!r} vs {p!r}" for c, (d, p) in bad.items()))
 
 
 def test_docs_layout_lists_every_service_and_workflow():

@@ -135,6 +135,8 @@ def guard_check(task_id: int, req: schemas.GuardCheckReq,
 
     # 服务端算出来的那两个数落库,**不管放不放行**:被拦下的单同样要能答出
     # 「当时护栏比的是哪个数」。插件报的 goods_total 只用来对账,不写库。
+    # 算不出来时(那几条 PLUGIN_INTERNAL)不写 —— 见 record_guard_amounts:
+    # 拿 None 覆盖会把上一次已经落库的数抹成 NULL。
     task_queue.record_guard_amounts(
         conn, task_id,
         gift_card_amount=verdict.gift_card_amount,
@@ -306,9 +308,14 @@ def fail(task_id: int, req: schemas.FailReq, conn=Depends(conn_ctx)) -> schemas.
         #                下一单会被残留商品污染,运营台实例页那一格数的就是它;
         #   压根没试   → 越过下单点之后按规矩不动购物车(见 flow/run.finish),
         #                规矩被遵守了不是异常,不该跟上面那种长成一个样子。
-        payload = ({"step": "fail", "warning": "cart_not_cleared"}
+        # step 的正文写中文:TaskDetail 的约定是「step 的正文在 payload.step,
+        # 插件发的时候就是中文」,而这两条是服务端自己发的,原先正文是英文单词
+        # "fail" —— 事件流上于是出现「执行步骤  fail · warning=cart_not_cleared」。
+        # 机器读的键名(warning / cart)不动:运营台实例页那格 SQL 认的是它们。
+        payload = ({"step": "失败上报 · 清车没清动", "warning": "cart_not_cleared"}
                    if req.cart_clear_attempted
-                   else {"step": "fail", "cart": "not_touched_after_order_point"})
+                   else {"step": "失败上报 · 越过下单点后按规矩没动购物车",
+                         "cart": "not_touched_after_order_point"})
         task_event.record(conn, task_id, "step", instance_id=inst["id"], payload=payload)
 
     ok = task_queue.fail(conn, task_id, req.error_code, instance_id=inst["id"],

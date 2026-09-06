@@ -176,6 +176,60 @@ def test_guard_compares_goods_total_not_what_the_card_gets_charged(client, conn,
     assert str(row["gift_card_amount"]) == "99.00"
 
 
+def test_gates_before_the_math_still_write_the_numbers_to_the_row(client, conn, seed):
+    """FBA / 支付那两道闸排在算钱之前,库里那两列照样要落上。
+
+    docs/01 §5.1 那句「不管放不放行」在这两档上曾经不成立:adjudicate 在算货款
+    之前就 return 了,routes 无条件把两个 None 写回库 —— 三列全 NULL,
+    运营台于是显示「还没有下单,也就没有实付金额 —— 这几格空着是对的」,
+    而插件明明报了 10.79(它还留在 guard_block 事件的 payload 里)。
+    「插件根本没报过金额」与「插件报了、闸在算货款之前就拦了」渲染成同一句话。
+    """
+    _register(client)
+    t = _claim(client)
+    r = client.post(f"/v1/tasks/{t['task_id']}/guard-check", json={
+        "instance_uid": UID, "actual_total": "10.79",
+        "delivery_raw": "Tomorrow", "is_fba": False,          # ← 闸在算钱之前就返回
+    })
+    assert r.json()["data"]["error_code"] == "NOT_FBA"
+    row = conn.execute("SELECT goods_total FROM procure.tasks WHERE id=%s",
+                       (t["task_id"],)).fetchone()
+    assert str(row["goods_total"]) == "10.79", "被拦下的单也要答得出当时比的是哪个数"
+
+
+def test_a_verdict_that_cannot_compute_never_nulls_out_what_was_already_stored(
+        client, conn, seed):
+    """算不出货款的那一档**什么都不写**,不许拿 NULL 覆盖已经落库的数。
+
+    一单可以过好几次 guard-check(结算页读了一遍又一遍)。上一次落了 10.00,
+    这一次认出了礼品卡抵扣行却读不出金额 → 服务端返回 PLUGIN_INTERNAL,
+    goods_total 是 None(那时 None 是实话:货款基数真的算不出来)。
+    拿它覆盖的话,界面从「当时比的是 10.00」退回成「还没有下单,也就没有实付
+    金额」—— 一个更旧、而且是假的结论。
+    """
+    _register(client)
+    t = _claim(client)
+    ok = client.post(f"/v1/tasks/{t['task_id']}/guard-check", json={
+        "instance_uid": UID, "actual_total": "10.00",
+        "delivery_raw": "Tomorrow", "is_fba": True,
+    })
+    assert ok.json()["data"]["allow"] is True
+    before = conn.execute("SELECT goods_total FROM procure.tasks WHERE id=%s",
+                          (t["task_id"],)).fetchone()["goods_total"]
+    assert str(before) == "10.00"
+
+    bad = client.post(f"/v1/tasks/{t['task_id']}/guard-check", json={
+        "instance_uid": UID, "actual_total": "10.79",
+        # 认出抵扣行、读不出金额 → 货款基数算不出来,服务端拒
+        "gift_card": {"applied": True, "amount": None},
+        "delivery_raw": "Tomorrow", "is_fba": True,
+    })
+    assert bad.json()["data"]["error_code"] == "PLUGIN_INTERNAL"
+    after = conn.execute("SELECT goods_total FROM procure.tasks WHERE id=%s",
+                         (t["task_id"],)).fetchone()["goods_total"]
+    assert str(after) == "10.00", "算不出来的那一次把已经落库的数抹成了 NULL"
+
+
 def test_server_recomputes_goods_total_and_ignores_the_plugin_number(client, conn, seed):
     """插件报了个假的货款,服务端不采信 —— 护栏裁决在服务端。
 

@@ -195,8 +195,8 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">加购后未跳转</span><span class="id" style="font-size:10px;color:#a1a1aa">ADD_TO_CART_FAILED</span></span>
           <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">购物车与任务不符</span><span class="id" style="font-size:10px;color:#a1a1aa">CART_MISMATCH</span></span>
-          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">地址表单超时</span><span class="id" style="font-size:10px;color:#a1a1aa">ADDRESS_FORM_TIMEOUT</span></span>
-          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">结算页超时</span><span class="id" style="font-size:10px;color:#a1a1aa">CHECKOUT_TIMEOUT</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">地址表单加载超时</span><span class="id" style="font-size:10px;color:#a1a1aa">ADDRESS_FORM_TIMEOUT</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">结算页跳转超时</span><span class="id" style="font-size:10px;color:#a1a1aa">CHECKOUT_TIMEOUT</span></span>
           <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag tagdash" style="background:#fff;color:#b45309;border-color:#fde68a">插件内部异常</span><span class="id" style="font-size:10px;color:#a1a1aa">PLUGIN_INTERNAL</span></span>
         </div>
       </div>
@@ -204,29 +204,31 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
         <div style="font-size:12px;color:#71717a;margin-bottom:7px">不可重试(实心)——数据或商品本身的问题,重试多少次都一样</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
           <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">商品无货</span><span class="id" style="font-size:10px;color:#a1a1aa">OUT_OF_STOCK</span></span>
-          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">数量不可选</span><span class="id" style="font-size:10px;color:#a1a1aa">QTY_UNAVAILABLE</span></span>
-          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">非 Amazon 配送</span><span class="id" style="font-size:10px;color:#a1a1aa">NOT_FBA</span></span>
-          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">捆绑商品</span><span class="id" style="font-size:10px;color:#a1a1aa">BUNDLE_PRODUCT</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">目标数量不可选</span><span class="id" style="font-size:10px;color:#a1a1aa">QTY_UNAVAILABLE</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">配送方非 Amazon</span><span class="id" style="font-size:10px;color:#a1a1aa">NOT_FBA</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">捆绑商品,需人工</span><span class="id" style="font-size:10px;color:#a1a1aa">BUNDLE_PRODUCT</span></span>
           <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">州匹配失败</span><span class="id" style="font-size:10px;color:#a1a1aa">ADDRESS_STATE_UNMATCHED</span></span>
-          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">地址不可投递</span><span class="id" style="font-size:10px;color:#a1a1aa">ADDRESS_SUGGESTION_BLOCKED</span></span>
-          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">地址未生效</span><span class="id" style="font-size:10px;color:#a1a1aa">ADDRESS_NOT_APPLIED</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">Amazon 提示地址不可投递</span><span class="id" style="font-size:10px;color:#a1a1aa">ADDRESS_SUGGESTION_BLOCKED</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">地址填了但没生效</span><span class="id" style="font-size:10px;color:#a1a1aa">ADDRESS_NOT_APPLIED</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">支付卡不符</span><span class="id" style="font-size:10px;color:#a1a1aa">PAYMENT_METHOD_UNEXPECTED</span></span>
         </div>
       </div>
       <div>
         <div style="font-size:12px;color:#71717a;margin-bottom:7px">护栏拦截(紫)——不是故障,是系统按规则拒绝下单,需要人裁决</div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">实付超限价</span><span class="id" style="font-size:10px;color:#a1a1aa">PRICE_CAP_EXCEEDED</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">货款超限价</span><span class="id" style="font-size:10px;color:#a1a1aa">PRICE_CAP_EXCEEDED</span></span>
           <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">交期超限</span><span class="id" style="font-size:10px;color:#a1a1aa">DELIVERY_TOO_LATE</span></span>
           <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">交期无法解析</span><span class="id" style="font-size:10px;color:#a1a1aa">DELIVERY_UNPARSEABLE</span></span>
         </div>
       </div>
       <div>
-        <div style="font-size:12px;color:#71717a;margin-bottom:7px">必须人工确认(紫)——这三个的共同点是<b>可能已经产生了真实订单</b></div>
+        <div style="font-size:12px;color:#71717a;margin-bottom:7px">必须人工确认(紫)——共同点是<b>可能已经产生了真实订单</b></div>
         <div style="display:flex;gap:6px;flex-wrap:wrap">
-          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">未见确认页</span><span class="id" style="font-size:10px;color:#a1a1aa">ORDER_CONFIRM_TIMEOUT</span></span>
-          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">单号对不上</span><span class="id" style="font-size:10px;color:#a1a1aa">ORDER_NO_AMBIGUOUS</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">下单后未见确认页</span><span class="id" style="font-size:10px;color:#a1a1aa">ORDER_CONFIRM_TIMEOUT</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">发卡行验证超时</span><span class="id" style="font-size:10px;color:#a1a1aa">PAYMENT_VERIFICATION_TIMEOUT</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">无法确定哪个单号属于本单</span><span class="id" style="font-size:10px;color:#a1a1aa">ORDER_NO_AMBIGUOUS</span></span>
           <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe">认领超时未回传</span><span class="id" style="font-size:10px;color:#a1a1aa">CLAIM_TIMEOUT</span></span>
-          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">命中验证码</span><span class="id" style="font-size:10px;color:#a1a1aa">CAPTCHA_ENCOUNTERED</span></span>
+          <span style="display:inline-flex;align-items:center;gap:5px"><span class="tag" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">命中验证码/风控</span><span class="id" style="font-size:10px;color:#a1a1aa">CAPTCHA_ENCOUNTERED</span></span>
         </div>
       </div>
       <div style="font-size:12px;color:#71717a;line-height:1.8;border-top:1px solid #f4f4f5;padding-top:11px">

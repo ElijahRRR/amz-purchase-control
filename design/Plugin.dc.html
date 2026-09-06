@@ -160,7 +160,9 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
             </table>
           </div>
 
-          <!-- 下单前:破坏面预览 -->
+          <!-- 下单前:破坏面预览。**画的是接上之后的样子,当前代码没有接** ——
+               全仓没有任何调用点提供 askConfirm(content/runner.ts 构造 Loop 时不传),
+               core/status.ts 里的 confirm 相位是死代码。见 design/README 第 1 条。 -->
           <sc-if value="{{isConfirm}}" hint-placeholder-val="{{true}}">
             <div style="margin:8px 14px 0;border:1px solid #fecaca;background:#fef2f2;border-radius:6px;padding:11px 12px;display:flex;flex-direction:column;gap:7px">
               <div style="display:flex;align-items:center;gap:6px">
@@ -225,8 +227,8 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
   <!-- 规则注脚 -->
   <div style="height:76px;flex:none;background:#fff;border-top:1px solid #e4e4e7;display:flex;align-items:center;gap:14px;padding:0 16px">
     <div class="card" style="flex:1;padding:9px 12px;display:flex;flex-direction:column;gap:3px">
-      <div style="display:flex;align-items:center;gap:6px"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg><span style="font-size:12px;font-weight:500;color:#18181b">下单永远有预览步</span></div>
-      <div style="font-size:12px;color:#71717a;line-height:1.6">花钱这一步是红实心 + ⚡,并且前面必须站一屏「要发生什么」。面板上再没有第二个红按钮。</div>
+      <div style="display:flex;align-items:center;gap:6px"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg><span style="font-size:12px;font-weight:500;color:#18181b">下单前的预览步 <span style="font-weight:400;color:#b45309">· 未实现</span></span></div>
+      <div style="font-size:12px;color:#71717a;line-height:1.6">画的是接上之后的样子:花钱这一步是红实心 + ⚡,前面站一屏「要发生什么」,面板上再没有第二个红按钮。<b>当前代码没有接</b> —— 没有任何调用点提供 askConfirm,预览步不发生(难点是那个等待必须有界并与认领超时对齐)。</div>
     </div>
     <div class="card" style="flex:1;padding:9px 12px;display:flex;flex-direction:column;gap:3px">
       <div style="display:flex;align-items:center;gap:6px"><span class="dot" style="background:#8b5cf6"></span><span style="font-size:12px;font-weight:500;color:#18181b">护栏拦截不是失败</span></div>

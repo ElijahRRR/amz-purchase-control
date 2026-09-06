@@ -90,7 +90,13 @@ def reset_to_queue(conn, task_id: int, *, acknowledged: bool = False,
     risky_code = t["error_code"] in error_codes.POSSIBLY_ORDERED
     crossed = bool(t["may_have_ordered"])
     if (risky_code or crossed) and not acknowledged:
-        why = (f"{t['error_code']} 意味着这一单可能已经真下成了" if risky_code
+        # 说的是**中文标签**,不是英文码。这句话被运营台原样念给人听,
+        # 而 docs/01 §4 的规矩是「界面上不出现英文码,英文只在库、日志和 API 里
+        # 露面」。原先这里把 PAYMENT_VERIFICATION_TIMEOUT 直接拼进句子,
+        # 于是同一个弹窗上方三行处那个码显示的是「发卡行验证超时」,
+        # 而确认条里是一串运营不认识的大写英文 —— 同一件事在同一屏上两个名字。
+        why = (f"这一单的失败原因是「{error_codes.label(t['error_code'])}」,"
+               f"意味着这一单可能已经真下成了" if risky_code
                else "这一单已经越过下单点(下单按钮点过了),可能已经真下成了")
         # 这句话是**界面上唯一会说出「为什么拦你」的地方**,所以它必须自己说全:
         # 运营台那条二次确认条直接把它念给人听(TaskDetail.tsx),

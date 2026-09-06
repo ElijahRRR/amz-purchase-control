@@ -29,7 +29,17 @@ const REQUIRED: Record<string, string[]> = {
   error_code: ["labels", "retryable", "to_manual", "business_blocked", "possibly_ordered"],
   // 自动重试的现状。少了它,「这一桶该谁管」那句话就没了依据 ——
   // 而那句话写错任何一个方向都会让人做错事(见 types.ts 的 Meta.auto_retry)。
-  auto_retry: ["enabled", "max", "backoff_min"],
+  //
+  // **max_age_min 也必须在名单上。** docs/01 §4.1:「它决定的不是什么时候重,
+  // 而是**会不会重**」。少了它,TaskDetail 里 `age < undefined * 60` 恒为 false、
+  // autoRetryApplies 恒假,每一张 RETRYABLE 的 exception 都被渲染成
+  // 「失败已经超过 undefined 分钟,系统不再自动重它 —— 接下来要人来点」:
+  // 运营会去手工点一批系统其实正排着队要重的单,而报出来的理由还是假的。
+  //
+  // `batch` 不在名单上,因为**前端没有任何地方读它**(它界的是「一轮放几条」,
+  // 是运维的事,不是界面上任何一句话的依据)。名单上只放前端真的会拿去
+  // 说话的键 —— 放一个没人读的键进来,这道门就开始拦与界面无关的事。
+  auto_retry: ["enabled", "max", "backoff_min", "max_age_min"],
 };
 
 function missingKeys(m: unknown): string[] {

@@ -52,7 +52,7 @@ export const ERROR_LABEL: Record<ErrorCode, string> = {
   DELIVERY_UNPARSEABLE: "交期无法解析",
   CHECKOUT_TIMEOUT: "结算页跳转超时",
   ORDER_CONFIRM_TIMEOUT: "下单后未见确认页",
-  PAYMENT_VERIFICATION_TIMEOUT: "发卡行验证未在时限内完成",
+  PAYMENT_VERIFICATION_TIMEOUT: "发卡行验证超时",
   ORDER_NO_AMBIGUOUS: "无法确定哪个单号属于本单",
   CAPTCHA_ENCOUNTERED: "命中验证码/风控",
   CLAIM_TIMEOUT: "认领超时未回传",
