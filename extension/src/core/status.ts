@@ -27,6 +27,10 @@ export type Phase =
   /** 连着几单清不动购物车,熔断了。**与「待命」分开**:待命是「没单可跑」,
    *  这一格是「有单也不领,因为再领也只会再废一单」—— 要人去看一眼购物车。 */
   | "cart-blocked"
+  /** 上一单被看门狗强行掐掉了,而那条 runTask 还没走到 finish()。
+   *  这期间不认领(两条 runTask 会动同一个购物车)。**与「待命」分开**:
+   *  待命是「没单可跑」,这一格是「有单也不领,因为上一单还没收住」。 */
+  | "stuck"
   | "done";      // 这一单完了
 
 export const PHASE_LABEL: Record<Phase, string> = {
@@ -41,5 +45,7 @@ export const PHASE_LABEL: Record<Phase, string> = {
   // 渲染成同一句话的话,一台其实已经废掉的机器看起来一切正常。
   "signed-out": "已登出",
   "cart-blocked": "清车受阻",
+  // 与「待命」也必须是两个词:一个是没单可跑,一个是上一单还挂着、有单也不敢领。
+  stuck: "上一单未收尾",
   done: "已完成",
 };

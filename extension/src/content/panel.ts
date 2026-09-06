@@ -40,6 +40,9 @@ const PHASE_TAG: Record<Phase, [string, string]> = {
   "signed-out": ["tag", "background:#fef2f2;color:#b91c1c;border-color:#fecaca"],
   // 同样是红的:这台机器此刻拍不了单,而且要人去动手。
   "cart-blocked": ["tag", "background:#fef2f2;color:#b91c1c;border-color:#fecaca"],
+  // 上一单被强行掐掉、还没落地:这期间不认领。也是红的 —— 它同样是
+  //「有单也不领」,不是「没单可跑」,而后者的灰色会让人以为一切正常。
+  stuck: ["tag", "background:#fef2f2;color:#b91c1c;border-color:#fecaca"],
   done:    ["tag", "background:#ecfdf5;color:#047857;border-color:#a7f3d0"],
 };
 
@@ -114,6 +117,10 @@ function render(): void {
     ${config?.mode === "simulate" ? `<div class="warnbar">模拟档:页面动作全是假的,只用来自检和服务端说话的时序。不会在 Amazon 上产生任何订单。</div>` : ""}
     ${config?.mode === "live" && !state.hasLease ? `<div class="warnbar">另一个 Amazon 标签页正在跑单,本页只看不动。关掉那个标签页,租约会自动转到这里。</div>` : ""}
     ${config?.mode === "live" && state.hasLease ? `<div class="warnbar">真实档:会在这个买家号上下真单。页面动作从未在真实 Amazon 上验证过,第一次请拿可弃的号试。</div>` : ""}
+    ${phase === "stuck" ? `<div class="warnbar" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">
+      上一单跑过了硬顶,已经强制关掉页面,正在等它收尾。收尾之前不认领新单 ——
+      两条流程会动同一个购物车。
+    </div>` : ""}
     ${phase === "cart-blocked" ? `<div class="warnbar" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">
       连着几单清不动购物车,已暂停认领一段时间 —— 多半是 Amazon 改了购物车页的结构。
       请打开这个买家号的购物车看一眼(手动清空一次也好),日志里有每一次的失败原因。

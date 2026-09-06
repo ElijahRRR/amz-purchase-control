@@ -345,13 +345,61 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
   const first = await loop.tickOnce();
   eq("跑过硬顶的那一单被强制收尾", first.kind, "hard-cap");
   check("驱动被 dispose 掉了", disposed >= 1, `dispose ${disposed} 次`);
-  eq("收尾之后不许再认领(两条 runTask 会动同一个购物车)",
-     (await loop.tickOnce()).kind, "busy");
+  const held = await loop.tickOnce();
+  eq("收尾之后不许再认领(两条 runTask 会动同一个购物车)", held.kind, "zombie");
+  check("说得出是从什么时候开始等的", typeof held.since === "number" && held.since > 0);
 
   releaseHang();
   await new Promise((r) => setTimeout(r, 20));   // 让那条 runTask 走完
   const after = await loop.tickOnce();
   check("被掐掉的那一单落地之后恢复认领", after.kind === "ran", after.kind);
+}
+
+{
+  // 等那条僵尸也必须**有界**:dispose 解不开的挂起(等的不是 iframe,而是一个
+  // 永不 settle 的 promise)会让它永远不落地。原先那一格从此每轮返回 busy、
+  // 相位却是 idle —— 面板灰色「待命」、运营台「在线 · 可派」,这个买家号
+  // 从此一单也不拍,而看门狗那句「已经落地,恢复认领」永远不会打出来。
+  const client = fakeClient(10);
+  const phases = [];
+  const errs = [];
+  let stuck = true;
+  const driver = {
+    name: "fake", ready: true,
+    readLoginState: async () => "unknown",
+    // 永不 settle,dispose 也解不开 —— 看门狗防的就是这种「我们没想到的事」。
+    clearCart: () => (stuck ? new Promise(() => {}) : Promise.resolve()),
+    addProduct: async () => ({ shipperIsAmazon: null }),
+    verifyCart: async () => true,
+    proceedToCheckout: async () => {},
+    fillAddress: async () => {},
+    readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
+                                 unitPrices: [] }),
+    placeOrder: async () => {},
+    readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
+    dispose: async () => {},
+  };
+  const loop = new Loop({
+    client,
+    log: { ...silentLog, err: (m) => errs.push(m) },
+    config: () => ({ mode: "simulate", taskHardCapMs: 40 }),
+    driver: () => driver,
+    onPhase: (p) => phases.push(p),
+  });
+
+  const kinds = [(await loop.tickOnce()).kind];
+  kinds.push((await loop.tickOnce()).kind);
+  check("等僵尸的那一格有自己的名字,不叫 busy", kinds[1] === "zombie", kinds.join(","));
+  check("相位不落回「待命」", phases.includes("stuck") && !phases.includes("idle"),
+        phases.join(","));
+
+  await new Promise((r) => setTimeout(r, 60));    // 过了那一份 taskHardCapMs
+  stuck = false;                                 // 页面自己好了
+  const back = await loop.tickOnce();
+  check("等超过一个硬顶就不再等它,恢复认领", back.kind === "ran", back.kind);
+  check("而且说清楚了不等的后果",
+        errs.some((m) => m.includes("不再等它") && m.includes("同一个购物车")),
+        errs.join(" | "));
 }
 
 // ── 「读租约 → 裁决 → 写租约」必须整段串行(R2) ────────────────────────

@@ -17,9 +17,14 @@ export type TickResult =
   /** 连着几单都清不动购物车,熔断了。**与 no-task 分开**:队列里可能有一堆单,
    *  是我们主动不领 —— 领了也只会一单一单打进异常桶。 */
   | { kind: "cart-blocked"; untilMs: number }
-  /** 一单跑过了硬顶,被看门狗强行收尾。任务此刻在服务端仍是 claimed,
-   *  交给超时清扫。**与 ran 分开**:这一轮没有正常的 outcome 可言。 */
+  /** 一单跑过了硬顶,被看门狗强行收尾。**与 ran 分开**:这一轮没有正常的
+   *  outcome 可言。 */
   | { kind: "hard-cap"; task: Task }
+  /** 上一单被强行收尾了、但那条 runTask 还没走到 finish(),这一轮不认领。
+   *  **与 busy 分开**:busy 是「这一轮正常在跑」,这一格是「什么都没在跑,
+   *  但有一件事没收住」—— 两者渲染成同一个结果的话,一台从此再也不拍单的机器
+   *  在面板上和一台正忙着的机器长得一样。`since` 是被掐掉的那一刻。 */
+  | { kind: "zombie"; since: number }
   | { kind: "no-task" }
   /** 这个浏览器被登出了,这一轮不认领。**与 no-task 分开**:
    *  「没有单」是正常的,「领不了单」是要人去处理的,长得一样就没人会去处理。 */
@@ -77,13 +82,23 @@ export class Loop {
   private cartFailStreak = 0;
   private cartBlockedUntil = 0;
 
-  /** 被看门狗强行收尾、但**还没真的结束**的那些 runTask。
+  /** 被看门狗强行收尾、但**还没真的结束**的那些 runTask(记的是它们的编号)。
    *
    *  它们的驱动已经 dispose 了,所以每一步都会立刻抛错、很快自己走到 finish();
    *  但在那之前不能再认领下一单 —— 两条 runTask 会去动同一个购物车。
    *  这与「busy 永不复位」不是一回事:busy 在 finally 里照常放掉(相位、
-   *  物流那条流、面板都跟着恢复),这里只挡认领,而且挡的是一件**会结束**的事。 */
-  private zombies = 0;
+   *  物流那条流、面板都跟着恢复),这里只挡认领。
+   *
+   *  **但它同样必须有界。** 看门狗存在的理由就是「我们没想到的那件事」,
+   *  而 dispose 未必解得开它(等的不是 iframe,而是一个永不 settle 的 promise)。
+   *  那种情况下这个集合永远不空,tickOnce 从此每轮返回同一个结果、没有任何新日志,
+   *  这个买家号从此一单也不拍 —— 「所有等待都必须有界」这条对它一样成立。
+   *  所以再给它一个 taskHardCapMs,到点就不等了(见 tickOnce)。 */
+  private zombies = new Set<number>();
+  private zombieSeq = 0;
+  /** 最早那条僵尸是什么时候被掐掉的,以及等到什么时候为止。 */
+  private zombieSince = 0;
+  private zombieUntil = 0;
 
   /** 这台机器最后一次判出来的登录态。**初值 unknown,不是 ok** ——
    *  没查过就是没查过,而 unknown 不拦认领(拦了新装的实例永远领不到第一单)。 */
@@ -155,6 +170,10 @@ export class Loop {
     const reader = make();
     if (!reader.ready) return { skipped: "reader-not-ready" };
     if (this.busy) return { skipped: "busy" };
+    // 僵尸 runTask 的 finish() 里还有一次 clearCart 要跑,它和物流同步一样要开
+    // iframe。原先这里只看 busy —— 于是两条流会同时开 iframe 抢焦点,
+    // 而这一节的注释说的正是不许发生这件事。
+    if (this.zombies.size > 0) return { skipped: "zombie" };
 
     this.busy = true;
     try {
@@ -167,9 +186,25 @@ export class Loop {
   /** 跑一轮:认领 → 执行 → 落终态。同一时刻只允许一轮在跑。 */
   async tickOnce(): Promise<TickResult> {
     if (this.busy) return { kind: "busy" };
-    // 上一单被看门狗掐了但还没落地。挡的是「两条 runTask 动同一个购物车」。
-    if (this.zombies > 0) return { kind: "busy" };
     const cfg = this.deps.config();
+
+    // 上一单被看门狗掐了但还没落地。挡的是「两条 runTask 动同一个购物车」。
+    // 等它也有上限:dispose 解不开的那种挂起会让这个集合永远不空,
+    // 而相位落回 idle 的话,面板上是灰色的「待命」、运营台上是「在线 · 可派」,
+    // 这台机器从此一单也不拍,却没有任何地方说过这件事。
+    if (this.zombies.size > 0) {
+      if (Date.now() < this.zombieUntil) {
+        this.phase("stuck");
+        return { kind: "zombie", since: this.zombieSince };
+      }
+      // 到点了还没落地:不再等它。这不是「没事了」——
+      // 它要是后来真走完了,会和新领的一单动同一个购物车,所以要说清楚。
+      this.deps.log.err(
+        `被强制收尾的那一单等了 ${Math.round((Date.now() - this.zombieSince) / 60_000)} 分钟` +
+        `仍没落地 —— 不再等它,恢复认领。它要是稍后才走完,` +
+        `它的收尾清车会和新领的一单撞在同一个购物车上,请人工去这个买家号的购物车看一眼`);
+      this.zombies.clear();
+    }
 
     if (cfg.mode === "off") {
       this.phase("off");
@@ -331,10 +366,18 @@ export class Loop {
                       (stillClaimed
                         ? `任务在服务端还是「拍单中」,交给认领超时清扫转待人工`
                         : `服务端的认领超时已经过了,这条多半已经被清扫成待人工`));
-    this.zombies += 1;
+    // 编号而不是计数:等超时之后我们会把整个集合清掉,那条 runTask 稍后
+    // 真走完时不该再去减一个已经归零的数(会减成负数,下一轮判断就废了)。
+    const id = ++this.zombieSeq;
+    this.zombies.add(id);
+    this.zombieSince = Date.now();
+    // 再给它一个 taskHardCapMs。到点就不等了 —— 看门狗防的就是「我们没想到的
+    // 那件事」,而 dispose 未必解得开它。
+    this.zombieUntil = this.zombieSince + capMs;
     void running.finally(() => {
-      this.zombies -= 1;
-      this.deps.log.warn("被强制收尾的那一单已经落地,恢复认领");
+      if (this.zombies.delete(id)) {
+        this.deps.log.warn("被强制收尾的那一单已经落地,恢复认领");
+      }
     });
     try { await driver.dispose(); } catch { /* 关不掉也得往下走 */ }
     // 事件流里要留下这一条:否则运营台上只看到任务停在「拍单中」然后被清扫,
@@ -351,7 +394,9 @@ export class Loop {
         "「插件放弃这一单」这条留痕没写进事件流:" +
         (noted.kind === "business" ? `${noted.code} ${noted.message}` : noted.message));
     }
-    this.phase("idle", null);
+    // **不是 idle。** 「没单可跑」和「有单也不领」渲染成同一个灰色的「待命」的话,
+    // 没人会知道这台机器其实停了 —— cart-blocked 那一格已经吃过这个亏。
+    this.phase("stuck", null);
     return { kind: "hard-cap", task };
   }
 
