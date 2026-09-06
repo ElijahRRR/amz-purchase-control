@@ -29,6 +29,9 @@ const PHASE_TAG: Record<Phase, [string, string]> = {
   running: ["tag tagdash", "background:#fff;color:#b45309;border-color:#fde68a"],
   confirm: ["tag tagdash", "background:#fff;color:#b45309;border-color:#fde68a"],
   blocked: ["tag", "background:#f5f3ff;color:#6d28d9;border-color:#ddd6fe"],
+  // 红色:这台机器**真的坏了**,不重新登录一单也跑不了。
+  // 与「待命」的灰色分开,是为了让人一眼看出该动手的是他自己。
+  "signed-out": ["tag", "background:#fef2f2;color:#b91c1c;border-color:#fecaca"],
   done:    ["tag", "background:#ecfdf5;color:#047857;border-color:#a7f3d0"],
 };
 

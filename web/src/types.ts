@@ -137,9 +137,19 @@ export interface InstanceRow {
   manual_count: number;
   purchased_today: number;
   liveness: "never" | "online" | "stale" | "paused";
+  /** 浏览器 profile 里那个 Amazon 账号此刻还在不在登录态。插件读导航栏判的
+   *  (**不读 Cookie**),随心跳报上来。与 liveness 是两条独立的轴:
+   *  插件心跳一秒不落,浏览器照样可能已经被登出。 */
+  login_state: "ok" | "signed_out" | "unknown";
+  /** 上一次真的读过页面判登录态的时刻。没有这一列的话,一个三天前读到的
+   *  「已登录」和一分钟前读到的长得一模一样。 */
+  login_checked_at: string | null;
   /** 今天拍满了配额。`daily_cap = 0` 表示不限,那时永远是 false。 */
   at_daily_cap: boolean;
-  /** 与 task_queue.CLAIM_SQL 那道真闸算同一件事:在线**且**没到日上限。 */
+  /** 登录态这一项拦不拦派单(= login_state 为 signed_out)。
+   *  服务端算的,与认领那道真闸同一个函数 —— 前端**不自己判**。 */
+  login_blocks_dispatch: boolean;
+  /** 与 task_queue.CLAIM_SQL 那道真闸算同一件事:在线、没到日上限、且没被登出。 */
   dispatchable: boolean;
 }
 
@@ -165,6 +175,9 @@ export interface Meta {
   task_status: { labels: Record<string, string>; tone: Record<string, string> };
   shipment_status: { labels: Record<string, string>; tone: Record<string, string> };
   event_kind: { labels: Record<string, string>; tone: Record<string, string> };
+  /** 买家号浏览器的 Amazon 登录态。「登录态存疑」与「已登录」是两个词 ——
+   *  读不到导航栏和读到了登录着,处置完全不同。 */
+  login_state: { labels: Record<string, string>; tone: Record<string, string> };
   error_code: {
     labels: Record<string, string>;
     retryable: string[];

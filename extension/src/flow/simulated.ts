@@ -4,13 +4,17 @@
  * 这一整套能不能真的跑通。场景与 tools/mock_plugin.py 一致,便于两边对照。
  */
 
-import { DriverError, type AddResult, type CheckoutReading, type OrderCard, type PageDriver } from "./driver.js";
+import { DriverError, LoginLostError, type AddResult, type CheckoutReading, type OrderCard, type PageDriver } from "./driver.js";
+import type { LoginState } from "./dom/parse.js";
 import type { ShipmentReader, TrackingRead } from "./shipment.js";
 import type { Shipping } from "../core/types.js";
 
 export type Scenario =
   | "happy" | "over_cap" | "oos" | "not_fba" | "wrong_asin"
-  | "confirm_timeout" | "late_delivery" | "cart_mismatch";
+  | "confirm_timeout" | "late_delivery" | "cart_mismatch"
+  /** 跑到一半发现买家号被登出。**没到下单点**,所以这一单该退回队列,
+   *  而不是记成一次拍单异常 —— 单子本身没毛病,是这台机器的环境坏了。 */
+  | "login_lost";
 
 export class SimulatedDriver implements PageDriver {
   readonly name = "simulated";
@@ -24,6 +28,22 @@ export class SimulatedDriver implements PageDriver {
   private mark(step: string) { this.calls.push(step); }
 
   async dispose(): Promise<void> { this.mark("dispose"); }
+
+  /** 模拟档**一次页面都没读过,所以只能说"不知道"**。
+   *
+   *  这里返回 "ok" 是很自然的写法,也很危险:这一位会随心跳上到服务端,
+   *  而 ok 是唯一能解封 signed_out 的信号(services/instance._KEEPS_OLD_LOGIN_STATE)。
+   *  于是运营在面板上点一下「模拟」,就能把一台确实被登出、库里已经记着
+   *  signed_out 的机器洗成绿色的「已登录 · 刚刚检查过」,认领闸随之打开 ——
+   *  「从没检查过」与「真读过页面、登录着」渲染成同一个结果,
+   *  正是这一列存在的理由的反面。
+   *
+   *  unknown 不拦认领,所以模拟档该跑的闭环照样跑得通;login_lost 场景在执行到
+   *  一半时才抛 LoginLostError,模拟的是「认领时还在、跑着跑着掉了」,也不受影响。 */
+  async readLoginState(): Promise<LoginState> {
+    this.mark("readLoginState");
+    return "unknown";
+  }
 
   async clearCart(): Promise<void> {
     this.mark("clearCart");
@@ -44,7 +64,12 @@ export class SimulatedDriver implements PageDriver {
     return expected.length === this.added.length;
   }
 
-  async proceedToCheckout(): Promise<void> { this.mark("proceedToCheckout"); }
+  async proceedToCheckout(): Promise<void> {
+    this.mark("proceedToCheckout");
+    if (this.scenario === "login_lost") {
+      throw new LoginLostError("跳转结算页:买家号已被登出(模拟)");
+    }
+  }
 
   async fillAddress(_shipping: Shipping): Promise<void> { this.mark("fillAddress"); }
 

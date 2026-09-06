@@ -9,6 +9,7 @@ import { CopyText } from "@/components/CopyText";
 import { Card, CardHead } from "@/components/ui/card";
 import { Tag, type Tone } from "@/components/ui/tag";
 import { api } from "@/lib/api";
+import { useLabel } from "@/lib/meta";
 import { cn, shortTime } from "@/lib/utils";
 import type { InstanceRow } from "@/types";
 
@@ -21,6 +22,9 @@ const LIVENESS: Record<InstanceRow["liveness"], { label: string; tone: Tone; dot
 };
 
 export default function InstancesPage() {
+  // 登录态的中文标签走 /v1/admin/meta,前端不存副本 —— 这个项目已经因为
+  // 「两份副本悄悄分叉」栽过两次。
+  const loginLabel = useLabel("login_state");
   const [rows, setRows] = useState<InstanceRow[] | null>(null);
   const [stale, setStale] = useState<number>(0);
   const [err, setErr] = useState<string | null>(null);
@@ -62,14 +66,14 @@ export default function InstancesPage() {
         )}
         <Card className="overflow-hidden">
           <CardHead right={<span className="text-xs text-zinc-400">
-            派单只会派给「在线且未暂停」的买家号
+            派单只会派给「在线、未暂停、没到日上限、且还登着 Amazon」的买家号
           </span>}>买家号 · 实例</CardHead>
 
           <table className="w-full">
             <thead>
               <tr className="bg-zinc-50 border-b border-zinc-200">
                 {["买家号", "站点", "实例", "插件版本", "最后心跳", "队列待拍",
-                  "待人工", "今日已拍", "日上限", "状态", "可派单"].map((h, i) => (
+                  "待人工", "今日已拍", "日上限", "状态", "登录态", "可派单"].map((h, i) => (
                   <th key={h} className={cn(
                     "h-th px-3 text-2xs font-medium uppercase tracking-wider text-zinc-500 whitespace-nowrap",
                     // 只有数字列右对齐:数字右对齐是为了让位数对齐着看,
@@ -109,14 +113,37 @@ export default function InstancesPage() {
                       {r.daily_cap === 0 ? "不限" : r.daily_cap}
                     </td>
                     <td className="px-3"><Tag tone={L.tone}>{L.label}</Tag></td>
+                    <td className="px-3 whitespace-nowrap">
+                      {/* 登录态与「状态」是两条独立的轴:心跳一秒不落的机器,
+                          浏览器里那个 Amazon 账号照样可能已经被登出。
+                          这一列在之前是没有的 —— 于是被登出的买家号在这一页上
+                          是满格绿色的「在线 · 可派」,而它领到的每一单都会走到
+                          /ap/signin 然后超时,看起来只是"页面慢"。 */}
+                      {(() => {
+                        const g = loginLabel(r.login_state);
+                        return <Tag tone={g.tone}>{g.label}</Tag>;
+                      })()}
+                      {/* 一分钟前读到的「已登录」和三天前读到的不是一回事。
+                          不写出检查时间的话,这两种渲染成同一个绿标签。 */}
+                      <span className="ml-1.5 text-2xs text-zinc-400">
+                        {r.login_checked_at ? shortTime(r.login_checked_at) : "未查过"}
+                      </span>
+                    </td>
                     <td className="px-3 text-xs">
                       {/* 「已到日上限」这一支以前永远走不到 ——
                           服务端的 dispatchable 只看在线,不看 daily_cap,与真正
                           那道闸(task_queue.CLAIM_SQL)分叉着。现在两边算同一件事了。 */}
                       {r.dispatchable
                         ? <span className="text-emerald-700">可派</span>
-                        : <span className={r.at_daily_cap ? "text-amber-700" : "text-zinc-400"}>
+                        : <span className={
+                            r.login_blocks_dispatch ? "text-red-700"
+                            : r.at_daily_cap ? "text-amber-700" : "text-zinc-400"}>
+                            {/* 「被登出」排在「已暂停」后面、其余之前:
+                                暂停是人主动停的(去问为什么停),被登出是机器坏了
+                                (去那台机器上重新登录)。两句话指向不同的人,
+                                所以不能合并成一句「不可派」。 */}
                             {r.liveness === "paused" ? "已暂停"
+                             : r.login_blocks_dispatch ? "已登出"
                              : r.at_daily_cap ? "已到日上限"
                              : r.liveness === "online" ? "在线但不可派" : "没有心跳"}
                           </span>}
@@ -125,12 +152,12 @@ export default function InstancesPage() {
                 );
               })}
               {rows === null && (
-                <tr><td colSpan={12} className="h-20 text-center text-xs text-zinc-400">
+                <tr><td colSpan={13} className="h-20 text-center text-xs text-zinc-400">
                   {err ? "读不到买家号列表" : "读取中…"}
                 </td></tr>
               )}
               {rows?.length === 0 && (
-                <tr><td colSpan={12} className="h-20 text-center text-xs text-zinc-400">
+                <tr><td colSpan={13} className="h-20 text-center text-xs text-zinc-400">
                   还没有买家号 —— 先在库里建 procure.buyer_envs,再让插件连上来
                 </td></tr>
               )}

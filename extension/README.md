@@ -44,8 +44,13 @@ python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
 真实 Amazon 页面拿不到，所以 DOM 解析对着 `test/fixtures/` 里按逆向报告造的页面跑：
 
 ```bash
-npm run test:dom     # 65 条断言
+npm run test:dom     # 109 条断言
 ```
+
+这一套里有一节不是纯解析:**执行中掉线那条兜底**。它用 route 拦截给 `/ap/signin`
+真发一顶 `X-Frame-Options: DENY` 的帽子,把 iframe 导过去,再让 `guardLogin` 去判 ——
+那是这条兜底的头号场景,而它只有在真有一个 iframe 的浏览器页面里才走得到
+(Node 里没有 document,`npm run smoke` 走的是模拟驱动)。
 
 夹具里塞满了干扰项——隐藏的同 id 副本、Saved for later、推荐位、`<template>` 模板节点、
 支付文案里先出现的另一个 4 位数。选择器写松了会当场被抓住。实际抓到过两个：
@@ -72,6 +77,7 @@ node tools/smoke.mjs --scenario wrong_asin      # 订单卡 ASIN 不符
 node tools/smoke.mjs --scenario confirm_timeout # 点了下单但没见确认页
 node tools/smoke.mjs --scenario late_delivery   # 交期超限
 node tools/smoke.mjs --scenario cart_mismatch   # 购物车回读与本单不符
+node tools/smoke.mjs --scenario login_lost      # 跑到一半被登出:退回队列,不记异常
 
 # 物流同步是独立一条流,加 --ship 顺带跑一轮
 node tools/smoke.mjs --scenario happy --ship in_transit
@@ -91,6 +97,7 @@ node tools/smoke.mjs --scenario happy --ship delivered
 | not_fba | `exception` | `NOT_FBA` |
 | wrong_asin | `manual` | `ORDER_NO_AMBIGUOUS`（**单号未写入**） |
 | confirm_timeout | `manual` | `ORDER_CONFIRM_TIMEOUT` |
+| login_lost | `ready`(**退回队列**) | — （单子没毛病，是这台机器被登出了；事件流里有一条「登录态失效，退回队列」） |
 
 ## 写在代码里的几条规矩
 
@@ -128,6 +135,22 @@ node tools/smoke.mjs --scenario happy --ship delivered
 **下单成功只认 thankyou 页。** 厂商把"被退回购物车"也判成功——而那恰恰是下单失败的
 典型表现（库存被抢、支付被拒、地址被拒）。判错的后果是给一个没下成的任务回填上一单的号。
 
+**登录态只看页面，不看 Cookie。** 插件没申请 `cookies` 权限，所以「这个买家号还登着吗」
+只能从导航栏上看出来：`#nav-item-signout` 在不在、`#nav-link-accountList` 的 href 指向哪、
+问候语写什么。三条判据按可信度排，**结构判据优先，文案只做辅助且只能把结论推向"已登出"**
+——按英文问候语断定"已登录"是最脆的一条，而它失灵的方向恰好是最坏的那个。
+
+读不出来是 `unknown`，**不许兜底成 `ok`**：判不出来时放行，这道闸就等于不存在，
+而运营台上还会写着「已登录」。什么时候读:服务端在心跳里说「有单在等、且该复检了」时，
+**认领之前**开一张购物车页读一次（本地再压一层 10 分钟缓存，别每轮都开页面）。
+
+**执行中落到 `/ap/signin` 是"退回队列"，不是"拍单异常"。** 单子本身没毛病——没缺货、
+没超限价、地址也没问题，是这台机器的浏览器被登出了。记成 `exception` 会把一堆好单堆进
+异常桶，让人挨个看一遍才发现原因都一样。所以驱动抛的是 `LoginLostError`（**刻意没有
+错误码**，理由见 `flow/driver.ts` 里那段注释），`run.ts` 收到之后写一条事件流 step
+「登录态失效，退回队列」→ 清车 → `/release`，并把登录态标成 `signed_out` 上报。
+**已经越过下单点的除外**：那时"可能已经花了钱"比"被登出了"更要紧，仍走转人工那条路。
+
 **地址填完要验它真生效了。** 检查收货地址栏里确实含本单的邮编与城市，不符就报
 `ADDRESS_NOT_APPLIED`。厂商只做了"地址文本含邮编"这一条子串判断，姓名/街道/城市/州
 一概不校验。
@@ -139,7 +162,8 @@ src/core/      types(契约) codes(19 个错误码) status(界面标签)
                api(HTTP 出口) client(端点) config store log
 src/flow/      driver(页面动作接口) simulated(自检用) amazon(真实驱动) run(执行时序)
                shipment(物流同步,独立一条流)
-src/flow/dom/  wait(等待原语) frame(同源 iframe) selectors(选择器,标出处) parse(纯解析)
+src/flow/dom/  wait(等待原语) frame(同源 iframe) selectors(选择器,标出处) parse(纯解析,含登录态判定)
+               kit(只给测试:打成 window.amzdom 在 Playwright 页面里调)
 src/background/ loop(认领循环,不碰 chrome API) service-worker(配置/注册/心跳/租约)
 src/content/   runner(执行器,真正跑单的地方) panel(注入面板) styles copy(点击复制)
 tools/         smoke.mjs(自检) copy-static.mjs

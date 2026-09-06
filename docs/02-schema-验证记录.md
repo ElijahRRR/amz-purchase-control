@@ -152,3 +152,91 @@ createdb amz_fresh → cli.py db_init → 9 张表
 **留痕能追到人。** 强制回填这个动作在库里留下的是:谁(operator)、
 凭什么(note)、跳过了什么闸(assertion_skipped)、原来卡在哪个码(was_error_code)。
 事后追责时这四样缺一不可。
+
+---
+
+## 登录态实测（2026-09-06）
+
+起真实 uvicorn（8791）+ PostgreSQL 17，用插件自己的 `Loop`/`runTask` 跑
+`--scenario login_lost`（模拟「跑到一半这个买家号被登出」）：
+
+| 验证项 | 结果 |
+|---|---|
+| 执行中发现被登出（未越过下单点） | 任务回到 `ready`，`error_code` **为空** —— 不是拍单异常 |
+| 事件流 | `claimed` → 三条 `step` → **`step`「登录态失效，退回队列」** → `released` |
+| 登录态上报（心跳） | `plugin_instances.login_state = signed_out`，`login_checked_at` 落时刻 |
+| 插件下一轮 | `{"kind":"signed-out"}` —— 自己就不认领了，不去刷服务端 |
+| 绕过插件直接认领 | HTTP 409 `INSTANCE_SIGNED_OUT`，**不是**「没有单」 |
+| `GET /v1/admin/instances` | `login_state=signed_out` / `login_blocks_dispatch=true` / `dispatchable=false`，而 `liveness` 仍是 `online` |
+| 之后再报一次 `unknown`（2026-09-06 复核补） | 库里仍是 `signed_out`、`login_checked_at` 不动，认领仍 409。**只有 `ok` 能解封** |
+| 之后切「模拟」档跑一轮（同上） | 模拟驱动报的是 `unknown`（它一次页面都没读过），库里仍是 `signed_out`，认领仍 409 |
+
+`/v1/admin/instances` 那一行是这一整件事的要害：**心跳正常、机器却一单也跑不了**，这两条轴必须分开显示。
+
+pytest：**247 passed**（新增 15 条：心跳落库 / 不传不覆盖 / **unknown 不许洗掉 signed_out** /
+**unknown 照样盖掉 ok** / 封闭集 422 / 被登出仍可心跳 / 认领被拒且不动任务 / 恢复后能派 /
+unknown 不拦 / 运营台与真闸一致 / 没有实例时归一成 unknown / 复检节奏 /
+**六处封闭集一致** / meta 下发 / 「刻意不新增错误码」这个决定）。
+
+### DOM 断言「证明有用」的那一步
+
+解析层新增 27 条断言（共 **109 条**）。断言本身也要验：把判据一条条改坏，看它们是不是真的转红。
+
+| 改坏什么 | 结果 |
+|---|---|
+| 读不到判据时兜底成 `ok` | ✗ 4 条转红（两张无导航栏的夹具 + 认不出的账户入口 + 非英文问候语） |
+| 不挑可见节点（直接 `querySelector`） | ✗ 2 条转红，而且是**两个方向都错**：已登录判成已登出，已登出判成已登录 |
+| 要求 `#nav-item-signout` 可见 | ✗ 1 条转红（真实页面上它在 `display:none` 的账户浮层里） |
+| 文案不再当否决票（先看 signout） | ✗ 1 条转红（模板残留的 signout 会盖过「Hello, sign in」） |
+| URL 判据兜底成 `false`（`isSignInUrl` 恒假） | ✗ 4 条转红 |
+| URL 判据写成 `startsWith`（很容易顺手写成的那一种） | ✗ 3 条转红 |
+| URL 命中时返回 `ok`（把最硬那一条反过来） | ✗ 1 条转红 |
+| 去掉 `guardLogin` 里那次「换一张页面再问」的兜底 | ✗ 1 条转红（被 XFO 挡住的结算 frame 判不出已登出） |
+| 兜底改成「读不到就算被登出」 | ✗ 1 条转红（购物车页明说还登着，却仍然下了结论） |
+
+改回去之后 109 条全绿。第二行那个双向失败是夹具里那些干扰项(隐藏的反向导航模板)
+挣来的 —— 没有干扰项的话,写松了的实现照样一路绿灯。
+
+**后三行是 2026-09-06 复核补上的。** 在那之前，被注释和文档称作"最硬"的 URL 判据
+**一条断言都没有**：把 `readLoginState` 的第一句反过来写成 `return "ok"`，97 条
+全绿；给 `LoginState` 加一个 `"captcha"` 并从这一句返回它，typecheck、97 条 DOM、
+13 条 pytest 也全绿。原因是所有夹具都走 `setContent`，页面 URL 永远是
+`about:blank`，这条判据在测试里根本走不到。现在它收成一处定义
+（`parse.isSignInUrl`，用它的有五处），测试用 Playwright 的 route 拦截把夹具
+**真的放在 `/ap/signin` 上**打开——不联网，但 URL 是真的。
+
+### 执行中掉线:被 X-Frame-Options 挡住的那条兜底（2026-09-06 复核补）
+
+原先 `guardLogin` 的两条判据，在它的**头号场景**里可能一条都读不到：Amazon 登录页
+普遍带 `X-Frame-Options: DENY`，结算 iframe 被 302 过去之后浏览器拒绝渲染它。
+这个前提在 Chromium 141 上实测过：
+
+| 那一帧 | 正常加载时 | 被 XFO 挡住之后 |
+|---|---|---|
+| `contentDocument` | 拿得到 | **null**（`frame.doc()` 抛错） |
+| `contentWindow.location.href` | 读得到 | **抛 SecurityError**（`frame.url()` 返回 `""`） |
+
+于是「URL 落在登录页」和「DOM 说已登出」都不成立，照旧报 `CHECKOUT_TIMEOUT`——
+「被登出」和「页面慢」又长成同一个样子，而这正是这一整件事要修的东西。
+
+现在两条都读不到时换一张购物车页再问一次（未登录也渲染导航栏、不会被 XFO 挡）。
+DOM 测试造出的就是这个局面：route 拦截给 `/ap/signin` 真发一顶 `X-Frame-Options: DENY`
+的帽子，把 iframe 导过去，先断言"两条判据确实读不到"（否则后面那条证明不了任何事），
+再让 `guardLogin` 去判。两个方向都有断言：购物车页说已登出 → 抛 `LoginLostError`；
+购物车页说还登着 → **不下结论**，由调用方原本的错误码去说。
+
+**仍然没验到的是最后一环:Amazon 的登录页到底发不发 XFO、真机上会不会 302 到别处。**
+第一次真机验证时专门看一眼:登出后跑一单，事件流里出现的是「登录态失效，退回队列」
+还是 `CHECKOUT_TIMEOUT`。
+
+**仍然没被盯住的**（写在这里，是为了读表的人不会以为"全都被盯着"）：
+
+- `AmazonDriver.readLoginState` 里那两处 URL 判据的调用点——它要开一张真的购物车页，
+  离线验不了。盯住的是它与 `guardLogin` 共用的那一处判据定义（`parse.isSignInUrl`），
+  以及 `readLoginState`（解析层那个）对它的两处使用。
+- service worker 里那条心跳重发路径（登录态被服务端连续拒绝 3 次就丢弃）。
+  `src/background/service-worker.ts` 一进模块就调 `chrome.*`，Node 里驱动不起来，
+  `npm run smoke` 走的是 `Loop`，不经过它。这条上限是**推演出来的，不是验过的**。
+- 封闭集的六份现在有 pytest 盯着（改坏 `server/schemas.py` 的 Literal → 4 条转红；
+  改坏 `parse.ts` 的 `LoginState` → 1 条转红），这一条是被盯住的。
+

@@ -40,7 +40,7 @@ python cli.py db_init
 
 # 2. 跑测试(需要一个可连的 PostgreSQL 17;连不上会整体 skip)
 export AMZ_TEST_ADMIN_DSN="dbname=postgres"
-python -m pytest -q                       # 192 条
+python -m pytest -q                       # 247 条
 
 # 3. 起服务
 python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
@@ -58,9 +58,10 @@ python tools/mock_plugin.py --scenario wrong_asin  # 订单卡 ASIN 不符,转�
 # 6. 插件侧
 cd extension && npm install
 npm run typecheck && npm run build        # → dist/,可加载进 Chrome
-npm run test:dom                          # 68 条 DOM 解析断言(不需要服务端)
+npm run test:dom                          # 109 条 DOM 解析断言(不需要服务端)
 npm run smoke                             # 用插件自己的 Loop/runTask 跑闭环
 node tools/smoke.mjs --scenario happy --ship in_transit
+node tools/smoke.mjs --scenario login_lost         # 跑到一半被登出:退回队列,不记异常
 
 # 7. 运营台
 cd web && npm install
@@ -183,15 +184,29 @@ python cli.py feishu_writeback
 
 | | 状态 |
 |---|---|
-| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 192 条 pytest,跑在真 PostgreSQL 17 上 |
+| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 247 条 pytest,跑在真 PostgreSQL 17 上 |
 | 插件与服务端的时序(认领 → 执行 → 护栏 → 回填 → 失败清车) | ✅ 8 个场景实跑,跑的是插件自己的 `Loop`/`runTask` |
 | 物流同步时序 | ✅ 实跑 |
-| DOM 解析层(选择器是否按报告的语义在读) | ✅ 68 条断言,对着按报告造的夹具跑 |
+| DOM 解析层(选择器是否按报告的语义在读) | ✅ 109 条断言,对着按报告造的夹具跑 |
+| 登录态(被登出 → 拒绝派单 → 重新登录后自愈) | ✅ 心跳落库/认领被拒/恢复/unknown 的 pytest,加一轮 `--scenario login_lost` 实跑 |
 | 运营台前端 | ✅ 真库 + 真服务 + 真浏览器跑过四页、详情弹窗、改地址、剪贴板、NEEDS_ACK 流程 |
 | **真实 Amazon 页面** | ❌ **从未跑过**。这里没有可登录的买家号 |
 
 最后一行是这套系统眼下最大的未知。夹具能保证「报告里记着的选择器,我们确实按它们的语义在读」,
 但 Amazon 的真实 DOM 一定和夹具有出入。**第一次开 live 档之前,请在一个可弃的买家号上手动跑一单。**
+
+那一单里有一件事要专门看:**执行中掉线的那条兜底,曾经在它的头号场景里是哑的。**
+`guardLogin` 靠两条判据(iframe 的 URL 落在 `/ap/signin`、iframe 里的导航栏说已登出),
+而 Amazon 登录页普遍带 `X-Frame-Options: DENY`:结算 iframe 被 302 到 `/ap/signin` 时
+浏览器**拒绝渲染它**——实测(Chromium 141)`contentDocument` 变 null、
+读 `location` 抛 SecurityError,两条判据一条都不成立,于是照旧报 `CHECKOUT_TIMEOUT`。
+现在两条都读不到时会换一张购物车页(未登录也渲染导航栏、不会被 XFO 挡)再问一次,
+这条路有 DOM 测试盯着(造一个真被 XFO 挡住的 iframe,再让 `guardLogin` 去判)。
+
+**没验到的是最后一环:Amazon 的登录页到底发不发 XFO、真机上会不会 302 到别处。**
+所以第一次真机跑要专门看:登出之后跑一单,事件流里出现的是「登录态失效,退回队列」
+还是 `CHECKOUT_TIMEOUT`。若是后者,下一步是把「frame 加载失败本身」也当成一条判据,
+而不是把结果记成一次可重试的超时。
 
 插件默认是 `off` 档(只注册与心跳,不认领),就是为了不让人不小心跑起来。
 
@@ -254,6 +269,7 @@ python cli.py task_sweep
 | `AMZ_DATA_ROOT` | `~/.amz-purchase` | .env / 日志 / 锁文件所在目录 |
 | `AMZ_CLAIM_TIMEOUT_MIN` | `15` | 领走多久没回传判为异常中断(转 manual,**不**退回队列) |
 | `AMZ_HEARTBEAT_STALE_SEC` | `60` | 多久没心跳算离线(插件 20 秒一次,连续三次没到) |
+| `AMZ_LOGIN_RECHECK_MIN` | `10` | 插件多久重读一次页面判登录态。**只在这个买家号有单在等派时才读** —— 队列空着时读到的结论没人用得上 |
 | `AMZ_ADMIN_PAGE_SIZE_MAX` | `200` | 后台列表单页上限 |
 | `AMZ_SHIPMENT_RESYNC_MIN` | `360` | 同一条物流多久之后才值得再同步 |
 | `AMZ_SHIPMENT_BATCH` | `20` | 一次给插件多少条待同步的单 |
@@ -264,8 +280,8 @@ python cli.py task_sweep
 
 | | |
 |---|---|
-| `POST /v1/instances/register` `/heartbeat` | 实例注册与心跳 |
-| `POST /v1/tasks/claim` | 按买家号认领一单 |
+| `POST /v1/instances/register` `/heartbeat` | 实例注册与心跳。心跳捎上插件读到的**登录态**,回一句「该不该复检」 |
+| `POST /v1/tasks/claim` | 按买家号认领一单。被登出的实例回 409 `INSTANCE_SIGNED_OUT` —— **不是**回一个「没有单」 |
 | `POST /v1/tasks/{id}/events` | 执行步骤上报(只追加) |
 | `POST /v1/tasks/{id}/guard-check` | **护栏裁决在服务端**,插件只报数 |
 | `POST /v1/tasks/{id}/complete` `/fail` `/release` | 落终态 |
@@ -320,6 +336,9 @@ python cli.py task_sweep
   而界面里那个「已到日上限」的分支永远走不到
 - 详情弹窗在**没有实付金额**时画绿点写「未超」——一个从来没算过的护栏结论,
   长得跟真算过的一模一样
+- 买家号被登出之后,插件照样认领、照样开结算 iframe,Amazon 把它导到 `/ap/signin`,
+  然后超时 → `CHECKOUT_TIMEOUT`(可重试)。**「被登出」和「页面慢」渲染成同一个结果**:
+  重置多少次都不会好,而运营台上那台机器是满格绿色的「在线 · 可派」
 - `services/vocab.py` 写着插件那份副本「有测试盯着」,而那条测试从没比过标签,
   19 个已经悄悄分叉了 10 个。**一条声称有测试盯着、实际没有的注释,
   比根本不写那句话更危险**
@@ -329,6 +348,11 @@ python cli.py task_sweep
 
 **不申请 `cookies` 权限。** 登录态留在浏览器 profile 里,不读也不上传。
 这不是暂缓,是架构选择:服务端因此无法脱离操作员的浏览器独立下单 —— 这正是不想具备的能力。
+
+那服务端怎么知道一个买家号有没有被登出?**看页面,不看 Cookie。** 插件在认领之前
+读一次导航栏(`#nav-item-signout` 在不在、账户入口的 href 指向哪),结论随心跳上报;
+`signed_out` 的实例认领时被服务端拒掉。读不出来是 `unknown`,**不当成 `ok`** ——
+判不出来时放行,这道闸就等于不存在,而界面上还会写着「已登录」。见 docs/03 §5.3。
 
 ## 文档
 
@@ -356,4 +380,5 @@ python cli.py task_sweep
 | — | 任务落库(上游 → procure.tasks) | ✅ |
 | P6 | 运营台 Web 前端:四页 + 点行弹出的订单详情 + 点击即复制 | ✅ |
 | P7 | 上游接入:定时从飞书多维表格拉单 + 结果回写 | ✅ 代码完成,**未对着真实表格跑过**(缺凭据) |
+| — | 登录态上报:被登出的买家号不再空转刷认领,运营台上看得见 | ✅ |
 | 下一步 | 自动重试:目前 `RETRYABLE` 那一组没有任何东西在消费它 | 待定 |

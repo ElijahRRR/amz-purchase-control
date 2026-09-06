@@ -53,6 +53,27 @@
 | `instance_uid` | text UNIQUE | 插件首次启动生成并持久化 |
 | `plugin_version` | text | |
 | `last_seen_at` | timestamptz | 心跳更新 |
+| `login_state` | text | `ok` / `signed_out` / `unknown`（封闭集）。这台机器的浏览器 profile 里那个 Amazon 账号**此刻还在不在登录态**。插件读导航栏判定后随心跳上报，**不读 Cookie**。默认 `unknown` |
+| `login_checked_at` | timestamptz | 上一次真的读过页面判定登录态的时刻。`login_state` 单独看是不够的：一个三天前读到的 `ok` 和一分钟前读到的 `ok` 不是一回事 |
+
+> **为什么登录态挂在实例上，不挂在 `buyer_envs` 上。** 登录态存在于**浏览器 profile**
+> 里，而 profile 属于跑着插件的那台机器，不属于库里那条买家号记录。挂到 `buyer_envs`
+> 还会把两件不同的事混进同一列：`status='paused'` 是**人**把这个号停了（处置是去问为什么停），
+> `login_state='signed_out'` 是**机器**报上来的「这个浏览器被登出了」（处置是去那台机器上重新登录）。
+> 混成一列之后，界面上就分不出该找谁。
+>
+> **`unknown` 不是 `ok`。** 读不到导航栏（页面没渲染完、Amazon 改版、插件是旧版从不上报）
+> 一律是 `unknown`，不许当成"应该没问题"。认领那道闸只拦 `signed_out` ——
+> 拦 `unknown` 会让任何一个还没来得及做首次检查的新实例永远领不到单；
+> 但界面上 `unknown` 必须与 `ok` 长得不一样（「登录态存疑」 vs 「已登录」），
+> 否则就成了这个项目反复栽过的那种「两种不同的情况渲染出同一个结果」。
+>
+> **写这一列有一条规则:`unknown` 不许把 `signed_out` 洗掉,只有 `ok` 能解封。**
+> 心跳不传是「这一轮没有新消息」（保留原值），传 `unknown` 是「读了、读不出来」——
+> 而读不出来恰恰是被登出时的常见现象（Amazon 弹验证码、探测页没加载出来）。
+> 让它覆盖的话,一次读失败就能把闸门重新打开,运营台上那一行也从红色变回灰色。
+> 规则的唯一定义处是 `services/instance._KEEPS_OLD_LOGIN_STATE`，
+> `login_checked_at` 跟着同一个条件走 —— 值和它的时刻永远一起动。
 
 ### `procure.tasks` — 采购任务
 

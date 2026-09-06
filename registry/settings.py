@@ -33,6 +33,19 @@ def heartbeat_stale_seconds() -> int:
     return int(os.environ.get("AMZ_HEARTBEAT_STALE_SEC", "60"))
 
 
+def login_recheck_minutes() -> int:
+    """输入:无 → 输出:插件多久该重读一次页面判登录态(分钟)。
+
+    只在「这个买家号有单在等派」时才会真去读(见 services/instance._login_check_due)
+    —— 队列空着的时候开一张 Amazon 页面读导航栏,读到的结论也没人用得上。
+
+    默认 10 分钟。调这个值权衡的是两头:调小了每次都开页面,插件的一轮心跳
+    变成一次页面加载;调大了「人重新登录完」到「系统重新派单」之间的空窗更长。
+    被登出的即时发现不靠它 —— 那条路是执行中落到 /ap/signin 当场退回队列。
+    """
+    return int(os.environ.get("AMZ_LOGIN_RECHECK_MIN", "10"))
+
+
 def admin_page_size_max() -> int:
     """输入:无 → 输出:后台列表单页最大条数。
 

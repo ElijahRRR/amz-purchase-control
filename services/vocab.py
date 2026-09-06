@@ -57,6 +57,25 @@ SHIPMENT_TONE: dict[str, str] = {
     "cancelled": "solid-zinc",
 }
 
+#: 买家号浏览器里的 Amazon 登录态(procure.plugin_instances.login_state)。
+#:
+#: 「登录态存疑」这个词沿用 docs/03 §5 那一行 —— 它本来就是照厂商面板的说法记的。
+#: **unknown 与 ok 必须是两个词**:读不到导航栏和读到了「已登录」是两件事,
+#: 前者该让人去看一眼,后者不该。渲染成同一个词就是这个项目反复栽的那种缺陷。
+LOGIN_STATE_LABELS: dict[str, str] = {
+    "ok": "已登录",
+    "signed_out": "已登出",
+    "unknown": "登录态存疑",
+}
+
+#: 已登出用红:它是**真的坏了**,不重新登录就一单也派不出去,与「暂停」
+#: (人主动停的,石板灰)和「存疑」(还没定论,虚线)都不是一回事。
+LOGIN_STATE_TONE: dict[str, str] = {
+    "ok": "solid-emerald",
+    "signed_out": "solid-red",
+    "unknown": "dashed-zinc",
+}
+
 EVENT_LABELS: dict[str, str] = {
     "claimed": "认领",
     "step": "执行步骤",

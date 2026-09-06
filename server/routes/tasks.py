@@ -26,7 +26,20 @@ def claim(req: schemas.ClaimReq, conn=Depends(conn_ctx)) -> schemas.Envelope:
     if inst["env_status"] != "active":
         return schemas.Envelope(ok=True, data=None)   # 环境被暂停,不派单
 
-    task = task_queue.claim(conn, inst["buyer_env_id"], inst["id"])
+    try:
+        task = task_queue.claim(conn, inst["buyer_env_id"], inst["id"])
+    except task_queue.ClaimBlocked as exc:
+        # 这里**不能**回 ok=True/data=None:那是「没单可派」的意思,
+        # 插件收到之后会安静地等下一轮,10 秒一次一直刷到有人发现为止。
+        # 被闸拦下要说出闸的名字 —— 这一整件事就是为了让「被登出」不再长得
+        # 跟「队列是空的」一模一样。
+        #
+        # 用 return 而不是 raise:这条路径上还没写过库,但 CLAUDE.md 那条
+        # 「写过库就不许 raise」是按路由整体来守的,统一走 JSONResponse 更省心。
+        return JSONResponse(status_code=409, content={
+            "ok": False, "data": None,
+            "error": {"code": exc.code, "message": exc.message},
+        })
     if task is None:
         return schemas.Envelope(ok=True, data=None)   # 无可派任务,不是错误
 

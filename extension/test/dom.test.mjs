@@ -61,6 +61,211 @@ async function withFixture(file, fn) {
   }
 }
 
+/** 把夹具**当作某个 URL 上的页面**打开。
+ *
+ *  上面那个 withFixture 用的是 setContent,页面的 URL 永远是 about:blank ——
+ *  于是 readLoginState 的第一条判据(URL 落在 /ap/signin)在夹具里根本走不到。
+ *  这里用 route 拦截把请求就地回掉:不联网,但页面真的落在给定的 URL 上。 */
+async function withUrl(url, file, fn) {
+  const path = join(here, "fixtures", file);
+  let html;
+  try {
+    html = readFileSync(path, "utf8");
+  } catch {
+    failures.push(`夹具缺失:${file}`);
+    return;
+  }
+  const page = await browser.newPage();
+  await page.route("**/*", (route) =>
+    route.fulfill({ contentType: "text/html; charset=utf-8", body: html }));
+  await page.goto(url);
+  await page.addScriptTag({ path: KIT });
+  try {
+    await fn((expr) => page.evaluate(expr));
+  } finally {
+    await page.close();
+  }
+}
+
+// ── 导航栏:登录态 ────────────────────────────────────────────────────
+//
+// 这一节盯的是「被登出」不再和「页面慢」长得一样。判错的两个方向代价不对等:
+//   · 把登出判成登录  → 闸门看着在、其实不拦,单子照领照跑照超时(最坏)
+//   · 把登录判成登出  → 这个买家号被停派,但运营台上写着「已登出」,有人看得见
+// 所以判据全部按"结构优先、文案只能往已登出那边推"来写。
+await withFixture("nav-signed-in.html", async (run) => {
+  eq("nav 已登录", await run("amzdom.readLoginState(document)"), "ok");
+  // 干扰项自己也得验一遍:隐藏模板确实排在真导航栏前面,
+  // 不然上面那条断言即使实现写松了也照样绿 —— 夹具没干扰,断言就没用。
+  eq("nav 隐藏的未登录模板排在前面(干扰项确实存在)",
+     await run(`(() => {
+        const all = [...document.querySelectorAll("#nav-link-accountList")];
+        return [all.length, (all[0].getAttribute("href") || "").includes("/ap/signin")];
+     })()`), [2, true]);
+  // signout 在 display:none 的账户浮层里 —— 判据要是要求"可见",这条会变 false
+  eq("nav signout 节点在隐藏浮层里(干扰项确实存在)",
+     await run(`(() => {
+        const el = document.querySelector("#nav-item-signout");
+        return !!el && el.closest('[style*="display:none"]') !== null;
+     })()`), true);
+});
+
+await withFixture("nav-signed-out.html", async (run) => {
+  eq("nav 已登出", await run("amzdom.readLoginState(document)"), "signed_out");
+  // 这张页面里藏着一个"已登录"的模板(连 signout 都有)。见到 signout 就判已登录的
+  // 实现会在这里翻车 —— 而那正是最坏的那个方向。
+  eq("nav 隐藏的已登录模板确实存在(干扰项)",
+     await run(`!!document.querySelector('[style*="display:none"] #nav-item-signout')`), true);
+  // 页脚那条 signin 链接、商品标题里的 "sign in" 都在,全局扫页面文本的实现会中招
+  eq("nav 页脚的无关 signin 链接确实存在(干扰项)",
+     await run(`!!document.querySelector('#navFooter a[href*="signin"]')`), true);
+  eq("nav 商品标题里带 sign in(干扰项)",
+     await run(`/sign in/i.test(document.querySelector(".sc-recommendations").textContent)`), true);
+});
+
+// **URL 判据**:落在 /ap/signin 上就是被登出了,页面里长什么样都不改变这个结论。
+//
+// 这一条被注释和文档称作"最硬",却曾经一条断言都没有:把它反过来写成
+// `return "ok"`,97 条断言全绿(2026-09-06 复核实测)。原因是夹具全部走
+// setContent,URL 永远是 about:blank,这条判据在测试里根本走不到。
+// 现在它收成了一处定义(parse.isSignInUrl),下面两条盯着它 ——
+// 一条盯"命中时不许被 DOM 翻案",一条盯"不命中时别乱判"(免得上面那条
+// 是因为 route 或夹具本身坏了才变红,那样它证明不了任何事)。
+await withUrl("https://www.amazon.com/ap/signin?openid.pape=x&ref_=nav_signin",
+              "nav-signed-in.html", async (run) => {
+  eq("URL 落在 /ap/signin → signed_out(哪怕 DOM 是一整套已登录导航栏)",
+     await run("amzdom.readLoginState(document)"), "signed_out");
+  // 这张夹具确实是"已登录"的那一张 —— 干扰项得真的在
+  eq("这张页面的 DOM 确实是已登录的样子(干扰项确实存在)",
+     await run(`!!document.querySelector("#nav-item-signout")`), true);
+});
+await withUrl("https://www.amazon.com/gp/cart/view.html",
+              "nav-signed-in.html", async (run) => {
+  eq("同一张夹具放在购物车 URL 上 → ok", await run("amzdom.readLoginState(document)"), "ok");
+});
+
+// **读不到导航栏 = unknown,不是 ok。** 判不出来时兜底成"应该登录着吧",
+// 这道闸就等于不存在,而界面上还会写着"已登录"。
+await withFixture("cart.html", async (run) => {
+  eq("购物车夹具没有导航栏 → unknown", await run("amzdom.readLoginState(document)"), "unknown");
+});
+await withFixture("checkout.html", async (run) => {
+  eq("结算页没有导航栏 → unknown", await run("amzdom.readLoginState(document)"), "unknown");
+});
+
+// 几个边界:用 DOMParser 现造,不值得为它们各建一张夹具
+await withFixture("cart-empty.html", async (run) => {
+  const parse = (html) =>
+    run(`amzdom.readLoginState(new DOMParser().parseFromString(${JSON.stringify(html)}, "text/html"))`);
+
+  // signout 藏在 display:none 的浮层里(Amazon 的常态)—— 照样算已登录
+  eq("nav 只有隐藏浮层里的 signout → ok",
+     await parse('<div style="display:none"><a id="nav-item-signout" href="#">Sign Out</a></div>'), "ok");
+  // 文案是否决票:问候语明写着 sign in 时,残留的 signout 节点不算数
+  eq("nav 问候语 sign in 压过残留的 signout → signed_out",
+     await parse('<span id="nav-link-accountList-nav-line-1">Hello, sign in</span>' +
+                 '<a id="nav-item-signout" href="#">Sign Out</a>'), "signed_out");
+  // 有账户入口,但 href 认不出、也没有别的判据 → 不许猜
+  eq("nav 只有一个认不出的账户入口 → unknown",
+     await parse('<a id="nav-link-accountList" href="/gp/something-new"></a>'), "unknown");
+  // 中文/别的语言的问候语:判不出就是判不出,**不能**当成已登录
+  eq("nav 非英文问候语 → unknown",
+     await parse('<a id="nav-link-accountList" href="/gp/x">' +
+                 '<span id="nav-link-accountList-nav-line-1">你好,David</span></a>'), "unknown");
+  eq("nav 账户入口指向账户首页 → ok",
+     await parse('<a id="nav-link-accountList" href="/gp/css/homepage.html?ref_=nav_ya"></a>'), "ok");
+  eq("nav 账户入口指向 /ap/signin → signed_out",
+     await parse('<a id="nav-link-accountList" href="/ap/signin?openid.pape=0"></a>'), "signed_out");
+
+  // 判据本身:URL 那一条收成了一处定义(parse.isSignInUrl),用它的有五处
+  // (readLoginState 两处、AmazonDriver.readLoginState 两处、guardLogin)。
+  // 那四处开 iframe、要真页面,离线验不了;能验的是它们共用的这一处。
+  const is = (u) => run(`amzdom.isSignInUrl(${JSON.stringify(u)})`);
+  eq("isSignInUrl 命中(带查询串)",
+     await is("https://www.amazon.com/ap/signin?openid.pape=x"), true);
+  eq("isSignInUrl 命中(登录页的子路径)",
+     await is("https://www.amazon.com/ap/signin/attempt"), true);
+  eq("isSignInUrl 不把购物车页当登录页",
+     await is("https://www.amazon.com/gp/cart/view.html"), false);
+  // 读不到 URL(跨域、文档没就绪)时 frame.url() 给的是空串。
+  // **「读不到」不是「不在登录页」** —— 这条判据这一次用不上而已,
+  // 判成 true 会把每一次读不到都说成"被登出了"。
+  eq("isSignInUrl 空串不算命中", await is(""), false);
+  eq("isSignInUrl null 不算命中", await run("amzdom.isSignInUrl(null)"), false);
+});
+
+// ── 执行中掉线:结算 iframe 被 302 到 /ap/signin ────────────────────────
+//
+// 这是「执行中掉线」的头号场景,也是整件事的起点。要命的地方在于:Amazon 登录页
+// 普遍带 X-Frame-Options: DENY,浏览器**拒绝在 iframe 里渲染它** —— 于是
+// guardLogin 的两条判据(URL 落在 /ap/signin、DOM 说已登出)一条都读不到,
+// 照旧报 CHECKOUT_TIMEOUT,「被登出」和「页面慢」又长成同一个样子。
+//
+// 下面这一节先把这个前提本身验一遍(Chromium 到底怎么表现),再验兜底那条路:
+// 两条判据都读不到时换一张购物车页(不会被 XFO 挡)再问一次。
+async function withCheckoutFrame(cartFixture, fn) {
+  const cart = readFileSync(join(here, "fixtures", cartFixture), "utf8");
+  const page = await browser.newPage();
+  await page.route("**/*", (route) => {
+    const url = route.request().url();
+    if (url.includes("/ap/signin")) {
+      // Amazon 登录页的那顶帽子。这一行就是整段的前提。
+      return route.fulfill({ status: 200, contentType: "text/html",
+                             headers: { "X-Frame-Options": "DENY" },
+                             body: "<h1>Sign in</h1>" });
+    }
+    if (url.includes("/gp/cart/view.html")) {
+      return route.fulfill({ contentType: "text/html; charset=utf-8", body: cart });
+    }
+    return route.fulfill({ contentType: "text/html; charset=utf-8",
+                           body: "<h1>checkout</h1>" });
+  });
+  await page.goto("https://www.amazon.com/checkout/p/p-1");
+  await page.addScriptTag({ path: KIT });
+  try {
+    await fn((expr) => page.evaluate(expr));
+  } finally {
+    await page.close();
+  }
+}
+
+/** 在页面里造出「结算 iframe 被 302 到登录页」这个局面,再让 guardLogin 去判。
+ *  返回 [两条判据还读不读得到, guardLogin 抛出来的东西]。 */
+const SIGNED_OUT_DRILL = `(async () => {
+  const f = await amzdom.openFrame("https://www.amazon.com/checkout/p/p-1", 8000);
+  f.el.src = "https://www.amazon.com/ap/signin?openid.pape=1";
+  await new Promise((r) => setTimeout(r, 800));
+  const readable = {
+    url: f.url(),
+    doc: (() => { try { f.doc(); return true; } catch { return false; } })(),
+  };
+  const driver = new amzdom.AmazonDriver("https://www.amazon.com");
+  let threw = "没抛";
+  // guardLogin 在 TS 里是私有的,这里是**故意**从外面戳它:它是这条兜底的全部内容,
+  // 而走公开方法(proceedToCheckout)要先把私有的 checkout frame 摆好,更绕。
+  // 真被改名了这一句会当场 TypeError —— 那也是一次响亮的失败,不是静默通过。
+  try { await driver.guardLogin(f, "跳转结算页"); }
+  catch (e) { threw = e.constructor.name; }
+  f.close();
+  return [readable, threw];
+})()`;
+
+await withCheckoutFrame("nav-signed-out.html", async (run) => {
+  const [readable, threw] = await run(SIGNED_OUT_DRILL);
+  // 前提:XFO 之后这一帧整个读不到 —— url 空串、doc 抛错。
+  // 这两条要是不成立,下面那条断言就证明不了任何事(它可能是走老判据过的)。
+  eq("XFO 之后 iframe 的 URL 读不到(前提)", readable.url, "");
+  eq("XFO 之后 iframe 的 document 读不到(前提)", readable.doc, false);
+  eq("两条判据都读不到 → 换购物车页再问 → 判为已登出", threw, "LoginLostError");
+});
+
+// 反过来:换的那张页面说"还登着",就**不下结论** —— 由调用方原本的错误码去说。
+// 少了这一条,上面那条断言就可能只是"读不到就说被登出了",那是另一种缺陷。
+await withCheckoutFrame("nav-signed-in.html", async (run) => {
+  const [, threw] = await run(SIGNED_OUT_DRILL);
+  eq("同样读不到,但购物车页说还登着 → 不下结论", threw, "没抛");
+});
+
 // ── 商品页 ──────────────────────────────────────────────────────────
 await withFixture("product.html", async (run) => {
   eq("product 有货", await run("amzdom.readInStock(document)"), true);

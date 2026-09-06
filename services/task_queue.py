@@ -58,11 +58,63 @@ SELECT asin, quantity FROM procure.task_products
 _TERMINAL = frozenset({"purchased", "exception", "manual", "cancelled"})
 
 
+class ClaimBlocked(Exception):
+    """认领被一道**说得出名字**的闸拦下了 —— 与「队列里没有单」是两回事。
+
+    为什么不做成认领 SQL 里的一个 WHERE 条件(像 daily_cap 那样):那样返回的是
+    「没选中任何行」,和「这个买家号确实没单可派」渲染出完全一样的结果 ——
+    插件继续每 10 秒问一次,运营台上那台机器显示「待命」,谁也看不出它其实
+    已经不能干活了。**两种不同的情况渲染出同一个结果就是缺陷**,而这一条正是
+    本次要修的那个缺陷本身,不该在修它的时候又制造一个同形状的。
+    """
+
+    def __init__(self, code: str, message: str):
+        super().__init__(message)
+        self.code = code
+        self.message = message
+
+
+def login_blocks_claim(login_state: str | None) -> bool:
+    """输入:实例登录态 → 输出:这道闸拦不拦它。**登录态闸门的唯一定义处。**
+
+    只拦 `signed_out`:
+      · `ok`       —— 上一次读页面确实读到了登录态,放行
+      · `unknown`  —— 我们不知道。**不拦**:新装的实例第一次心跳之前就是 unknown,
+                      拦住它等于新机器永远领不到第一单。真被登出的话,执行中一落到
+                      /ap/signin 就会被驱动逮住,退回队列并把这一位改成 signed_out,
+                      下一次认领才轮到这道闸。
+        —— 但 `unknown` 在**界面上**必须与 `ok` 分得开(「登录态存疑」 vs 「已登录」)。
+        这两句话不矛盾:派单上一视同仁,是因为除此之外没有能派单的办法;
+        显示上分开,是因为运营看到「存疑」会去看一眼,看到「已登录」不会。
+
+    运营台的「可派单」调的也是这个函数(services/instance.list_with_liveness),
+    两处算的必须是同一件事 —— daily_cap 曾经在这里分叉过一次,
+    界面上绿着、真闸拦着,而界面里那个「已到日上限」的分支永远走不到。
+    """
+    return login_state == "signed_out"
+
+
 def claim(conn, env_id: int, instance_id: int) -> dict[str, Any] | None:
     """输入:连接 + 买家环境 id + 插件实例 id → 输出:任务 dict(含 products),无可派时 None。
 
     一条 SQL 完成「选中 + 置位」,不存在「选完还没置位」的窗口。
+
+    登录态被判定为 signed_out 的实例在这里被拦下,抛 `ClaimBlocked` ——
+    不是返回 None。这条先于认领 SQL 执行,与它同一个事务(同一条连接):
+    读到的登录态和随后那次置位之间没有别人插得进来的窗口。
     """
+    inst = conn.execute(
+        "SELECT login_state, login_checked_at FROM procure.plugin_instances WHERE id = %s",
+        (instance_id,),
+    ).fetchone()
+    if inst is not None and login_blocks_claim(inst["login_state"]):
+        raise ClaimBlocked(
+            "INSTANCE_SIGNED_OUT",
+            "这个买家号的浏览器已被登出(上次检查:"
+            f"{inst['login_checked_at'] or '未知'}),不派单。"
+            "请在该浏览器环境里重新登录 Amazon,插件下一轮复检会自动恢复",
+        )
+
     row = conn.execute(
         CLAIM_SQL, {"env_id": env_id, "instance_id": instance_id}
     ).fetchone()
