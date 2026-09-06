@@ -18,6 +18,10 @@
 现在闸判两样:`error_code ∈ POSSIBLY_ORDERED` **或** `tasks.may_have_ordered`。
 后者由插件在 placeOrder 之前报的那条 step 事件置位,记的是「越没越过下单点」
 这个事实本身,与失败之后落了哪个码无关。人工重置、批量重置、自动重试各判一次。
+
+回到队列的**第四条路是插件自己调的 `/release`**,它也判 —— 前三条至少还要人点一下,
+这一条连人都没有:插件版本旧了、那个 `if (!mayHaveOrdered)` 被人改坏、或者另写了
+一条清理路径,任务就原地回到 ready 并立刻被再次认领。
 """
 
 import pytest
@@ -103,6 +107,77 @@ def test_the_event_row_and_the_column_land_together(client, conn, seed):
         (tasks[0],)).fetchall()]
     assert any(p.get("may_have_ordered") is True for p in payloads)
     assert _flag(conn, tasks[0]) is True
+
+
+# ── 插件自己退回队列那条路(/release) ──────────────────────────────────
+
+def test_release_is_refused_after_the_order_line(client, conn, seed):
+    """越过下单点之后 `/release` 必须被服务端拒掉。
+
+    「点下单那一刻起禁止退回队列」在插件里判过一次(run.ts 的 `if (!mayHaveOrdered)`),
+    但这次改动全部的立意就是**不再只听插件的**:重置那三条路都加了这条判据,
+    而 /release 是最直接的第四条 —— 插件版本旧了、那个 if 被人改坏、或者另写了
+    一条清理路径,这一单就原地回到 ready,下一次 claim 立刻把它再派出去,
+    全程没有任何人参与。人工重置那道闸至少还要人点一下,这条连人都没有。
+    """
+    _env, _inst, tasks = seed
+    _claim(client, conn, tasks[0])
+    client.post(f"/v1/tasks/{tasks[0]}/events",
+                json={"instance_uid": "inst-A", "events": [CROSS_EVENT]})
+
+    r = client.post(f"/v1/tasks/{tasks[0]}/release", json={"instance_uid": "inst-A"})
+    assert r.status_code == 409
+    assert r.json()["error"]["code"] == "POSSIBLY_ORDERED"
+
+    row = conn.execute("SELECT status, may_have_ordered FROM procure.tasks WHERE id = %s",
+                       (tasks[0],)).fetchone()
+    # 被拒之后状态不许动:还在 claimed,于是 task_sweep 会把它按 CLAIM_TIMEOUT
+    # 转人工(那个码在 POSSIBLY_ORDERED 里),人裁决之前谁也拿不走它。
+    assert row["status"] == "claimed" and row["may_have_ordered"] is True
+
+
+def test_the_refused_release_leaves_a_trace(client, conn, seed):
+    """拒之前先留痕:插件试图退回一张越过下单点的单,本身就是插件那侧漏判的证据。
+
+    不留这一行的话,「插件哪个版本开始不判了」只能靠猜 —— 而这条路的后果是
+    同一单被自动再买一遍。
+    """
+    _env, _inst, tasks = seed
+    _claim(client, conn, tasks[0])
+    client.post(f"/v1/tasks/{tasks[0]}/events",
+                json={"instance_uid": "inst-A", "events": [CROSS_EVENT]})
+    client.post(f"/v1/tasks/{tasks[0]}/release", json={"instance_uid": "inst-A"})
+
+    rows = [r["payload"] for r in conn.execute(
+        "SELECT payload FROM procure.task_events "
+        " WHERE task_id = %s AND kind = 'assert_failed' ORDER BY id", (tasks[0],)).fetchall()]
+    assert [p["reason"] for p in rows] == ["release_after_order_line"]
+
+
+def test_the_refusal_says_the_right_reason_not_task_not_held(client, conn, seed):
+    """理由不许说成 TASK_NOT_HELD。
+
+    判据要是塞进 task_queue.release 的 WHERE 里,返回 False 会被路由渲染成
+    「这一单已经不在你手上」—— 而真相是「它在你手上,但你不许放手」。
+    插件日志里留下的那句话说错了,查起来会先去翻认领与清扫,全查错了方向。
+    """
+    _env, _inst, tasks = seed
+    _claim(client, conn, tasks[0])
+    client.post(f"/v1/tasks/{tasks[0]}/events",
+                json={"instance_uid": "inst-A", "events": [CROSS_EVENT]})
+    msg = client.post(f"/v1/tasks/{tasks[0]}/release",
+                      json={"instance_uid": "inst-A"}).json()["error"]["message"]
+    assert "越过下单点" in msg
+
+
+def test_an_ordinary_release_still_works(client, conn, seed):
+    """反面:没越过下单点的单照旧退得回去 —— 登录态失效那条兜底全靠它。"""
+    _env, _inst, tasks = seed
+    _claim(client, conn, tasks[0])
+    r = client.post(f"/v1/tasks/{tasks[0]}/release", json={"instance_uid": "inst-A"})
+    assert r.json()["data"]["status"] == "ready"
+    assert conn.execute("SELECT status FROM procure.tasks WHERE id = %s",
+                        (tasks[0],)).fetchone()["status"] == "ready"
 
 
 # ── 人工重置那道闸 ──────────────────────────────────────────────────────

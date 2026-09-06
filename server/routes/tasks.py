@@ -63,7 +63,7 @@ def claim(req: schemas.ClaimReq, conn=Depends(conn_ctx)) -> schemas.Envelope:
 @router.post("/{task_id}/events")
 def events(task_id: int, req: schemas.EventsReq, conn=Depends(conn_ctx)) -> schemas.Envelope:
     inst = require_instance(conn, req.instance_uid)
-    require_task_owned(conn, task_id, inst)
+    task = require_task_owned(conn, task_id, inst)
     crossed = False
     for ev in req.events:
         task_event.record(conn, task_id, ev.kind, instance_id=inst["id"],
@@ -252,7 +252,34 @@ def fail(task_id: int, req: schemas.FailReq, conn=Depends(conn_ctx)) -> schemas.
 @router.post("/{task_id}/release")
 def release(task_id: int, req: schemas.ReleaseReq, conn=Depends(conn_ctx)) -> schemas.Envelope:
     inst = require_instance(conn, req.instance_uid)
-    require_task_owned(conn, task_id, inst)
+    task = require_task_owned(conn, task_id, inst)
+
+    # 「点下单那一刻起,禁止退回队列」—— 这一条在服务端也必须有一份。
+    #
+    # 插件那侧确实判了(run.ts 的 `if (!mayHaveOrdered)`),但那正是这次改动
+    # 全部的立意所在:重置回队列的三条路之所以不再只按 error_code 判,就是因为
+    # 「越没越过下单点」这件事不能只由被管的一方说了算。而 /release 是**最直接的
+    # 第四条路** —— 插件版本旧了、那个 if 被人改坏、或者另写了一条清理路径,
+    # 这一单就原地回到 ready,下一次 claim 立刻把它再派出去,全程没有任何人参与,
+    # 而它已经点过下单按钮了。人工重置那道闸至少还要人点一下,这条连人都没有。
+    #
+    # 判据放在路由层不放 task_queue.release 的 WHERE 里:那个函数返回 False 会被
+    # 这里渲染成 TASK_NOT_HELD —— **说错了原因**,插件日志里留下的是「这一单已经
+    # 不在我手上」,而真相是「它在你手上,但你不许放手」。
+    #
+    # 拒绝之前先留痕:插件试图退回一张越过下单点的单,本身就是插件那侧漏判的证据,
+    # 而这件事在库里不留一行的话,下次只能靠猜。
+    if task["may_have_ordered"]:
+        task_event.record(conn, task_id, "assert_failed", instance_id=inst["id"],
+                          payload={"reason": "release_after_order_line"})
+        # 已经写过库,只能 return 不能 raise(pg_conn 遇异常会把这条留痕一起回滚)。
+        return JSONResponse(status_code=409, content={
+            "ok": False, "data": None,
+            "error": {"code": "POSSIBLY_ORDERED",
+                      "message": f"任务 {task_id} 已经越过下单点(下单按钮点过了),"
+                                 f"不许退回队列。让它超时转人工,或者走后台由人裁决。"},
+        })
+
     if not task_queue.release(conn, task_id, inst["id"]):
         raise HTTPException(409, detail={"code": "TASK_NOT_HELD",
                                          "message": f"任务 {task_id} 已不处于 claimed"})
