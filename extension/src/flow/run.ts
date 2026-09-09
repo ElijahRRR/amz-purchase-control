@@ -13,6 +13,7 @@
  */
 
 import type { Client } from "../core/client.js";
+import { DEFAULTS, posOr } from "../core/config.js";
 import type { ErrorCode } from "../core/codes.js";
 import { toManual } from "../core/codes.js";
 import type { Log } from "../core/log.js";
@@ -43,25 +44,78 @@ export type Outcome =
    *  机器在这条路上对清车熔断是隐形的。 */
   | { kind: "unreported"; message: string; cartCleared: boolean | null };
 
+/** 下单前那一屏要摆给人看的东西。
+ *
+ *  凑齐这几项是有讲究的:操作员在这一屏上要能独立回答「这一单该不该现在买」,
+ *  而不是「插件说没问题那就按吧」。所以上游单号(去上游系统对得上)、
+ *  商品与数量、**服务端真正比过的那个货款**与限价、礼品卡抵扣、交期原文、
+ *  买家号,一个都不能少 —— 少一样,这一屏就退化成一个写着「确定?」的按钮。
+ *  (**买家号不在这里** —— run.ts 不认识买家号,那一项由面板从自己那份配置里填。) 
+ *
+ *  金额一律**原样传字符串**,不转 number:钱不过浮点(与 Guards.price_cap 同一条)。 */
+export interface ConfirmPreview {
+  /** 上游单号。**可能没有** —— 老服务端的认领响应里没有这一项(见
+   *  core/types.Task)。没有的时候面板要说「服务端未下发」,不许留白:
+   *  留白和「上游单号真的是空的」长得一样。 */
+  upstreamOrderNo?: string;
+  products: Array<{ asin: string; quantity: number }>;
+  /** 服务端**自己算出来并真正拿去跟限价比**的那个货款。null = 服务端没回这一项
+   *  (老服务端),那时面板改写「实付」——写「货款」的话,这一屏承诺的是一次
+   *  没发生过的比较。 */
+  goodsTotal: string | null;
+  /** 结算页读到的实付。礼品卡全额抵扣时它是 0.00,而这一单照样花了钱。 */
+  actualTotal: string;
+  /** 上游算好下发的整单上限。 */
+  priceCap: string;
+  /** 礼品卡/余额抵扣。null = 结算页上没有这一行。 */
+  giftCard: { applied: boolean; amount: string | null } | null;
+  /** 服务端最终采信的那条交期**原文**。插件不解析,面板也不解析。 */
+  deliveryRaw?: string;
+  /** 到点是什么时刻(epoch 毫秒)。面板拿它跑倒计时,**不自己另算一个**:
+   *  另算一个迟早与真正到期的那一刻对不上,而屏幕上那句话承诺的正是
+   *  「到点会发生什么」。 */
+  deadlineMs: number;
+  /** 这个上界是被谁钳住的。两种情况处置完全不同,不许渲染成同一句话:
+   *   · `confirm_wait`  配的就这么长,想多等就去调 timeouts.confirmWait
+   *   · `claim_window`  认领窗口快到了,再等下去服务端会把这一单清扫走 ——
+   *                     调 confirmWait 没有用,要调的是服务端的认领超时 */
+  cappedBy: "confirm_wait" | "claim_window";
+}
+
 export interface RunDeps {
   client: Client;
   driver: PageDriver;
   log: Log;
-  /** 下单前是否停下来等人按。**只有真的传了 askConfirm 才有意义。**
+  /** 下单前是否停下来等人按。**默认关**(所有者定稿:下单前默认无人工确认,
+   *  做成可设置项)。开关的唯一来源是 `core/config.confirmBeforeOrder`,
+   *  由 background/loop 每一轮现读 —— 不是「传了 askConfirm 就等于开」:
+   *  面板上改这个开关**不重建 Loop**(runner.setConfig 只在服务端地址/身份变了
+   *  才重建),读构造时捕获的那一位会让开关改完不生效,而它在面板上看起来
+   *  已经生效了。
    *
-   *  ⚠️ 现状:全仓**没有任何调用点提供 askConfirm**(content/runner.ts 构造 Loop 时
-   *  没传),所以这一步实际不发生,core/status 里的 `confirm` 相位是死代码。
-   *  这条注释原先写着「默认 true —— 花钱这一步永远有预览」,那是一句
-   *  系统不会兑现的承诺,比不写更坏。
+   *  ⚠️ 这段注释原先写的是「现状:全仓没有任何调用点提供 askConfirm」。
+   *  现在有了:`content/runner.ts` 把面板上那个预览弹窗接了进来
+   *  (两个按钮 + 倒计时),`core/status` 的 `confirm` 相位不再是死代码。
    *
-   *  要接上的话,难的不是弹窗,是**等待必须有界**:人一直不按怎么办?
-   *  超时默认「取消 → 清车 → 退回队列」是个说得通的答案,但它意味着
-   *  「操作员去吃了个饭」和「他看了一眼觉得不对」落成同一个结果,
-   *  而且那个上界还要和服务端的认领超时对齐(与 placeOrder 的硬顶同一条道理)。
-   *  那是一个要单独定的决定,不在这一轮里顺手做。 */
+   *  开着也**必须有界**,而且上界不是插件自己拍的:见下面 confirmWaitMs。 */
   confirmBeforeOrder?: boolean;
-  /** 预览步的应答。返回 false 表示人按了取消。 */
-  askConfirm?: (task: Task, reading: { total: string; deliveryRaw?: string }) => Promise<boolean>;
+  /** 预览步的应答。true = 人按了「下单」,false = 人按了「取消」。
+   *
+   *  **它不负责超时。** 到点由 run.ts 这边的钟说了算(见下面那道 race)——
+   *  把上界交给界面的话,一个渲染卡住的面板就等于没有上界,
+   *  而它长得跟「人还在看」一模一样。 */
+  askConfirm?: (task: Task, preview: ConfirmPreview) => Promise<boolean>;
+  /** 等人按的预算(毫秒)。来自 `core/config.timeouts.confirmWait`,不传用默认值。
+   *  实际生效的还要与认领窗口取更紧的那个,见 confirmDeadline 那一段。 */
+  confirmWaitMs?: number;
+  /** 留给服务端的余量(毫秒)。来自 `core/config.timeouts.orderServerMargin` ——
+   *  与 placeOrder 的硬顶**同一把尺子**,不另配一个。 */
+  orderServerMarginMs?: number;
+  /** 进入/离开「等人确认下单」。面板拿 deadlineMs 跑倒计时,离开时传 null。
+   *  与 onPhase 分开的理由和 onVerifyWindow 一样:相位是给标签用的,这个是给
+   *  那个数字用的。**离开时一定要传 null** —— 一条还在走的倒计时配着一句
+   *  「等你确认」,而其实没有任何东西在等,正是这个项目反复记的那种假象。 */
+  onConfirmWindow?: (deadlineMs: number | null) => void;
   /** 执行中发现这个浏览器已被登出。**这一单怎么落地是另一回事** ——
    *  这个回调只负责把「这台机器登录态没了」这个事实往上说:
    *  Loop 据此停止认领,服务端据此拦住下一次认领,运营台据此把那个买家号标红。 */
@@ -246,21 +300,125 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     // 服务端最终采信哪条交期,回填时要原样带回,不能让插件另挑一条。
     const deliveryUsed = verdict.data.delivery_raw_used ?? undefined;
 
-    if (deps.confirmBeforeOrder !== false && deps.askConfirm) {
-      const go = await deps.askConfirm(task, {
-        total: reading.actualTotal,
-        deliveryRaw: deliveryUsed,
+    // ── 下单前的人工确认 ────────────────────────────────────────────────
+    //
+    // 默认关(所有者定稿)。关着的时候这里**一步都不停** —— 连一条事件都不发。
+    //
+    // **开着也必须有界,而且上界不是插件自己拍的。** 人一直不按的话,服务端的
+    // task_sweep 只看 claimed_at:第 claim_timeout_min 分钟它把这条判成认领超时
+    // 转待人工,那之后我们连 /release 都发不出去(TASK_NOT_HELD)——
+    // 一张一分钱没花的单会以「待人工 · CLAIM_TIMEOUT」收场,而它其实只是
+    // 没人按那一下。所以上界取
+    //     min(confirmWait, 认领时刻 + claim_timeout_min×60s − orderServerMargin − 此刻)
+    // 与 placeOrder 的硬顶**同一把尺子**(flow/amazon.orderHardCapMs)。
+    //
+    // **确认窗口算进单笔硬顶,不豁免。** background/loop 的看门狗按
+    // min(taskHardCapMs, 认领窗口 − 余量) 掐单,这段等待就在它里面 ——
+    // 豁免它等于给「我们没想到的那件事」开一个不设防的口子,而看门狗存在的
+    // 全部理由就是那件事。代价是:confirmWait 配得比 taskHardCapMs 还长时,
+    // 先到期的是看门狗(那时相位是 stuck,面板上说得出名字),不是确认窗口。
+    //
+    // **超时与取消不许渲染成同一个结果。** 「他看了一眼觉得不对」和
+    // 「他去吃饭了」处置完全不同:前者说明有人在把关,后者说明**没人在看这台机器**。
+    // 两条路都是清车 + 退回队列(这一刻还没花钱,退回去是安全的那一边),
+    // 但事件流里的文案与 payload.state 必须分得开 —— 合成一条的话,
+    // 一台没人守的机器会一直产出「有人按了取消」,看的人以为有人在把关。
+    if (deps.confirmBeforeOrder === true && deps.askConfirm) {
+      const budgetMs = posOr(deps.confirmWaitMs, DEFAULTS.timeouts.confirmWait);
+      const marginMs = posOr(deps.orderServerMarginMs, DEFAULTS.timeouts.orderServerMargin);
+      // 老服务端不下发 claim_timeout_min:那时没有窗口可钳,只能用配置里那个数。
+      const roomMs = claimDeadlineMs === null
+        ? budgetMs
+        : Math.max(0, claimDeadlineMs - marginMs - Date.now());
+      const waitMs = Math.min(budgetMs, roomMs);
+      const cappedBy = roomMs < budgetMs ? "claim_window" : "confirm_wait";
+      const deadlineMs = Date.now() + waitMs;
+
+      deps.onPhase?.("confirm");
+      deps.onConfirmWindow?.(deadlineMs);
+      log.warn(`停在下单前等人确认 —— 最多等 ${Math.round(waitMs / 1000)} 秒` +
+               (cappedBy === "claim_window"
+                 ? "(被认领窗口钳住了,不是配置里那个数)"
+                 : "") + ",到点自动退回队列");
+      // 先说出去再等:等的这几分钟里运营台上这一单是「拍单中」,没有这一条的话
+      // 没有任何地方说得出它其实停在等人上。
+      await step("等待人工确认下单", {
+        state: "awaiting_confirm", deadline_ms: deadlineMs,
+        wait_ms: waitMs, capped_by: cappedBy,
       });
-      if (!go) {
+
+      const preview: ConfirmPreview = {
+        upstreamOrderNo: task.upstream_order_no,
+        products: task.products.map((pr) => ({ asin: pr.asin, quantity: pr.quantity })),
+        // 服务端比过的那个数排第一;它没回就退回实付,并且**面板要改口**。
+        goodsTotal: verdict.data.goods_total ?? null,
+        actualTotal: reading.actualTotal,
+        priceCap: task.guards.price_cap,
+        giftCard: reading.giftCard
+          ? { applied: reading.giftCard.applied, amount: reading.giftCard.amount ?? null }
+          : null,
+        deliveryRaw: deliveryUsed,
+        deadlineMs,
+        cappedBy,
+      };
+
+      // 到点由**这边的钟**说了算。界面自己也跑一条倒计时(它要显示 M:SS),
+      // 但那条只负责显示 —— 上界交给界面的话,一个渲染卡住的面板就等于没有上界,
+      // 而它长得跟「人还在看」一模一样。
+      const gate = boundedWait(deps.askConfirm(task, preview), waitMs);
+      let answer: boolean | typeof CONFIRM_TIMEOUT;
+      try {
+        answer = await gate.race;
+      } finally {
+        // 定时器一定要收掉:正常那一路(人按了)不收的话,每一单都会留下一个
+        // 几分钟才醒的定时器(见 background/loop.hardCap 同一条)。
+        gate.cancel();
+        // 相位与倒计时都要落回来 —— 无论这一格是怎么结束的。
+        deps.onConfirmWindow?.(null);
+        deps.onPhase?.("running");
+      }
+
+      if (answer === CONFIRM_TIMEOUT) {
+        const waitedS = Math.round(waitMs / 1000);
+        log.warn(`等人确认超时(${waitedS} 秒没人按)—— 清车,退回队列。` +
+                 `这一单一分钱没花,它还在队列里;要的是有人守着这台机器,` +
+                 `或者把「下单前确认」关掉`);
+        // **先写事件流,再 release。** release 之后这条任务就不再归本实例持有,
+        // /events 会被 TASK_NOT_HELD 拒掉 —— 那条 step 就永远写不进去,
+        // 运营台上这一单看起来会是「领走了又回来了,什么也没说」。
+        await client.events(task.task_id, [{
+          kind: "step",
+          payload: { step: `等人确认超时 ${waitedS} 秒,退回队列`,
+                     state: "confirm_timeout", wait_ms: waitMs, capped_by: cappedBy },
+        }]);
+        const cleared = await tryClear("等人确认超时");
+        const rel = await client.release(task.task_id);
+        return rel.ok
+          ? { kind: "released", cartCleared: cleared }
+          : { kind: "unreported", message: rel.message, cartCleared: cleared };
+      }
+
+      if (!answer) {
         log.warn("人按了取消 —— 清车,退回队列");
+        // 与超时那一条分开的文案。同上:先写事件流再 release。
+        await client.events(task.task_id, [{
+          kind: "step",
+          payload: { step: "人按了取消,退回队列", state: "confirm_cancelled" },
+        }]);
         // 清不干净也照样 release:这一单本身没毛病,人只是不想现在买它。
         // 把它记成 PLUGIN_INTERNAL 拍单异常,等于用「插件崩了」去表达「人按了取消」。
         const cleared = await tryClear("人按了取消");
         const rel = await client.release(task.task_id);
         return rel.ok
           ? { kind: "released", cartCleared: cleared }
-          : { kind: "unreported", message: "release 失败", cartCleared: cleared };
+          : { kind: "unreported", message: rel.message, cartCleared: cleared };
       }
+
+      // 放行也要留痕:事后追「这一单是谁点的头」时,「机器直接下的」与
+      // 「某个人在 xx:xx 按了下单」必须分得开。
+      await step("人按了下单,继续", {
+        state: "confirm_approved", waited_ms: Math.max(0, waitMs - (deadlineMs - Date.now())),
+      });
     }
 
     // **先说,再点 —— 而且是「说上了才点」。** 这条事件不是旁白,是下单的
@@ -462,4 +620,27 @@ async function finish(
     return { kind: "unreported", message: detail, cartCleared };
   }
   return { kind: "failed", code, toManual: manual, cartCleared };
+}
+
+/** 「等人按」那道 race 用的哨兵。用一个独一无二的 Symbol 而不是 null/undefined ——
+ *  askConfirm 的返回值是布尔,不可能撞上。(与 background/loop 的 HARD_CAP 同型。) */
+const CONFIRM_TIMEOUT = Symbol("confirm-timeout");
+
+/** 输入:一个可能永远不 settle 的 promise + 上界 → 输出:到点就返回哨兵的那一个。
+ *
+ *  定时器**要能取消**:正常那一路(人按了按钮)如果不 clearTimeout,每一单都会
+ *  留下一个几分钟才醒的定时器 —— 在 Node 里它还会吊着进程不退出。
+ *  「所有等待都有上限」的另一半是「所有定时器都收得掉」(见 dom/wait.ts 的 finally
+ *  与 background/loop.hardCap)。
+ *
+ *  注意它**不取消**那个 promise —— JavaScript 取消不了 promise。面板那一侧要靠
+ *  onConfirmWindow(null) 自己把弹窗收掉;它稍后就算又 resolve 了,这边也已经
+ *  按超时落地了,不会有第二个结局。 */
+function boundedWait<T>(p: Promise<T>, ms: number):
+    { race: Promise<T | typeof CONFIRM_TIMEOUT>; cancel: () => void } {
+  let t: ReturnType<typeof setTimeout> | undefined;
+  const timer = new Promise<typeof CONFIRM_TIMEOUT>((resolve) => {
+    t = setTimeout(() => resolve(CONFIRM_TIMEOUT), ms);
+  });
+  return { race: Promise.race([p, timer]), cancel: () => { if (t !== undefined) clearTimeout(t); } };
 }

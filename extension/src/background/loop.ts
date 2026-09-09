@@ -64,6 +64,14 @@ export interface LoopDeps {
   /** 「正在等操作员做发卡行验证,到点是 deadlineMs」。面板拿它跑倒计时,
    *  离开那一格时传 null。相位(onPhase)负责标签,这一条负责那个数字。 */
   onVerifyWindow?: (deadlineMs: number | null) => void;
+  /** 「正在等人确认下单,到点是 deadlineMs」。与 onVerifyWindow 同形状,
+   *  但**必须是两条**:一条是「轮到你去发卡行验证」,一条是「轮到你决定买不买」,
+   *  处置完全不同 —— 前者已经花过钱了,后者一分钱还没花。 */
+  onConfirmWindow?: (deadlineMs: number | null) => void;
+  /** 下单前那一屏的应答。**接了它不等于开着** —— 开关在配置里
+   *  (`Config.confirmBeforeOrder`,默认关),每一轮现读。
+   *  原先这个开关长在「构造 Loop 时传没传这个回调」上,而面板改开关**不重建 Loop**
+   *  —— 人在面板上关掉它,机器照旧每一单都停下来等,而开关看起来已经关了。 */
   askConfirm?: RunDeps["askConfirm"];
   /** 读到的登录态往上报一次。内容脚本转给 service worker,由它挂在下一次心跳上
    *  —— Loop 自己不碰任何 chrome API(这样它能在 Node 里被自检脚本直接驱动)。 */
@@ -306,12 +314,18 @@ export class Loop {
         driver,
         log: this.deps.log,
         askConfirm: this.deps.askConfirm,
-        confirmBeforeOrder: !!this.deps.askConfirm,
+        // 开关从**这一轮的配置**读。面板上改它不重建 Loop(runner.setConfig 只在
+        // 服务端地址/身份变了才重建),读构造时捕获的那一位会让开关改完不生效。
+        confirmBeforeOrder: cfg.confirmBeforeOrder === true,
+        // 两个预算都从同一张超时表来,不在这里编译成常量。
+        confirmWaitMs: cfg.timeouts?.confirmWait,
+        orderServerMarginMs: cfg.timeouts?.orderServerMargin,
         onLoginLost: () => this.markSignedOut(),
         // 相位由 runTask 说了算的那两格(等人做发卡行验证 / 验证做完了)。
         // Loop 这一层从 claim 到 return 之间一直是 running,分不出「轮到人了」。
         onPhase: (p) => this.phase(p, task),
         onVerifyWindow: (deadlineMs) => this.deps.onVerifyWindow?.(deadlineMs),
+        onConfirmWindow: (deadlineMs) => this.deps.onConfirmWindow?.(deadlineMs),
       });
 
       // ── 看门狗 ──
@@ -357,6 +371,11 @@ export class Loop {
    *  事件流里再没有任何地方说过是插件先放弃的。§8.3 承诺的是「插件永远给服务端
    *  留出余量」,一半虽然不是配出来的余量,至少是真的余量。 */
   private watchdogCapMs(cfg: Config, task: Task): number {
+    // 「下单前确认」那段等待**算在这个硬顶里面,不豁免**。豁免它等于给
+    // 「我们没想到的那件事」开一个不设防的口子,而看门狗存在的全部理由就是那件事;
+    // 而且确认窗口自己已经被同一把尺子钳过(run.ts 那一段:窗口 − 余量),
+    // 两道界限方向一致。代价说在明处:confirmWait 配得比这个硬顶还长时,
+    // 先到期的是看门狗(相位 stuck,面板上说得出名字),不是确认窗口。
     const own = posOr(cfg.taskHardCapMs, DEFAULTS.taskHardCapMs);
     const min = task.claim_timeout_min;
     if (typeof min !== "number" || !Number.isFinite(min) || min <= 0) return own;
