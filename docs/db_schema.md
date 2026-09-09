@@ -36,7 +36,7 @@
 | `id` | bigint identity | |
 | `code` | text UNIQUE | 环境名，如 `env-172` |
 | `marketplace` | text | 首期恒为 `US` |
-| `amazon_customer_id` | text | 插件从页面提取，**仅作对账**，不作身份判定 |
+| `amazon_customer_id` | text | 这个买家号**应该**是哪个 Amazon 账号。插件从页面 HTML 里抠出来(`customerId:"A…"`)随心跳上报,**为空时首次上报即写入**;已经有值而插件报上来的不一样时**不覆盖**,认领时直接拒(`INSTANCE_ACCOUNT_MISMATCH`)。**身份仍然是买家号环境本身**,这一列是对账 + 登错号拦截,不拿它去派单、也不拿它当主键。改它只有一条路:运营台买家号页的「以这个为准」(写 `procure.env_events`,带 operator) |
 | `status` | text | `active` / `paused` / `blocked` / `retired`（封闭集） |
 | `daily_cap` | integer | 日单量上限，`0` = 不限 |
 | `expected_card_last4` | text | **这个买家号该刷哪张卡**的后四位。留空 = 这一道不校验（与 `tasks.require_fba` 同一形态：闸门可关，但关不关是库里的数据说了算，不是代码里的默认值）。填了之后，结算页读到的卡尾号与它不符即 `PAYMENT_METHOD_UNEXPECTED`，**在下单之前拦下**。只校验、不替买家号切卡——改支付配置是人的动作，不是拍单流程的动作。**改这一列不留痕**：`task_events` 挂在 `task_id` 上，这张表套不进去，而 `buyer_envs` 眼下整张表都没有审计流（`daily_cap`、`status` 同样没有），所以「谁在什么时候关掉了这个买家号的支付校验」目前答不出来 |
@@ -56,6 +56,7 @@
 | `last_seen_at` | timestamptz | 心跳更新 |
 | `login_state` | text | `ok` / `signed_out` / `unknown`（封闭集）。这台机器的浏览器 profile 里那个 Amazon 账号**此刻还在不在登录态**。插件读导航栏判定后随心跳上报，**不读 Cookie**。默认 `unknown` |
 | `login_checked_at` | timestamptz | 上一次真的读过页面判定登录态的时刻。`login_state` 单独看是不够的：一个三天前读到的 `ok` 和一分钟前读到的 `ok` 不是一回事 |
+| `amazon_customer_id` | text | **这台机器此刻登着的那个 Amazon 账号**。插件在登录探测那一步顺手从页面 HTML 抠出来(`flow/dom/parse.readCustomerId`),随心跳上报。与 `buyer_envs.amazon_customer_id`(这个买家号**应该**是谁)是两列,**不是一列** —— 两列不一样才判得出「这台机器登错号了」。不传 = 这一轮没有新消息(保留旧值),与 `login_state` 同一条规则 |
 
 > **为什么登录态挂在实例上，不挂在 `buyer_envs` 上。** 登录态存在于**浏览器 profile**
 > 里，而 profile 属于跑着插件的那台机器，不属于库里那条买家号记录。挂到 `buyer_envs`
@@ -75,6 +76,16 @@
 > 让它覆盖的话,一次读失败就能把闸门重新打开,运营台上那一行也从红色变回灰色。
 > 规则的唯一定义处是 `services/instance._KEEPS_OLD_LOGIN_STATE`，
 > `login_checked_at` 跟着同一个条件走 —— 值和它的时刻永远一起动。
+>
+> **「登错号」是第二条轴,而它不是一列存下来的布尔。** 判据是
+> `buyer_envs.amazon_customer_id`(该是谁)与 `plugin_instances.amazon_customer_id`
+> (此刻登着谁)两个值一比,唯一定义处 `services/instance.account_state()`,
+> 认领闸(`task_queue.claim`)与运营台买家号页调的是同一个函数。
+> **刻意不存一位 `account_mismatch`**:存下来的那一位要在四个地方被清
+> (插件换回正确的号、运营点「以这个为准」、买家号那一列被改、实例被换),
+> 漏清任何一处的表现都是**闸门永远关着、这个买家号从此一单也派不出去**,
+> 而界面上写的还是「登录的不是这个买家号」—— 一个已经不成立的理由。
+> 两个值现算不会陈旧:换回正确的号,下一次心跳这道闸自己就开了。
 
 ### `procure.tasks` — 采购任务
 
@@ -86,8 +97,9 @@
 | `buyer_env_id` | bigint FK | 派给哪个买家号 |
 | `marketplace` | text | 首期恒为 `US` |
 | `status` | text | 见下方状态机（封闭集） |
+| `purchase_source` | text | **这一单是谁买的**:`plugin`(本系统的插件拍的,默认)/ `external`(上游自己在别处下的单,只是把 AMZ 单号填进了那张表 —— 不经拍单、不经护栏,直接进物流同步)/ `manual_backfill`(人在运营台按「强制回填」写进去的)。封闭集,标签在 `services/vocab.PURCHASE_SOURCE_LABELS`。**必须有这一列**:三种来源的处置完全不同 —— 外部单的 `price_cap` 是个占位的 0,渲染成「限价 0.00 未超」就是编了一句护栏从没做过的结论;回写时外部单的采购状态与AMZ 单号**是上游自己填的**,写回去等于把上游填的东西又抄给它看一遍。默认 `plugin`:老库里那些单确实都是插件拍的 |
 | `ship_*` | text | 收货信息，下发给插件填表 |
-| `price_cap` | numeric(12,2) | **限价**。由上游 ERP 算好下发，本系统只取用不计算。护栏拿**这一单的货款**（`goods_total`）跟它比，不是拿「这张卡实际扣了多少」比 |
+| `price_cap` | numeric(12,2) | **限价**。由上游 ERP 算好下发，本系统只取用不计算。护栏拿**这一单的货款**（`goods_total`）跟它比，不是拿「这张卡实际扣了多少」比。NOT NULL,所以 `purchase_source='external'` 的行落一个 `0` 进来 —— **那不是「限价 0」,是「这一单没有限价这回事」**:界面与导出对 external 一律显示「外部下单,不适用」,不许渲染成「未超」(判据只有一处:`services/task_query.over_cap` 与 `web/src/lib/utils.capVerdict`) |
 | `max_delivery_days` | smallint | 交期上限，默认 7 |
 | `require_fba` | boolean | 这一单要不要求 Amazon 自营发货，默认 `true`。**必须有这一列**：在此之前它只是 `GuardsOut` 里一个 `= True` 的默认值，路由压根没往 `price_guard.adjudicate` 传，于是「可关的闸」是个恒为真的常量——照文档去配置它的人会发现改哪儿都不生效，而界面上那道闸一直亮着 |
 | `claimed_by` | bigint FK | 在途：被哪个实例领走 |
@@ -134,6 +146,13 @@
 >
 > **超时不退回 `ready` 而是转 `manual`**：插件可能已经在 Amazon 上真下了单，只是没来得及
 > 回传，自动重试就是重复下单。
+>
+> **外部下单是另一条进 `purchased` 的路**(所有者定稿 ④:订单可能不经本系统采购,
+> 但要由本系统同步物流)。上游那张表里填了 AMZ 单号的行,落库即
+> `status='purchased'` + `purchase_source='external'`,**不经 pending/ready/claimed,
+> 也不经任何一道护栏** —— 它本来就没走过我们的结算页。已经在库里的任务后来
+> 出现单号时按一张迁移表处置(哪几种状态转、哪几种一动不动),表在
+> `docs/01-系统设计.md` §10;`claimed` 那一格**永远不动**,那是插件此刻正在拍的单。
 >
 > **`exception` → `ready` 有两条路，库里必须分得开**：人点的那一下走 `task_events.kind='admin'`，
 > 系统自动重的走 `kind='auto_retry'`，`retry_count` 只被后者加。分不开的后果是事后没人答得上
@@ -206,6 +225,34 @@
 
 > `kind` 与「error 必须带 code」两条约束在应用层强制（`task_event.record()` 直接抛
 > `ValueError`）。这是「失败必须机器可读」的落地点。
+
+### `procure.env_events` — 买家号这一侧的事件流（只追加）
+
+`task_events` 挂在 `task_id` 上，买家号身上发生的事套不进去 —— 于是
+`buyer_envs` 整张表长期**没有任何审计流**（`daily_cap`、`status`、
+`expected_card_last4` 改了都答不出「谁在什么时候改的」）。
+
+这张表先把 `amazon_customer_id` 那一条补上：它有一个**人可以点的动作**
+（买家号页的「以这个为准」），而那个动作会把一道认领闸打开 ——
+一个能打开闸门的按钮，按完之后库里一个字都不留，是这个项目不该有的东西。
+
+| 列 | 类型 | 说明 |
+|---|---|---|
+| `id` | bigint identity | |
+| `buyer_env_id` | bigint FK CASCADE | |
+| `instance_id` | bigint FK | 是哪台机器报上来的（人工动作时为空） |
+| `kind` | text | `customer_id_seen`（这个买家号第一次被认出账号）/ `customer_id_mismatch`（报上来的账号与库里的不一样，认领已被拒）/ `customer_id_override`（人点了「以这个为准」）。封闭集，由 `services/instance.record_env_event()` 校验，标签在 `services/vocab.ENV_EVENT_LABELS` |
+| `payload` | jsonb | 至少带 `expected` / `reported` 两个值和 `operator` |
+| `created_at` | timestamptz | |
+
+> **`mismatch` 每次心跳只记一条,不是每次都记。** 一台登错号的机器 20 秒一次心跳，
+> 无条件追加的话这张表一天多 4300 行，而它们说的是同一件事；真正要留痕的是
+> **这件事第一次发生**和**有人做了处置**。判据是「上一条 `mismatch` 里的 `reported`
+> 与这次一样就不记」。
+>
+> **`expected_card_last4` 还没接进来** —— 那是另一件事（要连同 `daily_cap`、
+> `status` 一起想清楚谁写、写什么）。这里写明白，免得下一个人看见这张表
+> 就以为买家号的每一次改动都有记录。
 
 ---
 

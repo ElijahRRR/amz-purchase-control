@@ -76,6 +76,64 @@ LOGIN_STATE_TONE: dict[str, str] = {
     "unknown": "dashed-zinc",
 }
 
+#: 这一单是谁买的(procure.tasks.purchase_source)。
+#:
+#: 三种来源的处置完全不同,所以它们必须是三个词:
+#:   · 插件下单 —— 走过我们全部护栏的那一批
+#:   · 外部下单 —— 上游自己在别处买的,只把 AMZ 单号填进了那张表。**没有护栏结论**,
+#:     `price_cap` 是个占位的 0;界面上那一档写「外部下单,不适用」,
+#:     不许写「未超」(那是一句护栏从没做过的判断)
+#:   · 人工回填 —— 有人在运营台按了「强制回填」,断言是被跳过的
+PURCHASE_SOURCE_LABELS: dict[str, str] = {
+    "plugin": "插件下单",
+    "external": "外部下单",
+    "manual_backfill": "人工回填",
+}
+
+#: 插件下单是常态,用最淡的一档(石板灰虚线),别让每一行都挂一个抢眼的标签 ——
+#: 一个每行都出现的标签等于没有标签。另外两种是「这一单没走我们那条流」,
+#: 各给一个看得见的颜色:外部单是上游的动作(天蓝,与「还在流转中」同族),
+#: 人工回填是有人动过手(紫,与 admin 事件同色)。
+PURCHASE_SOURCE_TONE: dict[str, str] = {
+    "plugin": "dashed-zinc",
+    "external": "dashed-sky",
+    "manual_backfill": "solid-violet",
+}
+
+#: 这台机器登着的 Amazon 账号跟这个买家号对不对得上
+#: (services/instance.account_state 现算出来的,**不是库里的一列**)。
+#:
+#: 与 LOGIN_STATE 是两条独立的轴:登录态答的是「还登着吗」,这一条答的是
+#: 「登着的是不是**这个号**」。两台机器登错号是真会发生的事,而在此之前
+#: 它在买家号页上渲染成满格绿色的「在线 · 可派」—— 与登录态那一列当初的毛病一模一样。
+ACCOUNT_STATE_LABELS: dict[str, str] = {
+    "ok": "买家号对得上",
+    "mismatch": "登错号",
+    # 「还没比对过」而不是「未知」:这一档在两种情况下出现 —— 买家号那一列还没写过值
+    # (第一次上报就会写上),或者插件还没报过 customerId(老插件)。
+    # 两种都是「这道闸这会儿用不上」,不是「有问题」。
+    "unknown": "还没比对过",
+}
+
+#: 登错号用红:它跟「已登出」是同一类 —— 不去处理就一单也派不出去,
+#: 而且**处置方式不同**(那个是去重新登录,这个是去确认这台机器该登谁),
+#: 所以不能跟它共用一句话。
+ACCOUNT_STATE_TONE: dict[str, str] = {
+    "ok": "solid-emerald",
+    "mismatch": "solid-red",
+    "unknown": "dashed-zinc",
+}
+
+#: 买家号那条事件流(procure.env_events.kind)的中文标签。封闭集在
+#: services/instance.ENV_EVENT_KINDS —— 与 task_events 那一套分开,
+#: 因为它们挂在不同的东西上,混进 EVENT_LABELS 会让任务时间线上冒出
+#: 一种永远不会出现在那儿的事件类型。
+ENV_EVENT_LABELS: dict[str, str] = {
+    "customer_id_seen": "认出买家号ID",
+    "customer_id_mismatch": "登错号",
+    "customer_id_override": "人工改为准",
+}
+
 #: 运维体检那几个计数,界面上那一格叫什么。
 #:
 #: 与 EVENT_LABELS 分开而不是复用:时间线上那个点只有 76px 一列,标签必须短;

@@ -4,7 +4,7 @@
 插件发 subtotal」的字段错位就是靠多处副本产生的。
 """
 
-from datetime import date
+from datetime import date, datetime
 from decimal import Decimal
 from typing import Any, Literal
 
@@ -42,6 +42,17 @@ class HeartbeatReq(BaseModel):
     #: (extension/src/flow/dom/parse.readLoginState)。**不读 Cookie** ——
     #: 插件根本没申请 cookies 权限,登录态留在浏览器 profile 里。
     login_state: Literal["ok", "signed_out", "unknown"] | None = None
+    #: 这台机器此刻登着的那个 Amazon 账号(插件在登录探测那一步顺手从页面 HTML 里
+    #: 抠出来的,extension/src/flow/dom/parse.readCustomerId)。
+    #:
+    #: **不传 = 这一轮没有新消息**,与 login_state 同一条规则:服务端原样保留
+    #: 库里那一位,不是把它抹成空。抠不到就不传 —— 老插件从不传,行为不变。
+    #:
+    #: 服务端拿它做两件事,都**不是身份认定**(身份仍然是买家号环境):
+    #:   · buyer_envs.amazon_customer_id 为空 → 首次写入(对账用)
+    #:   · 已有值且不一样 → 认领时拒(INSTANCE_ACCOUNT_MISMATCH),
+    #:     这台机器登错号了,派单给它就是拿另一个买家号去买这一单
+    amazon_customer_id: str | None = None
 
 
 # ── 认领 ────────────────────────────────────────────────────────────────
@@ -264,6 +275,9 @@ class TaskSearchReq(BaseModel):
     #: 一旦非空就**盖过**状态桶与时间范围 —— 按号找单的人是来找特定几张单的。
     order_numbers: list[str] = Field(default_factory=list)
     asin: str | None = None
+    #: 按来源筛(plugin / external / manual_backfill)。空 = 全部。
+    #: 「外部下单的那一批现在物流同步到哪儿了」是这一列存在之后第一个会被问的问题。
+    purchase_source: str | None = None
     page: int = 1
     page_size: int = 50
 
@@ -371,6 +385,30 @@ class ExpectedCardReq(BaseModel):
     last4: str | None = None
 
 
+class EnvCustomerIdReq(BaseModel):
+    """把这个买家号的 amazon_customer_id 改成插件报上来的那个（「以这个为准」）。
+
+    形状与「空表示什么」都在 services/instance.set_customer_id 判(回一个带名字的
+    业务码),不在这里写 pattern —— 与 ExpectedCardReq 同一个做法。
+
+    **这里有 operator,而 ExpectedCardReq 没有,不是不一致。** 那一条当初不收
+    operator 是因为 buyer_envs 没有任何地方能写它,收一个下来却丢掉比不收更坏。
+    现在 procure.env_events 有了,这个动作**会打开一道认领闸**(登错号被拒的那道),
+    所以它必须留痕:谁在什么时候把哪个账号定成了准。
+    expected_card_last4 还没接进这条事件流 —— 那是另一件事,不在这里假装做过。
+    """
+
+    #: 要写进库的那个账号。留空 = 清掉这个买家号的账号(等于关掉登错号那道闸,
+    #: 回到「还没比对过」),同样写一条 override 事件 —— 关闸比开闸更该留痕。
+    amazon_customer_id: str | None = None
+    operator: str | None = None
+
+    @field_validator("amazon_customer_id", mode="before")
+    @classmethod
+    def _strip(cls, v):
+        return v.strip() if isinstance(v, str) else v
+
+
 class AsinReq(BaseModel):
     old_asin: str
     new_asin: str
@@ -394,10 +432,37 @@ class IntakeRow(BaseModel):
     ship_state: str
     ship_postcode: str
     ship_country: str = "US"
-    #: 上游 ERP 算好下发,本系统只取用不计算
-    price_cap: Decimal
+    #: 上游 ERP 算好下发,本系统只取用不计算。
+    #:
+    #: **带了 amazon_order_no 的行可以不给它**:那种行是上游自己在别处下的单
+    #: (所有者定稿 ④),我们只负责同步物流,没有任何一道护栏会用到限价。
+    #: 库里那一列 NOT NULL,所以落一个 0 进去 —— 而 0 在界面上写的是
+    #: 「外部下单,不适用」,**不是**「限价 0.00,未超」。
+    price_cap: Decimal | None = None
     max_delivery_days: int = 7
     products: list[IntakeProduct]
+    #: **上游自己填的 AMZ 单号。带了它这一行就是「外部下单」** ——
+    #: 落库即 purchased + purchase_source='external',不经拍单、不经护栏,
+    #: 直接进物流同步队列(services/shipment.PENDING_SQL 只认
+    #: status='purchased' 且单号非空)。
+    #:
+    #: **形状不在这里校验**,而是在 services/task_intake 里拒成一条带理由的
+    #: rejected —— 与 ForceBackfillReq 那边(pattern → 422)刻意不同:
+    #: 那边一次只处理一张单,这边一次是几百行,为一行形状不对回 422
+    #: 会把整批拦在门外,而 ingest 的承诺是「每一行的去向都在 details 里」。
+    amazon_order_no: str | None = None
+    #: 上游在别处下单的时间。不给就用落库的那一刻 —— 那不准,但它至少是个
+    #: 说得清来历的时刻(「我们是这时候知道的」),比留空强:留空的话
+    #: 这张单在「按采购时间」的筛选和统计里整个消失。
+    purchased_at: datetime | None = None
+
+    @field_validator("amazon_order_no", mode="before")
+    @classmethod
+    def _strip_order_no(cls, v):
+        # 首尾一个空格就能绕开 uq_tasks_amazon_order_no —— " 111-…" 与 "111-…"
+        # 在库里是两个值,同一张亚马逊订单于是能钉到两条任务上。
+        # 与 ForceBackfillReq._strip 是同一条理由。
+        return v.strip() if isinstance(v, str) else v
 
 
 class IntakeReq(BaseModel):

@@ -14,7 +14,12 @@ CREATE TABLE IF NOT EXISTS procure.buyer_envs (
     id                 bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     code               text NOT NULL UNIQUE,          -- 环境名,如 'env-172'
     marketplace        text NOT NULL DEFAULT 'US',
-    amazon_customer_id text,                          -- 插件从页面提取,仅作对账
+    amazon_customer_id text,
+                                  -- 这个买家号**应该**是哪个 Amazon 账号。
+                                  -- 插件从页面 HTML 抠出来随心跳上报:为空则首次上报写入;
+                                  -- 已有值而报上来的不一样 → **不覆盖**,认领时拒
+                                  -- (INSTANCE_ACCOUNT_MISMATCH)。身份仍是买家号环境本身,
+                                  -- 这一列是对账 + 登错号拦截。改它只有「以这个为准」一条路
     status             text NOT NULL DEFAULT 'active',
                                   -- active / paused / blocked / retired(封闭集)
     daily_cap          integer NOT NULL DEFAULT 0,    -- 0 = 不限
@@ -44,6 +49,11 @@ CREATE TABLE IF NOT EXISTS procure.plugin_instances (
                                   -- 插件读导航栏判定后随心跳上报,**不读 Cookie**。
                                   -- unknown ≠ ok:读不到导航栏就是读不到,不许当成"应该没问题"
     login_checked_at timestamptz,  -- 上一次真的读过页面判定登录态的时刻
+    amazon_customer_id text,
+                                  -- **这台机器此刻登着的**那个 Amazon 账号(插件在登录探测
+                                  -- 那一步顺手从页面 HTML 抠的)。与 buyer_envs 那一列
+                                  -- (这个买家号**应该**是谁)是两列 —— 两列不一样才判得出
+                                  -- 「这台机器登错号了」。不传 = 这一轮没有新消息,保留旧值
     created_at     timestamptz NOT NULL DEFAULT now()
 );
 -- 老库补列:CREATE TABLE IF NOT EXISTS 对**已存在**的表什么都不做,
@@ -53,6 +63,8 @@ ALTER TABLE procure.plugin_instances
     ADD COLUMN IF NOT EXISTS login_state text NOT NULL DEFAULT 'unknown';
 ALTER TABLE procure.plugin_instances
     ADD COLUMN IF NOT EXISTS login_checked_at timestamptz;
+ALTER TABLE procure.plugin_instances
+    ADD COLUMN IF NOT EXISTS amazon_customer_id text;
 CREATE INDEX IF NOT EXISTS idx_plugin_instances_env
     ON procure.plugin_instances (buyer_env_id);
 
@@ -76,6 +88,16 @@ CREATE TABLE IF NOT EXISTS procure.tasks (
         -- manual    需人工介入
         -- cancelled
         -- (封闭集)
+
+    -- 这一单是谁买的:
+    --   plugin          本系统的插件拍的(默认)
+    --   external        上游自己在别处下的单,只把 AMZ 单号填进了那张表 ——
+    --                   不经拍单、不经护栏,落库即 purchased,直接进物流同步
+    --   manual_backfill 人在运营台按「强制回填」写进去的
+    -- (封闭集,标签在 services/vocab.PURCHASE_SOURCE_LABELS)
+    -- 必须分得开:外部单的 price_cap 是个占位的 0,渲染成「限价 0.00 未超」
+    -- 就是编了一句护栏从没做过的结论;回写时外部单的采购状态与单号是**上游自己填的**。
+    purchase_source   text NOT NULL DEFAULT 'plugin',
 
     -- 收货信息(下发给插件填表)
     ship_name         text NOT NULL,
@@ -140,6 +162,8 @@ ALTER TABLE procure.tasks
     ADD COLUMN IF NOT EXISTS may_have_ordered boolean NOT NULL DEFAULT false;
 ALTER TABLE procure.tasks ADD COLUMN IF NOT EXISTS require_fba boolean NOT NULL DEFAULT true;
 ALTER TABLE procure.tasks ADD COLUMN IF NOT EXISTS gift_card_amount numeric(12,2);
+ALTER TABLE procure.tasks
+    ADD COLUMN IF NOT EXISTS purchase_source text NOT NULL DEFAULT 'plugin';
 ALTER TABLE procure.tasks ADD COLUMN IF NOT EXISTS goods_total numeric(12,2);
 -- 认领扫描
 CREATE INDEX IF NOT EXISTS idx_tasks_ready
@@ -207,6 +231,26 @@ CREATE TABLE IF NOT EXISTS procure.task_events (
 );
 CREATE INDEX IF NOT EXISTS idx_task_events_task
     ON procure.task_events (task_id, created_at);
+
+-- 买家号这一侧的事件流(只追加)。task_events 挂在 task_id 上,买家号身上发生的事
+-- 套不进去 —— 于是 buyer_envs 长期一条审计流都没有。
+-- 先把 amazon_customer_id 那一条补上:它有一个**人可以点的动作**(「以这个为准」),
+-- 而那个动作会打开一道认领闸 —— 一个能开闸的按钮按完之后库里一个字都不留,
+-- 是这个项目不该有的东西。expected_card_last4 / daily_cap / status 还没接进来。
+CREATE TABLE IF NOT EXISTS procure.env_events (
+    id           bigint GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
+    buyer_env_id bigint NOT NULL REFERENCES procure.buyer_envs(id) ON DELETE CASCADE,
+    instance_id  bigint REFERENCES procure.plugin_instances(id),
+    kind         text NOT NULL,
+        -- customer_id_seen      这个买家号第一次被认出账号(写进 buyer_envs)
+        -- customer_id_mismatch  报上来的账号与库里的不一样,认领已被拒
+        -- customer_id_override  人点了「以这个为准」
+        -- (封闭集,由 services/instance.record_env_event() 校验)
+    payload      jsonb NOT NULL DEFAULT '{}'::jsonb,
+    created_at   timestamptz NOT NULL DEFAULT now()
+);
+CREATE INDEX IF NOT EXISTS idx_env_events_env
+    ON procure.env_events (buyer_env_id, id DESC);
 
 -- ── logistics:物流域 ────────────────────────────────────────────────────
 
