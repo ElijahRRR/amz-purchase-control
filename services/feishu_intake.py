@@ -26,14 +26,20 @@ from typing import Any
 
 from registry import settings
 
-#: 表里可以没有这两列,缺了用默认值。其余都必填。
-_OPTIONAL = ("max_delivery_days", "marketplace")
+#: 表里可以没有这几列,缺了用默认值(或者干脆没有这件事)。其余都必填。
+#:
+#: `amazon_order_no` 是 2026-09 加的那一列,**与回写的「AMZ单号」是同一列的两个方向**:
+#:   · 人手填了 → 这一行是「外部下单」,我们不拍,只同步物流(所有者定稿 ④)
+#:   · 我们拍成了 → 回写把单号写回这一格
+#: 一列两用是刻意的:上游那张表里只该有一个「AMZ单号」。做成两列的话,
+#: 运营看到两格单号,得先想清楚该信哪一格 —— 而它们本来就是同一件事。
+_OPTIONAL = ("max_delivery_days", "marketplace", "amazon_order_no")
 
 #: 我们需要的列。asin / quantity 单独处理(它们决定商品行)。
 _ROW_FIELDS = ("upstream_order_no", "buyer_env_code", "price_cap",
                "ship_name", "ship_phone", "ship_line1",
                "ship_city", "ship_state", "ship_postcode",
-               "max_delivery_days", "marketplace")
+               "max_delivery_days", "marketplace", "amazon_order_no")
 
 
 class MappingError(RuntimeError):
@@ -153,6 +159,21 @@ def to_rows(records: list[dict[str, Any]], mapping: dict[str, Any]) -> dict[str,
             # 漏了的话,回写只会写这张单的第一行 —— 上游在表里看到的是
             # 「第一个商品有单号,其余几个还没动静」,而它们本来就是同一次下单。
             g["record_ids"].append(rec.get("record_id"))
+            # AMZ 单号:**取第一非空,而且要求一致** —— 与上面那几个字段
+            # (不一致时按先出现的落库,只在摘要里报)刻意不同。
+            #
+            # 那几个字段填串了,后果是「按第一行的地址寄」,一张单寄错;
+            # 这一列填串了,后果是**把两张不同的亚马逊订单认成同一张**:
+            # 我们会挑其中一个号写进库、按它同步物流、按它对账,
+            # 而另一张订单从此不在任何系统里。宁可整组拒收让人去看。
+            got_no = _text(col(rec, "amazon_order_no"))
+            first_no = g["row"].get("amazon_order_no") or ""
+            if got_no and not first_no:
+                g["row"]["amazon_order_no"] = got_no
+            elif got_no and got_no != first_no:
+                g["reject"] = (f"同一张上游订单的几行填了不同的 AMZ 单号:"
+                               f"{first_no} / {got_no}(record {rec.get('record_id')})"
+                               f" —— 整张单没落库,请去飞书核对")
             for key in ("buyer_env_code", "price_cap", "ship_name", "ship_phone",
                         "ship_line1", "ship_city", "ship_state", "ship_postcode"):
                 now = _text(col(rec, key))
@@ -172,17 +193,25 @@ def to_rows(records: list[dict[str, Any]], mapping: dict[str, Any]) -> dict[str,
         row["max_delivery_days"] = row.get("max_delivery_days") or "7"
         row["products"] = products
         groups[order_no] = {"row": row, "products": products,
-                            "record_ids": [rec.get("record_id")], "conflicts": []}
+                            "record_ids": [rec.get("record_id")], "conflicts": [],
+                            "reject": None}
         continue
 
     for order_no, g in groups.items():
         g["row"]["products"] = g["products"]
 
+    # 被整组拒掉的(眼下只有 AMZ 单号打架这一种)**不进 rows,但要报出来**。
+    # 静默丢掉的话上游会以为这一单同步过了 —— 而它一行都没落库。
+    rejected = [{"upstream_order_no": no, "reason": g["reject"],
+                 "record_ids": g["record_ids"]}
+                for no, g in groups.items() if g.get("reject")]
+
     return {
-        "rows": [g["row"] for g in groups.values()],
+        "rows": [g["row"] for g in groups.values() if not g.get("reject")],
         "skipped": skipped,
         "groups": groups,
         "conflicts": [c for g in groups.values() for c in g["conflicts"]],
+        "rejected": rejected,
     }
 
 

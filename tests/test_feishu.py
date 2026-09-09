@@ -151,6 +151,13 @@ MAP = {
     "row_is": "product", "take_column": "", "take_equals": [],
 }
 
+#: 接上「AMZ单号」那一列之后的映射。**与回写的「AMZ单号」是同一列的两个方向**:
+#: 人手填了就当外部下单,我们拍成了就写回去。
+MAP_WITH_ORDER_NO = {
+    **MAP,
+    "fields": {**MAP["fields"], "amazon_order_no": "AMZ单号"},
+}
+
 
 def _rec(rid, **over):
     fields = {"上游单号": "UP-1", "买家号": "env-172", "ASIN": "B0AAAAAAAA", "数量": 1.0,
@@ -201,6 +208,60 @@ def test_conflicting_address_across_rows_of_one_order_is_reported_not_swallowed(
     assert got["rows"][0]["ship_city"] == "Santa Ana"        # 按先出现的落库
     assert [c["field"] for c in got["conflicts"]] == ["ship_city"]
     assert got["conflicts"][0]["later"] == "Boston"
+
+
+def test_the_amz_order_no_is_taken_from_the_first_row_that_has_one():
+    """AMZ 单号取**第一非空**:飞书里一张单占好几行,人通常只在其中一行填单号。
+
+    要求每一行都填的话,「只填了第一行」这种最常见的填法会被拒收 ——
+    而它一点毛病都没有。
+    """
+    got = feishu_intake.to_rows([
+        _rec("r1", ASIN="B0AAAAAAAA"),
+        _rec("r2", ASIN="B0BBBBBBBB", AMZ单号="111-2223334-5556667"),
+        _rec("r3", ASIN="B0CCCCCCCC"),
+    ], MAP_WITH_ORDER_NO)
+    assert len(got["rows"]) == 1
+    assert got["rows"][0]["amazon_order_no"] == "111-2223334-5556667"
+    assert got["rejected"] == []
+
+
+def test_two_different_amz_order_numbers_on_one_order_reject_the_whole_thing():
+    """同一张上游订单的几行填了不同的 AMZ 单号 → **整张单拒收**并报出来。
+
+    与地址那一条(按先出现的落库、只在摘要里报)刻意不同:地址填串了是一张单
+    寄错;这一列填串了是**把两张不同的亚马逊订单认成同一张** ——
+    我们会挑其中一个号写进库、按它同步物流、按它对账,而另一张订单从此
+    不在任何系统里。宁可一行都不落,让人去看。
+    """
+    got = feishu_intake.to_rows([
+        _rec("r1", ASIN="B0AAAAAAAA", AMZ单号="111-2223334-5556667"),
+        _rec("r2", ASIN="B0BBBBBBBB", AMZ单号="111-9998887-7776665"),
+    ], MAP_WITH_ORDER_NO)
+    assert got["rows"] == [], "两个单号打架的单**一行都不该落库**"
+    assert len(got["rejected"]) == 1
+    r = got["rejected"][0]
+    assert r["upstream_order_no"] == "UP-1"
+    assert "111-2223334-5556667" in r["reason"] and "111-9998887-7776665" in r["reason"]
+    # 那几行的 record_id 也要带上 —— 人得知道去飞书里改哪几行
+    assert sorted(r["record_ids"]) == ["r1", "r2"]
+
+
+def test_the_same_amz_order_no_repeated_on_every_row_is_fine():
+    """每一行都填了同一个号:那是「一致」,不是打架。"""
+    got = feishu_intake.to_rows([
+        _rec("r1", ASIN="B0AAAAAAAA", AMZ单号="111-2223334-5556667"),
+        _rec("r2", ASIN="B0BBBBBBBB", AMZ单号="111-2223334-5556667"),
+    ], MAP_WITH_ORDER_NO)
+    assert got["rejected"] == []
+    assert got["rows"][0]["amazon_order_no"] == "111-2223334-5556667"
+
+
+def test_the_amz_order_no_column_is_optional():
+    """表里没有这一列 = 上游还没开始用外部下单。整表照旧,不该全表拒收。"""
+    got = feishu_intake.to_rows([_rec("r1")], MAP)
+    assert got["rows"][0].get("amazon_order_no") in ("", None)
+    assert got["rejected"] == []
 
 
 def test_a_row_without_an_order_number_is_not_dropped_silently():

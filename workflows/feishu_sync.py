@@ -41,6 +41,10 @@ def _tail(mapped: dict, records: list[dict]) -> str:
     if mapped["skipped"]:
         # 「没轮到它」与「它有问题」分开说 —— 混在一起会让人去查一批其实没毛病的行。
         lines.append(f"  按 take_when 滤掉 {len(mapped['skipped'])} 条(不是拒收)")
+    for r in mapped.get("rejected") or []:
+        # 整组被拒的(眼下只有 AMZ 单号打架那一种):**一行都没落库**。
+        # 不报的话上游会以为这一单同步过了。
+        lines.append(f"  ⛔ {r['upstream_order_no']}:{r['reason']}")
     for c in mapped["conflicts"]:
         # 同一个上游单号的两行给了不同的地址/限价 —— 上游多半把两张单填成了
         # 同一个号。不静默取第一行了事,那会按错的地址寄出去。
@@ -96,7 +100,9 @@ def run(params: dict) -> str:
             preview = task_intake.dry_run(conn, rows)
         head = (f"dry-run:{len(rows)} 张订单 → 将新增 {preview['inserted']},"
                 f"重复 {preview['duplicated']},拒收 {preview['rejected']}"
-                f",落成 {'ready' if release else 'pending'}")
+                f",转外部下单 {preview['migrated']},外部单号对不上 {preview['conflicted']}"
+                f",落成 {'ready' if release else 'pending'}"
+                f"(带 AMZ 单号的那几张不受这个影响,一律落成已拍单)")
         notes = [f"    #{d['index']} {d['upstream_order_no']}: "
                  + (d.get("reason") or "已在库中")
                  for d in preview["details"] if d["result"] != "inserted"]
@@ -109,12 +115,22 @@ def run(params: dict) -> str:
 
     summary = (f"同步完成:新增 {got['inserted']},重复 {got['duplicated']},"
                f"拒收 {got['rejected']}(共 {len(rows)} 张订单)")
+    # 外部下单那两个数**单独说**,不并进「新增/重复」:
+    # 「上游后来给了单号,我们把已有的单转成了外部下单」和「新落了一张单」
+    # 是两件事,合在一起的话,一轮把 30 张待拍单全部转成已拍单会显示成
+    # 「重复 30」—— 一个每天都出现、谁也不会多看一眼的数字。
+    if got.get("migrated"):
+        summary += f"\n  转外部下单 {got['migrated']} 条(上游给了 AMZ 单号,不再由我们拍)"
+    if got.get("conflicted"):
+        summary += f"\n  ⚠ 外部单号对不上 {got['conflicted']} 条(都没动,逐条见下)"
     summary += "\n" + _tail(mapped, records)
     summary += f"\n  对照上游行 {linked} 条(回写要靠它找到飞书里是哪几行)"
-    bad = [d for d in got["details"] if d["result"] == "rejected"]
+    bad = [d for d in got["details"] if d["result"] in ("rejected", "conflicted")]
     if bad:
         # 拒收的必须逐条说出来。回一句「同步成功」就完了的话,少了几行没人知道。
-        summary += "\n  拒收明细:"
+        # 「外部单号对不上」也在这一段里逐条说 —— 那几条同样是**没落库的事实**,
+        # 而且其中一种(插件正在拍这单)是要人立刻去看的。
+        summary += "\n  拒收/未动明细:"
         for d in bad:
             summary += f"\n    #{d['index']} {d['upstream_order_no']}: {d['reason']}"
     return summary
