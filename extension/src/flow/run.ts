@@ -103,7 +103,8 @@ export interface RunDeps {
    *
    *  **它不负责超时。** 到点由 run.ts 这边的钟说了算(见下面那道 race)——
    *  把上界交给界面的话,一个渲染卡住的面板就等于没有上界,
-   *  而它长得跟「人还在看」一模一样。 */
+   *  而它长得跟「人还在看」一模一样。
+ */
   askConfirm?: (task: Task, preview: ConfirmPreview) => Promise<boolean>;
   /** 等人按的预算(毫秒)。来自 `core/config.timeouts.confirmWait`,不传用默认值。
    *  实际生效的还要与认领窗口取更紧的那个,见 confirmDeadline 那一段。 */
@@ -116,6 +117,22 @@ export interface RunDeps {
    *  那个数字用的。**离开时一定要传 null** —— 一条还在走的倒计时配着一句
    *  「等你确认」,而其实没有任何东西在等,正是这个项目反复记的那种假象。 */
   onConfirmWindow?: (deadlineMs: number | null) => void;
+  /** 「Loop 已经放弃这一单了」。看门狗掐单之后由 background/loop 翻上去的一位,
+   *  runTask 在**等人确认**那一格之后问它一次。
+   *
+   *  为什么非有不可:单笔硬顶可以被配得比确认窗口还紧(硬顶是现场可调的,
+   *  老服务端不下发 claim_timeout_min 时同理),那时看门狗会在确认窗口**还开着**
+   *  的时候开火 —— Loop 写下「插件放弃这一单」、相位落到 stuck、dispose 掉驱动、
+   *  放开 busy 闸去领下一单,而这条 runTask 还活着,还停在 `await gate.race` 上。
+   *  它此刻拿到的那一下**不作数**:
+   *    · 拿到「下单」就往下走的话,一张一分钱没花的单会置位 mayHaveOrdered,
+   *      然后在已 dispose 的驱动上抛错 → ORDER_CONFIRM_TIMEOUT → 待人工
+   *      「可能已下单,去买家号里看一眼」。事件流里「插件放弃这一单」后面
+   *      跟着一条「点击下单按钮」。
+   *    · 拿到「取消」(面板收摊时 resolve(false))就写 confirm_cancelled 的话,
+   *      是把「看门狗掐单」渲染成「有人在把关」—— 正是本轮要避免的那种合并。
+   *  不传这一位的调用点(自检脚本、直接调 runTask 的测试)照旧,只是没有这道闸。 */
+  isAbandoned?: () => boolean;
   /** 执行中发现这个浏览器已被登出。**这一单怎么落地是另一回事** ——
    *  这个回调只负责把「这台机器登录态没了」这个事实往上说:
    *  Loop 据此停止认领,服务端据此拦住下一次认领,运营台据此把那个买家号标红。 */
@@ -375,7 +392,25 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
         gate.cancel();
         // 相位与倒计时都要落回来 —— 无论这一格是怎么结束的。
         deps.onConfirmWindow?.(null);
-        deps.onPhase?.("running");
+        // **但被放弃的那一路不许把相位拨回 running。** 那一刻 Loop 已经把相位
+        // 落到 stuck 了,拨回去等于在面板上把一台停住的机器说成「执行中」。
+        if (deps.isAbandoned?.() !== true) deps.onPhase?.("running");
+      }
+
+      // 看门狗可能在等人的这几分钟里先开火了(硬顶配得比确认窗口紧时就会)。
+      // 这条 runTask 从那一刻起是僵尸:Loop 已经放开 busy 闸去领下一单了,
+      // 人此刻按下的那一下**不作数** —— 既不能拿它去下单(一张一分钱没花的单
+      // 会以「可能已下单」收场),也不能把它写成「人按了取消」(那是把
+      // 「看门狗掐单」渲染成「有人在把关」)。这一单的结局由 Loop 那条
+      // 「插件放弃这一单」和服务端的认领超时清扫说了算,这边只管闭嘴收摊。
+      if (deps.isAbandoned?.() === true) {
+        log.warn("等人确认的这几分钟里,这一单已经被单笔硬顶掐掉了 —— " +
+                 "这一下不作数:不下单,也不写确认留痕。" +
+                 "要么把 confirmWait 配得比 taskHardCapMs 短,要么把硬顶调大");
+        const cleared = await tryClear("看门狗已放弃这一单");
+        return { kind: "unreported",
+                 message: "确认窗口还开着的时候被单笔硬顶掐掉了",
+                 cartCleared: cleared };
       }
 
       if (answer === CONFIRM_TIMEOUT) {

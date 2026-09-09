@@ -1140,6 +1140,62 @@ const statesOf = (c) => c.events2.map((e) => e.payload?.state).filter(Boolean);
   eq("关掉之后当轮就不再问人(不用重建 Loop)", asked, 1);
 }
 
+{
+  // 8. **看门狗在确认窗口还开着的时候开火。** 上一格(6)只验到「掐得动」,
+  //    这一格验的是掐完之后那条僵尸 runTask 还能干什么 —— 它此刻停在
+  //    `await gate.race` 上,而 Loop 已经写下「插件放弃这一单」、相位落到 stuck、
+  //    dispose 掉驱动、放开 busy 闸去领下一单了。
+  //
+  //    面板上那张「下单前确认 · 会花真钱」的卡片必须跟着一起收掉(onConfirmWindow
+  //    收到 null),而且此刻人按下的那一下**一律不作数**:
+  //      · 拿去下单的话 → 一张一分钱没花的单越过下单点,置位 may_have_ordered,
+  //        然后在已 dispose 的驱动上抛错 → ORDER_CONFIRM_TIMEOUT → 待人工
+  //        「可能已下单,去买家号里看一眼」。事件流里「插件放弃这一单」后面
+  //        跟着一条「点击下单按钮」。
+  //      · 写成「人按了取消」的话 → 把「看门狗掐单」渲染成「有人在把关」,
+  //        正是这一轮反复要避免的那种合并。
+  const client = fakeClient(1);
+  client.guardCheck = async () => ({ ok: true, data: {
+    allow: true, error_code: null, detail: null, delivery_date: null,
+    delivery_raw_used: null, goods_total: "1.00" } });
+  const sent = [];
+  const inner = client.events;
+  client.events = async (id, evs) => { sent.push(...evs); return inner(id, evs); };
+  let placed = 0;
+  let pending = null;
+  const windows = [];
+  const loop = new Loop({
+    client, log: silentLog,
+    // 硬顶 200ms、确认窗口 3 秒:看门狗必然先开火。这个配法不是杜撰的 ——
+    // taskHardCapMs 是现场可调的,老服务端不下发 claim_timeout_min 时同理。
+    config: () => ({ mode: "simulate", taskHardCapMs: 200,
+                     confirmBeforeOrder: true, timeouts: { confirmWait: 3_000 } }),
+    driver: () => confirmDriver({ placeOrder: async () => { placed += 1; } }),
+    askConfirm: (_t, preview) => new Promise((resolve) => { pending = { preview, resolve }; }),
+    onConfirmWindow: (ms) => windows.push(ms),
+  });
+  const got = await within(5_000, loop.tickOnce(), "tickOnce(确认窗口里被掐)");
+  eq("确认窗口里照样掐得动", got.kind, "hard-cap");
+  check("掐单时把面板上那张确认卡片一起收掉(收不掉的话两个按钮还能按)",
+        windows[windows.length - 1] === null, JSON.stringify(windows));
+  // 面板那头收到 null 会 resolve(false) —— 模拟操作员在这之后按下「下单」也一样,
+  // 两条路都必须什么都不发生。
+  check("确认弹窗那头确实被叫醒了(否则它会一直挂到确认窗口自己到点)",
+        pending !== null);
+  pending.resolve(true);
+  await new Promise((r) => setTimeout(r, 300));
+  eq("被放弃之后按下「下单」不作数:一次都不许点下单按钮", placed, 0);
+  const states = sent.map((e) => e.payload?.state).filter(Boolean);
+  check("也不许写「人按了取消」(那是把看门狗掐单渲染成有人在把关)",
+        !states.includes("confirm_cancelled"), JSON.stringify(states));
+  check("更不许写「人按了下单」", !states.includes("confirm_approved"),
+        JSON.stringify(states));
+  check("越过下单点的那条留痕一条都不该有(这一单一分钱没花)",
+        !sent.some((e) => e.payload?.may_have_ordered === true),
+        JSON.stringify(sent.map((e) => e.payload?.step)));
+  eq("一条 /fail 都不该有(结局由认领超时清扫说了算)", client.fails.length, 0);
+}
+
 // ── 接线本身(只验得到源码这一层,说清楚) ──────────────────────────────
 //
 // content/runner.ts 与 background/service-worker.ts 里全是 chrome API,

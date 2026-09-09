@@ -44,6 +44,9 @@
   - **它算进单笔硬顶,不豁免。** 等人的这几分钟同样在看门狗的 `taskHardCapMs` 里面
     (`confirmWait` 配得比它还长时,先到期的是看门狗)。这期间租约照续:
     相位 `confirm` 在 `BUSY_PHASES` 里,续租又在单飞闸外面。
+    看门狗真在窗口开着的时候开火了的话,**面板上那张卡片跟着一起收掉**,
+    之后按哪个按钮都不作数 —— 按「下单」会让一张一分钱没花的单越过下单点,
+    以「可能已下单」收场;记成「人按了取消」则是把掐单渲染成有人在把关。
 
   **开着它花的是操作员的注意力**:每一单都要有人在屏幕前。所以默认是关的 ——
   一台没人守的机器开着它,只会把队列一单一单堵在确认窗口上再退回去。
@@ -163,10 +166,11 @@ node tools/smoke.mjs --scenario login_lost      # 跑到一半被登出:退回�
 node tools/smoke.mjs --scenario manual_verify   # 转到发卡行验证页,人做完了 → 照常回填
 node tools/smoke.mjs --scenario manual_verify_timeout   # 人没做完 → 发卡行验证超时,转待人工
 
-# 下单前确认(默认关;这三个场景把它打开,并注入一个自动应答的 askConfirm)
+# 下单前确认(默认关;这几个场景把它打开,并注入一个自动应答的 askConfirm)
 node tools/smoke.mjs --scenario confirm_yes           # 人按了「下单」→ 照常拍成
 node tools/smoke.mjs --scenario confirm_no            # 人按了「取消」→ 清车,退回队列
 node tools/smoke.mjs --scenario confirm_wait_timeout  # 没人来按 → 到点清车,退回队列
+node tools/smoke.mjs --scenario confirm_watchdog      # 看门狗先掐了单,人晚一步按「下单」→ 那一下不作数
 
 # 物流同步是独立一条流,加 --ship 顺带跑一轮
 node tools/smoke.mjs --scenario happy --ship in_transit
@@ -196,11 +200,19 @@ node tools/smoke.mjs --scenario happy --ship delivered
 | confirm_yes | `purchased` | — （事件流里有「人按了下单,继续」,`state=confirm_approved`) |
 | confirm_no | `ready`(**退回队列**) | — （事件流里有「人按了取消,退回队列」,`state=confirm_cancelled`) |
 | confirm_wait_timeout | `ready`(**退回队列**) | — （事件流里有「等人确认超时 N 秒,退回队列」,`state=confirm_timeout`) |
+| confirm_watchdog | `claimed`(**停在原地,等认领超时清扫**) | — （事件流到「插件放弃这一单」为止:`state=plugin_hard_cap`,**没有** confirm_approved / 点击下单按钮,`may_have_ordered=false`) |
 
-最后那一个**不叫 `confirm_timeout`**:那个名字已经归上面那一行用了(「点了下单但没等到
-确认页」,`ORDER_CONFIRM_TIMEOUT`,钱**可能已经花了**)。两件事共用一个场景名的话,
-`--scenario confirm_timeout` 跑出来的到底是哪一种就要靠猜 —— 而它们一个是
-「可能已下单,转待人工」,一个是「一分钱没花,回队列」。
+「没人来按」那一条**不叫 `confirm_timeout`**,叫 `confirm_wait_timeout`:前一个名字
+已经归上面那一行用了(「点了下单但没等到确认页」,`ORDER_CONFIRM_TIMEOUT`,
+钱**可能已经花了**)。两件事共用一个场景名的话,`--scenario confirm_timeout` 跑出来的
+到底是哪一种就要靠猜 —— 而它们一个是「可能已下单,转待人工」,一个是
+「一分钱没花,回队列」。
+
+`confirm_watchdog` 那一条验的是**两种情况不许渲染成一个结果**的另一头:看门狗掐单
+之后屏幕上那张卡片跟着收掉,人晚一步按下的「下单」一点都不作数。不这么做的话,
+一张一分钱没花的单会越过下单点,以「可能已下单,要人去买家号里看一眼」收场
+—— 实跑复现过(把 `giveUp` 里那两行去掉,这条场景当场转红:`status=purchased`、
+`may_have_ordered=true`)。
 
 ## 写在代码里的几条规矩
 

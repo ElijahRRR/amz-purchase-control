@@ -309,6 +309,11 @@ export class Loop {
       this.phase("claimed", task);
 
       this.phase("running", task);
+      // 看门狗开火之后要让那条 runTask 自己知道「你已经被放弃了」。用一个可变的
+      // 小盒子而不是布尔:runTask 在构造时就拿走了 deps,那时还没有 giveUp。
+      // 它管住的是**确认窗口**那一格 —— 硬顶被配得比确认窗口紧时,看门狗会在
+      // 窗口还开着的时候开火,而此刻人按下的那一下不作数(见 run.ts 那一段)。
+      const abandoned = { yes: false };
       const running = runTask(task, {
         client: this.deps.client,
         driver,
@@ -320,6 +325,7 @@ export class Loop {
         // 两个预算都从同一张超时表来,不在这里编译成常量。
         confirmWaitMs: cfg.timeouts?.confirmWait,
         orderServerMarginMs: cfg.timeouts?.orderServerMargin,
+        isAbandoned: () => abandoned.yes,
         onLoginLost: () => this.markSignedOut(),
         // 相位由 runTask 说了算的那两格(等人做发卡行验证 / 验证做完了)。
         // Loop 这一层从 claim 到 return 之间一直是 running,分不出「轮到人了」。
@@ -338,7 +344,7 @@ export class Loop {
       const cap = hardCap(capMs);
       const outcome = await Promise.race([running, cap.race]).finally(cap.cancel);
       if (outcome === HARD_CAP) {
-        return await this.giveUp(task, running, driver, capMs, sweepAtMs);
+        return await this.giveUp(task, running, driver, capMs, sweepAtMs, abandoned);
       }
 
       this.noteCart(outcome);
@@ -396,7 +402,19 @@ export class Loop {
     driver: PageDriver,
     capMs: number,
     sweepAtMs: number | null,
+    abandoned: { yes: boolean },
   ): Promise<TickResult> {
+    // **第一件事**:告诉那条僵尸 runTask 它已经被放弃了,再把面板上那张
+    // 「下单前确认 · 会花真钱」的卡片收掉。顺序不能反 —— 收卡片会让面板
+    // 那头 resolve(false),runTask 那边正是靠这一位把它认成「被掐了」
+    // 而不是「人按了取消」(两件事渲染成一句话,就是本项目反复记的那种合并)。
+    //
+    // 不收卡片的后果比停在那儿难看得多:硬顶被配得比确认窗口紧时,看门狗在
+    // 窗口还开着的时候开火,而屏幕上那两个按钮照旧能按,一直挂到确认窗口
+    // 自己到点(可以是几分钟)。操作员按下「下单」,一张一分钱没花的单会
+    // 越过下单点,以「可能已下单、去买家号里看一眼」收场。
+    abandoned.yes = true;
+    this.deps.onConfirmWindow?.(null);
     const mins = Math.round(capMs / 60_000);
     // 「任务在服务端仍是拍单中」不许写死成一句话:硬顶被配得比认领超时还长时
     // 它就是假的,而那恰恰是最需要看日志的一格。按此刻的钟说话。

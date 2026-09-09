@@ -50,6 +50,15 @@ const CONFIRM_SCENARIOS = {
                           wantStatus: "ready",     wantStep: "人按了取消,退回队列" },
   confirm_wait_timeout: { answer: null,  waitMs: 1_200,  wantOutcome: "released",
                           wantStatus: "ready",     wantStep: "等人确认超时" },
+  // 第四个:**看门狗在确认窗口还开着的时候开火**,而屏幕前那个人晚一步按了「下单」。
+  // 单笔硬顶配成 250ms、确认窗口 60 秒 —— 这个配法不是杜撰的,taskHardCapMs 是
+  // 现场可调的,老服务端不下发 claim_timeout_min 时同理。
+  // 要验的是那一下**一点都不作数**:不点下单按钮、不写「越过下单点」的留痕、
+  // 也不写「人按了取消」(那是把看门狗掐单渲染成有人在把关)。
+  // 这一单停在 claimed,由服务端的认领超时清扫去收 —— 它一分钱没花。
+  confirm_watchdog:     { answer: true,  waitMs: 60_000, answerAfterMs: 600,
+                          hardCapMs: 250, wantTick: "hard-cap",
+                          wantStatus: "claimed",   wantStep: "插件放弃这一单" },
 };
 const confirmCase = CONFIRM_SCENARIOS[scenario] ?? null;
 
@@ -89,6 +98,7 @@ const loop = new Loop({
     mode: "simulate",
     confirmBeforeOrder: !!confirmCase,
     ...(confirmCase ? { timeouts: { confirmWait: confirmCase.waitMs } } : {}),
+    ...(confirmCase?.hardCapMs ? { taskHardCapMs: confirmCase.hardCapMs } : {}),
   }),
   driver: () => driver,
   reportLogin: (state) => { reportedLogin = state; },
@@ -97,6 +107,10 @@ const loop = new Loop({
         if (confirmCase.answer === null) {
           console.log("  (模拟:没人来按这一下,等 run.ts 那道闸自己到点)");
           return new Promise(() => {});    // 永不 settle:上界不该由界面提供
+        }
+        if (confirmCase.answerAfterMs) {
+          // 慢一步的那一下:等看门狗先开火,再模拟人按下按钮。
+          await new Promise((r) => setTimeout(r, confirmCase.answerAfterMs));
         }
         console.log(`  (模拟:人按了「${confirmCase.answer ? "下单" : "取消"}」)`);
         return confirmCase.answer;
@@ -130,10 +144,17 @@ if (reportedLogin) {
 // 「插件以为退回队列了」和「服务端那边真的回到 ready 了」是两件事,
 // 而这一整条链要验的就是后者。
 if (confirmCase) {
-  const taskId = r.kind === "ran" ? r.task.task_id : null;
+  // 掐单那一格里 tickOnce 返回的是 hard-cap(没有 outcome 可言),任务 id 挂在
+  // 结果本身上;另外要**等那条僵尸 runTask 把它想做的事做完**再去读服务端 ——
+  // 早读一步的话,「它后来偷偷点了下单」这件事正好被漏掉,而这条场景验的就是它。
+  const taskId = r.kind === "ran" || r.kind === "hard-cap" ? r.task.task_id : null;
+  if (confirmCase.answerAfterMs) {
+    await new Promise((res) => setTimeout(res, confirmCase.answerAfterMs + 600));
+  }
   const problems = [];
-  if (r.kind !== "ran") problems.push(`这一轮没跑起来:${JSON.stringify(r)}`);
-  else if (r.outcome.kind !== confirmCase.wantOutcome) {
+  const wantTick = confirmCase.wantTick ?? "ran";
+  if (r.kind !== wantTick) problems.push(`这一轮是 ${r.kind},该是 ${wantTick}:${JSON.stringify(r)}`);
+  else if (wantTick === "ran" && r.outcome.kind !== confirmCase.wantOutcome) {
     problems.push(`插件侧结局是 ${r.outcome.kind},该是 ${confirmCase.wantOutcome}`);
   }
   if (taskId !== null) {
@@ -154,7 +175,8 @@ if (confirmCase) {
       // 一台没人守的机器会一直产出「有人按了取消」,看的人以为有人在把关。
       const states = (d.events ?? []).map((e) => e.payload?.state).filter(Boolean);
       const wantState = scenario === "confirm_yes" ? "confirm_approved"
-                      : scenario === "confirm_no" ? "confirm_cancelled" : "confirm_timeout";
+                      : scenario === "confirm_no" ? "confirm_cancelled"
+                      : scenario === "confirm_watchdog" ? "plugin_hard_cap" : "confirm_timeout";
       if (!states.includes(wantState)) {
         problems.push(`事件流里没有 state=${wantState},只有:${JSON.stringify(states)}`);
       }
@@ -162,6 +184,24 @@ if (confirmCase) {
                     : scenario === "confirm_wait_timeout" ? "confirm_cancelled" : null;
       if (strayer && states.includes(strayer)) {
         problems.push(`事件流里同时出现了 ${strayer} —— 取消与超时被渲染成了同一件事`);
+      }
+      if (scenario === "confirm_watchdog") {
+        // 被放弃之后按下的那一下**一点都不作数**。三条一起判,少一条这道闸就有缝:
+        //  · 写了 confirm_approved / confirm_cancelled → 一个是「人点的头」,
+        //    一个是「有人在把关」,两句在这一格都是假话
+        //  · 点了下单按钮 / 留下越过下单点的痕 → 一张一分钱没花的单会以
+        //    「可能已下单,去买家号里看一眼」收场
+        for (const stray of ["confirm_approved", "confirm_cancelled", "confirm_timeout"]) {
+          if (states.includes(stray)) {
+            problems.push(`看门狗掐单之后还写了 state=${stray} —— 那一下不该作数`);
+          }
+        }
+        if (steps.some((t) => t.includes("点击下单按钮"))) {
+          problems.push("看门狗掐单之后还点了下单按钮 —— 一张没花钱的单被推过了下单点");
+        }
+        if (d.may_have_ordered !== false) {
+          problems.push(`may_have_ordered=${d.may_have_ordered},该是 false(这一单一分钱没花)`);
+        }
       }
       console.log(`  服务端:status=${d.status} · 事件 state=${JSON.stringify(states)}`);
     }

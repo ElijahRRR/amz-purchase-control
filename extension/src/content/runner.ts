@@ -143,8 +143,11 @@ export class Runner {
         // 相位负责标签,这一条负责那个数字。
         onVerifyWindow: (deadlineMs) => { this.verifyDeadlineMs = deadlineMs; this.emit(); },
         // 「等人确认下单」那一格的倒计时。**收到 null 时要把弹窗一起收掉** ——
-        // run.ts 那边已经按超时落地了(清车 + 退回队列),屏幕上还留着两个能按的
-        // 按钮的话,人按下去会以为自己刚刚下了单,而那一单早就回队列了。
+        // 这一位有两个来路:run.ts 按超时落地了(清车 + 退回队列),
+        // 或者 Loop 的看门狗先开火把整单放弃了(硬顶配得比确认窗口紧时)。
+        // 两种都已经没有任何东西在等这个人了:屏幕上还留着两个能按的按钮的话,
+        // 人按下去会以为自己刚刚下了单,而那一单要么早就回队列了、
+        // 要么正等着认领超时清扫。
         onConfirmWindow: (deadlineMs) => {
           this.confirmDeadlineMs = deadlineMs;
           if (deadlineMs === null && this.pendingConfirm) {
