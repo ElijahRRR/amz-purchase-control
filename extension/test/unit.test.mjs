@@ -1196,6 +1196,28 @@ const statesOf = (c) => c.events2.map((e) => e.payload?.state).filter(Boolean);
   eq("一条 /fail 都不该有(结局由认领超时清扫说了算)", client.fails.length, 0);
 }
 
+{
+  // 9. **开关开着,但这个运行环境没有应答界面。** 闸的条件是「开关开着」且
+  //    「传了 askConfirm」,缺后者时它静默失效:一步不停、一条事件都不发,
+  //    而开关在面板上看起来是开的。开关这一位存在 chrome.storage 里、跨版本
+  //    活着;Loop 的构造参数不是。所以这一格要的不是「别下单」(那会让一台
+  //    没界面的机器彻底停摆),而是**这件事必须喊出来**。
+  const client = confirmClient();
+  const errs = [];
+  const out = await within(5_000, runTask(fakeTask(1), {
+    client, driver: confirmDriver(),
+    log: { ...silentLog, err: (m) => errs.push(String(m)) },
+    confirmBeforeOrder: true,
+    // askConfirm 故意不传
+  }), "runTask(开关开着但没有应答界面)");
+  eq("没有应答界面时这一单照常拍成(不是停摆)", out.kind, "purchased");
+  check("一条确认事件都不该发(它根本没停下来等过人)",
+        statesOf(client).length === 0, JSON.stringify(statesOf(client)));
+  check("但这件事必须在日志里喊出来 —— 静默失效的闸比没有闸更危险",
+        errs.some((m) => m.includes("下单前确认") && m.includes("没有能应答的界面")),
+        JSON.stringify(errs));
+}
+
 // ── 接线本身(只验得到源码这一层,说清楚) ──────────────────────────────
 //
 // content/runner.ts 与 background/service-worker.ts 里全是 chrome API,

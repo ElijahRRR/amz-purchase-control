@@ -104,7 +104,10 @@ export interface RunDeps {
    *  **它不负责超时。** 到点由 run.ts 这边的钟说了算(见下面那道 race)——
    *  把上界交给界面的话,一个渲染卡住的面板就等于没有上界,
    *  而它长得跟「人还在看」一模一样。
- */
+   *
+   *  **开关开着而这一位没传 = 这道闸静默失效**(一步不停、一条事件都不发)。
+   *  它不是异常,只是这个运行环境没有界面,所以不抛错;但 runTask 会在日志里
+   *  喊一嗓子,见下面那道闸前面的那一段。 */
   askConfirm?: (task: Task, preview: ConfirmPreview) => Promise<boolean>;
   /** 等人按的预算(毫秒)。来自 `core/config.timeouts.confirmWait`,不传用默认值。
    *  实际生效的还要与认领窗口取更紧的那个,见 confirmDeadline 那一段。 */
@@ -340,6 +343,21 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     // 两条路都是清车 + 退回队列(这一刻还没花钱,退回去是安全的那一边),
     // 但事件流里的文案与 payload.state 必须分得开 —— 合成一条的话,
     // 一台没人守的机器会一直产出「有人按了取消」,看的人以为有人在把关。
+    //
+    // **开着却没人能应答,必须喊出来。** 下面那道闸的条件是「开关开着」**且**
+    // 「这个运行环境提供了应答界面」——两者是与关系,而缺的若是后者,闸就
+    // 静默失效:一步不停、一条事件都不发,而面板上那个「下单前确认」的按钮
+    // 还是高亮的。开关这一位存在 chrome.storage 里、跨版本活着,Loop 的构造
+    // 参数不是:今天生产上只有 content/runner.ts 一个构造现场、它总是传
+    // askConfirm,但将来多一个不传的现场(SW 侧跑单、自检脚本、smoke 漏配一处),
+    // 存着 confirmBeforeOrder=true 的那台机器会一单不停地直接下单。
+    // 那正是本轮在另一个方向上专门防住的假象(loop.ts 那段注释:
+    // 「改了不生效,而开关看起来已经生效」),两个方向都要堵。
+    if (deps.confirmBeforeOrder === true && !deps.askConfirm) {
+      log.err("「下单前确认」开着,但这个运行环境没有能应答的界面 —— " +
+              "这一单不会停下来等人,会直接下单。要么关掉这个开关," +
+              "要么在这个运行环境里把预览屏接上");
+    }
     if (deps.confirmBeforeOrder === true && deps.askConfirm) {
       const budgetMs = posOr(deps.confirmWaitMs, DEFAULTS.timeouts.confirmWait);
       const marginMs = posOr(deps.orderServerMarginMs, DEFAULTS.timeouts.orderServerMargin);
