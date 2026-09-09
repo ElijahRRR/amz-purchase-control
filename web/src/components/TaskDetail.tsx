@@ -89,6 +89,15 @@ const PAYLOAD_STATE: Record<string, string> = {
   manual_verification: "正在等人做发卡行验证",
   manual_verification_done: "人工验证做完了",
   plugin_hard_cap: "插件放弃这一单(超过单笔硬顶)",
+  // 「下单前确认」那一格的四种。**取消与超时必须是两句话** ——
+  // 两条路的结局一样(清车 + 退回队列,一分钱没花),说的事却完全相反:
+  // 一个是「有人看了一眼,决定不买」,一个是「没有人在看这台机器」。
+  // 渲染成同一句的话,一台没人守的机器看起来像是一直有人在按取消。
+  // (跨文件字面量,有 tests/test_confirm_before_order.py 盯着。)
+  awaiting_confirm: "停在下单前等人按",
+  confirm_approved: "人按了下单,继续",
+  confirm_cancelled: "人按了取消,退回队列",
+  confirm_timeout: "等人确认超时,退回队列",
 };
 
 function fmtPayload(k: string, v: unknown): string {
@@ -96,6 +105,12 @@ function fmtPayload(k: string, v: unknown): string {
   if (k === "cap_ms" && typeof v === "number") return `上限 ${minutesText(Math.round(v / 60_000))}`;
   if (k === "state" && typeof v === "string") return PAYLOAD_STATE[v] ?? `state=${v}`;
   if (k === "warning" && v === "cart_not_cleared") return "清车没清动";
+  // 等人确认那一格的上界是谁钳的。**两种处置完全不同**:configured 是
+  // 「配的就这么短,想多等去调插件的 confirmWait」,claim_window 是
+  // 「认领窗口快到了,调插件没用,要调的是服务端的认领超时」。
+  if (k === "capped_by" && v === "confirm_wait") return "上界:插件配的等待预算";
+  if (k === "capped_by" && v === "claim_window") return "上界:认领窗口快到了(不是插件配的那个数)";
+  if (k === "wait_ms" && typeof v === "number") return `等了最多 ${Math.round(v / 1000)} 秒`;
   if (k === "cart" && v === "not_touched_after_order_point") return "越过下单点后按规矩没动购物车";
   return `${k}=${typeof v === "object" ? JSON.stringify(v) : String(v)}`;
 }
