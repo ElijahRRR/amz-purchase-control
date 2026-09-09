@@ -26,6 +26,7 @@ import {
   readDeliveryPromise, readGrandTotal, readInStock, readOrderCards, readOrderState,
   isTrackingUnavailable,
   isSignInUrl,
+  readCustomerId,
   readLoginState,
   readGiftCardDeduction,
   readOrderSummary, readPaymentLast4, readPaymentSlots, readProductShipper, readTrackingEvents,
@@ -36,6 +37,33 @@ import type { ShipmentReader, TrackingRead } from "./shipment.js";
 import { DriverError, LoginLostError, type AddResult, type CartReadReporter, type CheckoutReading, type OrderCard, type PageDriver, type PlaceOrderHooks } from "./driver.js";
 import { DEFAULTS, type Timeouts } from "../core/config.js";
 import type { Shipping } from "../core/types.js";
+
+/** 上一次登录探测里读到的买家号 ID。**只在真读到时才覆盖,读不到不清空。**
+ *
+ *  为什么可以不清空:清空之后内容脚本就少捎一位上去,而服务端对「没捎」的处置
+ *  正是「保留库里那一位」(services/instance.heartbeat 的 CASE)——
+ *  两条路殊途同归,留着反而少一处会分叉的判断。
+ *
+ *  为什么是模块级而不是驱动实例的字段:驱动是**每一轮现造**的
+ *  (content/runner.ts 的 `driver()` 每次 `new`),挂在实例上等于每轮清一次。
+ *  一个浏览器 profile 只登着一个 Amazon 账号,所以进程内单例正是它的语义。 */
+let lastCustomerId: string | undefined;
+
+/** 输入:无 → 输出:上一次登录探测读到的买家号 ID(没读到过就是 undefined)。
+ *  内容脚本上报登录态时一起捎走 —— 见 content/runner.ts 的 reportLogin。 */
+export function lastReadCustomerId(): string | undefined {
+  return lastCustomerId;
+}
+
+/** 输入:探测用的那一帧 → 输出:无。读得到就记下来,读不到什么都不做。 */
+function rememberCustomerId(f: Frame): void {
+  try {
+    const id = readCustomerId(f.doc());
+    if (id) lastCustomerId = id;
+  } catch {
+    // 跨域/文档没就绪。这一轮没读到,不是"这台机器换号了" —— 不清空。
+  }
+}
 
 /** 页面等待预算。**值来自 core/config.ts**(可调参数的唯一来源),这里只留一份
  *  兜底默认值:单元测试直接 `new AmazonDriver()` 时用得上。
@@ -158,7 +186,17 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
   // 于是「被登出」和「页面慢」渲染成同一个结果:重置多少次都不会好,
   // 而运营台上看不出这个买家号其实已经不能用了。
 
-  /** 开一张轻量页面(购物车)读导航栏。读不出来就是 unknown,**不兜底成 ok**。 */
+  /** 开一张轻量页面(购物车)读导航栏。读不出来就是 unknown,**不兜底成 ok**。
+   *
+   *  **顺手把 customerId 也抠了。** 为什么搭在这一步上而不是另开一次页面:
+   *  它就在同一张页面的 HTML 里,而这一步本来就有节制地跑(服务端说
+   *  「有单在等 + 上次检查过期了」才跑)。另起一条探测等于给同一个买家号
+   *  多一次页面加载,换不来任何新东西。
+   *
+   *  抠到的值存在模块级的 `lastCustomerId` 里,由内容脚本在上报登录态时一起捎走
+   *  (content/runner.ts 的 reportLogin)。**驱动接口不为它改签名** ——
+   *  PageDriver.readLoginState 的返回值是「登录态」这一件事,
+   *  塞进第二样东西会让模拟驱动、租约测试、看门狗那几处全都要跟着动。 */
   async readLoginState(): Promise<LoginState> {
     return withFrame(URLS.loginProbe(this.origin), async (f) => {
       // 未登录时 Amazon 有可能直接把这一页导到 /ap/signin —— 那条判据比 DOM 还硬,
@@ -171,8 +209,10 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
       } catch {
         // 等不到任何判据。这**是** unknown,不是 ok ——
         // 判不出来时放行是这道闸最容易被写坏的地方。
+        rememberCustomerId(f);
         return "unknown";
       }
+      rememberCustomerId(f);
       if (isSignInUrl(f.url())) return "signed_out";
       return readLoginState(f.doc());
     }, T.frameLoad);

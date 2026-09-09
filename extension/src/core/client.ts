@@ -18,7 +18,7 @@ export class Client {
     }, this.opts);
   }
 
-  /** 心跳,顺带把这一轮读到的登录态捎上去,并收回服务端那句「该不该复检」。
+  /** 心跳,顺带把这一轮读到的登录态与买家号 ID 捎上去,并收回服务端那句「该不该复检」。
    *
    *  **不传 login_state = 这一轮没有新消息**,服务端原样保留库里那一位;
    *  传 unknown 才是「读了,但读不出来」。两者不是一回事:前者是沉默,
@@ -31,10 +31,18 @@ export class Client {
    *
    *  登录态从哪来:插件开一张 Amazon 页面读导航栏(flow/dom/parse.readLoginState)。
    *  **不读 Cookie** —— 插件没申请 cookies 权限,这是架构选择,不是暂缓。 */
-  heartbeat(loginState?: LoginState): Promise<ApiResult<HeartbeatOut>> {
+  heartbeat(loginState?: LoginState, customerId?: string): Promise<ApiResult<HeartbeatOut>> {
     return postIdempotent("/v1/instances/heartbeat", {
       instance_uid: this.instanceUid,
       ...(loginState ? { login_state: loginState } : {}),
+      // 这台机器登着的那个 Amazon 账号(登录探测那一步顺手抠的,
+      // flow/dom/parse.readCustomerId)。**不传 = 这一轮没有新消息**,
+      // 与 login_state 同一条规则:服务端原样保留库里那一位。
+      //
+      // 服务端拿它做两件事,都不是身份认定(身份仍然是买家号环境):
+      // 那一列为空时首次写入(对账),已有值且不一样时拒绝派单
+      // (409 INSTANCE_ACCOUNT_MISMATCH)—— 两台机器登错号是真会发生的事。
+      ...(customerId ? { amazon_customer_id: customerId } : {}),
     }, this.opts);
   }
 

@@ -81,6 +81,8 @@ export default function TasksPage({ summary, onMutate, onSummary }: {
   const [batchOn, setBatchOn] = useState(false);
   const [batchOpen, setBatchOpen] = useState(false);
   const [density, setDensity] = useState<Density>("detail");
+  /** 按来源筛。null = 全部。**与状态桶同一档**:按单号找单时它不生效。 */
+  const [source, setSource] = useState<string | null>(null);
   const [page, setPage] = useState(1);
 
   const [out, setOut] = useState<SearchOut | null>(null);
@@ -109,6 +111,7 @@ export default function TasksPage({ summary, onMutate, onSummary }: {
     date_to: batchOn ? null : dates.date_to,
     order_numbers: batchOn ? batchText.split("\n") : [],
     asin: asin.trim() || null,
+    purchase_source: batchOn ? null : source,
   });
 
   /** 请求序号。ASIN 输入框每敲一个字符就发一次查询,慢的那次可能后回来 ——
@@ -125,7 +128,7 @@ export default function TasksPage({ summary, onMutate, onSummary }: {
     if (r.ok) { setOut(r.data); setErr(null); }
     // 「查不到」和「服务挂了」在界面上是两句话。混成一句会让人跑去上游翻一张其实好好的单。
     else { setErr(r.kind === "transport" ? `连不上服务端:${r.message}` : `${r.code} · ${r.message}`); }
-  }, [status, envCode, dateField, dates, asin, page, batchOn, batchText]);
+  }, [status, envCode, dateField, dates, asin, source, page, batchOn, batchText]);
 
   useEffect(() => { void load(); }, [load]);
 
@@ -146,7 +149,7 @@ export default function TasksPage({ summary, onMutate, onSummary }: {
     return () => { alive = false; };
   }, [envCode, dateField, dates, asin, batchOn, out]);
 
-  useEffect(() => { setPage(1); }, [status, envCode, dateField, range, asin, batchOn]);
+  useEffect(() => { setPage(1); }, [status, envCode, dateField, range, asin, source, batchOn]);
   useEffect(() => { setCursor(0); }, [out]);
   // 换了筛选/翻了页就清空勾选。留着的话,「重置选中的 12 条」会包含
   // 现在根本看不见的单 —— 那正是批量动作最容易出事的地方。
@@ -178,7 +181,8 @@ export default function TasksPage({ summary, onMutate, onSummary }: {
 
   const reset = () => {
     setStatus(null); setEnvCode(null); setDateField("created"); setRange("7d");
-    setAsin(""); setBatchOn(false); setBatchText(""); setBatchOpen(false);
+    setAsin(""); setSource(null);
+    setBatchOn(false); setBatchText(""); setBatchOpen(false);
   };
 
   const batchCount = batchText.split("\n").filter((s) => s.trim()).length;
@@ -252,6 +256,18 @@ export default function TasksPage({ summary, onMutate, onSummary }: {
                   className="h-[30px] px-2 border border-zinc-200 rounded-md bg-white text-xs text-zinc-700">
             <option value="">全部</option>
             {envs.map((e) => <option key={e.env_id} value={e.env_code}>{e.env_code}</option>)}
+          </select>
+
+          <span className="w-px h-5 bg-zinc-200 mx-0.5" />
+          {/* 「外部下单的那一批物流同步到哪儿了」是这一列存在之后第一个会被问的问题。
+              标签走 meta,前端不存副本。 */}
+          <span className="text-xs+ font-medium uppercase tracking-wider text-zinc-400">来源</span>
+          <select value={source ?? ""} onChange={(e) => setSource(e.target.value || null)}
+                  className="h-[30px] px-2 border border-zinc-200 rounded-md bg-white text-xs text-zinc-700">
+            <option value="">全部</option>
+            {Object.entries(meta.purchase_source.labels).map(([k, v]) => (
+              <option key={k} value={k}>{v}</option>
+            ))}
           </select>
 
           <span className="w-px h-5 bg-zinc-200 mx-0.5" />

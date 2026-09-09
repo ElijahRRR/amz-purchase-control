@@ -183,6 +183,56 @@ export function readLoginState(doc: Document): LoginState {
   return "unknown";
 }
 
+/** 买家号 ID 的形态:`A` 开头 + 至少 8 位大写字母/数字。
+ *
+ *  形状卡死是因为服务端拿到它之后会写进 `buyer_envs.amazon_customer_id`,
+ *  而那一列一旦有值就成了「这个买家号该是谁」—— 一个空串或者半截值会把
+ *  「登错号」那道闸永久钉住,而运营看到的理由是假的。
+ *  服务端也照同一条正则再卡一次(services/instance.CUSTOMER_ID_RE):
+ *  两头都卡,是因为这一位从插件传到库里的路上没有别的关口。 */
+const CUSTOMER_ID_RE = /^A[0-9A-Z]{8,}$/;
+
+/** 页面 HTML 里那一处 `customerId`。两种写法都认:
+ *    customerId: "A1B2C3D4E5"        ← 厂商 v2.5.3 popup.js 只认这一种(和单引号那种)
+ *    'customerId': 'A1B2C3D4E5'      ← 键上带引号的 JSON 片段
+ *  `g` 标志是关键,见 readCustomerId 的注释。 */
+const CUSTOMER_ID_SCAN = /['"]?customerId['"]?\s*:\s*['"]([^'"]*)['"]/g;
+
+/** 输入:一张 Amazon 页面 → 输出:这个浏览器登着的买家号 ID;抠不到返回 `undefined`。
+ *
+ *  **它不是身份判定。** 身份是买家号环境(`procure.buyer_envs.code`),
+ *  这一位只用来对账、以及发现「这台机器登着的不是这个买家号」——
+ *  厂商 v2.5.3 拿它当身份用(`popup.js:212-228`),我们不。
+ *
+ *  做法沿用厂商:在整页 HTML 上跑正则。页面上没有一个稳定的 DOM 节点带着它 ——
+ *  它是内联脚本里的一个字段,`querySelector` 够不着。
+ *
+ *  **两处比厂商紧:**
+ *
+ *  1. **扫全部匹配,不是第一个。** 厂商拿 `String.match(re)` 取第一个就返回,
+ *     于是页面上先出现一个 `customerId: ""`(未登录的模板、埋点占位、
+ *     A/B 实验的空槽——真页面上这些到处都是)就把结论废掉了。
+ *     这里逐个往下看,取**第一个形状对得上的**。
+ *  2. **形状不对就当没读到。** 空串、`null`、`0`、一串数字都不是买家号 ID。
+ *     退回 `undefined` 而不是把它送上去:服务端那边这一位为空时会**首次写入**,
+ *     一个垃圾值写进去就成了「这个买家号该是谁」,而这道闸从此永远拦着它自己。
+ */
+export function readCustomerId(doc: Document): string | undefined {
+  let html = "";
+  try {
+    html = doc.documentElement?.innerHTML ?? "";
+  } catch {
+    return undefined;      // 跨域/文档还没就绪
+  }
+  // lastIndex 是有状态的:正则是模块级常量,必须每次从头扫。
+  CUSTOMER_ID_SCAN.lastIndex = 0;
+  for (let m = CUSTOMER_ID_SCAN.exec(html); m; m = CUSTOMER_ID_SCAN.exec(html)) {
+    const v = m[1].trim();
+    if (CUSTOMER_ID_RE.test(v)) return v;
+  }
+  return undefined;
+}
+
 // ── 商品页 ──────────────────────────────────────────────────────────
 
 /** 报告 §4.2.1:含 Currently unavailable 即无货。用 includes 而非全等

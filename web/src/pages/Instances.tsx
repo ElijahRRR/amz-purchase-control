@@ -94,14 +94,85 @@ function ExpectedCard({ row, onSaved }: { row: InstanceRow; onSaved: () => void 
   );
 }
 
+/** 「这台机器登着的是不是这个买家号」这一格。
+ *
+ *  为什么这一格必须存在:两台机器登错号是真会发生的事(防关联环境一多,
+ *  谁的 profile 里登了哪个号是记不住的)。在此之前这一页对它一无所知 ——
+ *  一台登着隔壁号的机器在这里是满格绿色的「在线 · 可派」,而它领到的每一单
+ *  都会用**另一个买家号**在亚马逊上真买下来。与登录态那一列当初的毛病一模一样。
+ *
+ *  三档三种说法(封闭集与标签都从 /v1/admin/meta 来,前端不存副本):
+ *    ok        两个 ID 对得上
+ *    mismatch  对不上 —— 服务端已经在拒绝派单了,这里要把两个 ID 都摆出来
+ *    unknown   还没比对过(买家号那一列是空的,或者插件没报过)——
+ *              **不是**「有问题」,别渲染成红的
+ *
+ *  「以这个为准」只在 mismatch 时给:它把库里那一列改成插件报的,
+ *  **等于把闸打开**,所以要过一次确认,而且服务端会写 procure.env_events
+ *  (带操作人)—— 一个能开闸的按钮按完之后库里一个字都不留是不行的。 */
+function CustomerId({ row, onSaved }: { row: InstanceRow; onSaved: () => void }) {
+  const label = useLabel("account_state");
+  const [confirm, setConfirm] = useState(false);
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState<string | null>(null);
+  const g = label(row.account_state);
+
+  const take = async () => {
+    if (!row.instance_customer_id) return;
+    setBusy(true);
+    const r = await api.setEnvCustomerId(row.env_id, row.instance_customer_id);
+    setBusy(false);
+    setConfirm(false);
+    if (r.ok) { setErr(null); onSaved(); }
+    else setErr(r.kind === "transport" ? "没说上话" : r.message);
+  };
+
+  if (row.account_state === "mismatch") {
+    return (
+      <span className="flex flex-col gap-0.5 items-start">
+        <Tag tone={g.tone}>{g.label}</Tag>
+        {/* 两个 ID 都摆出来。只写「登错号」的话,人没法判断该去改机器还是改库。 */}
+        <span className="text-2xs text-red-700 whitespace-nowrap">
+          登录的不是这个买家号(<span className="id">{row.instance_customer_id}</span>
+          {" ≠ "}<span className="id">{row.amazon_customer_id}</span>)
+        </span>
+        {confirm ? (
+          <span className="inline-flex items-center gap-1.5 text-2xs text-red-700">
+            改成插件报的这个,派单就会恢复。确定?
+            <button className="px-1.5 py-0.5 rounded border border-red-300 bg-white text-red-700"
+                    disabled={busy} onClick={() => void take()}>以这个为准</button>
+            <button className="px-1.5 py-0.5 rounded border border-zinc-200 bg-white text-zinc-600"
+                    disabled={busy} onClick={() => setConfirm(false)}>算了</button>
+          </span>
+        ) : (
+          <button className="text-2xs text-sky-700 hover:text-sky-900"
+                  title="确认过「这台机器登的号才是对的、库里那一列记错了」再点。如果是机器登错了号,该做的是去那台机器上换回来。"
+                  onClick={() => setConfirm(true)}>以这个为准</button>
+        )}
+        {err && <span className="text-2xs text-red-600">{err}</span>}
+      </span>
+    );
+  }
+  return (
+    <span className="flex flex-col gap-0.5 items-start">
+      <Tag tone={g.tone}>{g.label}</Tag>
+      {/* 「还没比对过」也要把手里有的那个 ID 显示出来 —— 空着的话,
+          「买家号那一列没写过」和「插件没报过」看起来一模一样。 */}
+      <span className="id text-2xs text-zinc-400">
+        {row.amazon_customer_id ?? row.instance_customer_id ?? "—"}
+      </span>
+    </span>
+  );
+}
+
 /** 表头。**提到组件外是为了让空态那两行的 colSpan 跟着它走** ——
  *  写死一个数字的话,加一列就得记得同时改三处,而漏掉的那次没有任何测试会红:
  *  HTML 表格的列数取所有行的最大值,colSpan 比真实列数大 1 就会凭空多出一列,
  *  表头行少一格、列宽整体重算,空态与有数据时的列位置对不上。
  *  这个 +1 的偏差已经继承了两轮(12 列写 13、14 列写 15)。 */
 const HEADERS = ["买家号", "站点", "实例", "插件版本", "最后心跳", "队列待拍",
-                 "待人工", "今日已拍", "日上限", "支付卡尾号", "状态", "登录态", "清车",
-                 "可派单"];
+                 "待人工", "今日已拍", "日上限", "支付卡尾号", "状态", "登录态",
+                 "买家号ID", "清车", "可派单"];
 
 const LIVENESS: Record<InstanceRow["liveness"], { label: string; tone: Tone; dot: string }> = {
   online: { label: "在线", tone: "solid-emerald", dot: "bg-emerald-500" },
@@ -157,7 +228,7 @@ export default function InstancesPage() {
         )}
         <Card className="overflow-hidden">
           <CardHead right={<span className="text-xs text-zinc-400">
-            派单只会派给「在线、未暂停、没到日上限、且还登着 Amazon」的买家号 ·
+            派单只会派给「在线、未暂停、没到日上限、还登着 Amazon、且登的就是这个号」的买家号 ·
             支付卡尾号留空表示不校验
           </span>}>买家号 · 实例</CardHead>
 
@@ -225,6 +296,12 @@ export default function InstancesPage() {
                         {r.login_checked_at ? shortTime(r.login_checked_at) : "未查过"}
                       </span>
                     </td>
+                    <td className="px-3">
+                      {/* 登录态答的是「还登着吗」,这一格答的是「登着的是不是**这个号**」——
+                          两条独立的轴。一台心跳一秒不落、登录态 ok 的机器,
+                          浏览器里登的完全可能是隔壁那个号。 */}
+                      <CustomerId row={r} onSaved={() => void refresh()} />
+                    </td>
                     <td className="px-3 whitespace-nowrap">
                       {/* 清车失败原先是「只写不读」的:/fail 收到 cart_cleared=false
                           就往事件流里记一条 warning,全项目没有任何地方读它。
@@ -246,7 +323,7 @@ export default function InstancesPage() {
                       {r.dispatchable
                         ? <span className="text-emerald-700">可派</span>
                         : <span className={
-                            r.login_blocks_dispatch ? "text-red-700"
+                            r.login_blocks_dispatch || r.account_blocks_dispatch ? "text-red-700"
                             : r.at_daily_cap ? "text-amber-700" : "text-zinc-400"}>
                             {/* 「被登出」排在「已暂停」后面、其余之前:
                                 暂停是人主动停的(去问为什么停),被登出是机器坏了
@@ -254,6 +331,11 @@ export default function InstancesPage() {
                                 所以不能合并成一句「不可派」。 */}
                             {r.liveness === "paused" ? "已暂停"
                              : r.login_blocks_dispatch ? "已登出"
+                             /* 「登错号」排在「已登出」之后:两者都是红的、都要人去
+                                那台机器上处理,但处置不同 —— 一个是重新登录,
+                                一个是换回正确的账号(或者确认库里记错了)。
+                                合并成一句「不可派」的话,人到了机器前不知道该干什么。 */
+                             : r.account_blocks_dispatch ? "登错号"
                              : r.at_daily_cap ? "已到日上限"
                              : r.liveness === "online" ? "在线但不可派" : "没有心跳"}
                           </span>}

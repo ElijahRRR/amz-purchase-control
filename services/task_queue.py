@@ -94,6 +94,45 @@ def login_blocks_claim(login_state: str | None) -> bool:
     return login_state == "signed_out"
 
 
+#: 这台机器登着的账号跟这个买家号对不对得上。标签在 services/vocab.ACCOUNT_STATE_LABELS。
+ACCOUNT_STATES = frozenset({"ok", "mismatch", "unknown"})
+
+
+def account_state(expected: str | None, reported: str | None) -> str:
+    """输入:买家号该是谁(buyer_envs)+ 这台机器登着谁(plugin_instances)→ 输出:封闭集里的一个值。
+
+    **这道闸的唯一定义处**,与 `login_blocks_claim` 并排放着:认领 SQL 前那道闸、
+    运营台买家号页那一列、心跳的回话,三处调的都是这一个函数。
+    (daily_cap 曾经在这里分叉过一次:界面自己算一遍「可派单」,算法跟真闸不一样,
+    于是界面上绿着、实际派不出。)
+
+    **现算,不存一位布尔。** 存下来的那一位要在四个地方被清(插件换回正确的号、
+    运营点「以这个为准」、买家号那一列被改、实例被换),漏清任何一处的表现都是
+    **闸门永远关着、这个买家号从此一单也派不出去**,而界面上写的还是
+    「登录的不是这个买家号」—— 一个已经不成立的理由。
+
+    两边缺任何一边就是 `unknown`,**不是 ok**:
+      · 买家号那一列还没写过值 —— 第一次心跳就会写上,不必在这里替它猜
+      · 插件从没报过 customerId(老版本、或者页面上抠不到)
+    `unknown` **不拦**认领 —— 拦了的话每一台还没报过账号的机器都领不到第一单,
+    与 `login_state` 的 unknown 是同一个道理;但界面上它必须与 `ok` 分得开。
+    """
+    if not expected or not reported:
+        return "unknown"
+    return "ok" if expected == reported else "mismatch"
+
+
+def account_blocks_claim(state: str | None) -> bool:
+    """输入:account_state → 输出:这道闸拦不拦它。只拦 `mismatch`。
+
+    为什么这一条必须拦死:两台机器登错号是真会发生的事(防关联环境一多,
+    人在哪个 profile 里登了哪个号是记不住的)。派给它一单,它会用**另一个买家号**
+    在亚马逊上真买下来 —— 钱花了、货发了,而库里记的是这个买家号。
+    在此之前这种机器在运营台上是满格绿色的「在线 · 可派」。
+    """
+    return state == "mismatch"
+
+
 def claim(conn, env_id: int, instance_id: int) -> dict[str, Any] | None:
     """输入:连接 + 买家环境 id + 插件实例 id → 输出:任务 dict(含 products),无可派时 None。
 
@@ -104,7 +143,12 @@ def claim(conn, env_id: int, instance_id: int) -> dict[str, Any] | None:
     读到的登录态和随后那次置位之间没有别人插得进来的窗口。
     """
     inst = conn.execute(
-        "SELECT login_state, login_checked_at FROM procure.plugin_instances WHERE id = %s",
+        """SELECT i.login_state, i.login_checked_at,
+                  i.amazon_customer_id AS reported_customer_id,
+                  e.amazon_customer_id AS expected_customer_id
+             FROM procure.plugin_instances i
+             JOIN procure.buyer_envs e ON e.id = i.buyer_env_id
+            WHERE i.id = %s""",
         (instance_id,),
     ).fetchone()
     if inst is not None and login_blocks_claim(inst["login_state"]):
@@ -113,6 +157,20 @@ def claim(conn, env_id: int, instance_id: int) -> dict[str, Any] | None:
             "这个买家号的浏览器已被登出(上次检查:"
             f"{inst['login_checked_at'] or '未知'}),不派单。"
             "请在该浏览器环境里重新登录 Amazon,插件下一轮复检会自动恢复",
+        )
+    # 第二道闸:登着的**不是这个买家号**。与登录态是两条独立的轴 ——
+    # 一台心跳一秒不落、登录态 ok 的机器,浏览器里登的完全可能是隔壁那个号。
+    # 拦法照 INSTANCE_SIGNED_OUT 那一条:抛一个**说得出名字**的拒绝,不是回
+    # 「没有单」—— 后者会让插件每 10 秒安静地问一次,而运营台上那台机器写着「待命」。
+    if inst is not None and account_blocks_claim(
+            account_state(inst["expected_customer_id"], inst["reported_customer_id"])):
+        raise ClaimBlocked(
+            "INSTANCE_ACCOUNT_MISMATCH",
+            f"这台机器登着的 Amazon 账号是 {inst['reported_customer_id']},"
+            f"而这个买家号记的是 {inst['expected_customer_id']},不派单。"
+            "派给它就是拿另一个买家号去买这一单。"
+            "请在这个浏览器环境里换回正确的账号;"
+            "如果确实是买家号那一列记错了,去运营台的买家号页按「以这个为准」",
         )
 
     row = conn.execute(

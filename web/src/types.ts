@@ -22,6 +22,12 @@ export interface TaskRow {
   upstream_order_no: string;
   marketplace: string;
   status: TaskStatus;
+  /** 这一单是谁买的:插件拍的 / 上游在别处下的(external)/ 人工强制回填的。
+   *
+   *  **列表这一层也要有。** 外部单没有走过我们的护栏,`price_cap` 是个占位的 0 ——
+   *  不知道来源的话,那一列限价/实付的红绿点会给一张从没被核过的单画一个绿点,
+   *  而那正是这个项目反复栽过的「两种不同的情况渲染出同一个结果」。 */
+  purchase_source: "plugin" | "external" | "manual_backfill";
   ship_name: string;
   ship_phone: string;
   ship_line1: string;
@@ -182,7 +188,16 @@ export interface InstanceRow {
   env_code: string;
   marketplace: string;
   env_status: string;
+  /** 这个买家号**应该**是哪个 Amazon 账号。空 = 还没认出来(插件第一次报上来时写入)。 */
   amazon_customer_id: string | null;
+  /** 这台机器**此刻登着的**那个账号。与上面那一列是两回事 ——
+   *  两列不一样就是「登错号了」。 */
+  instance_customer_id: string | null;
+  /** 两列一比的结论(服务端算的,与认领那道真闸同一个函数
+   *  services/task_queue.account_state)。前端**不自己判**。 */
+  account_state: "ok" | "mismatch" | "unknown";
+  /** 登错号这一项拦不拦派单(= account_state 为 mismatch)。 */
+  account_blocks_dispatch: boolean;
   daily_cap: number;
   /** 这个买家号该刷哪张卡的后四位。null = 这一道不校验(闸是可关的)。
    *  配上之后,结算页读到的尾号与它不符即 PAYMENT_METHOD_UNEXPECTED,
@@ -240,8 +255,19 @@ export interface SearchReq {
   date_to?: string | null;
   order_numbers?: string[];
   asin?: string | null;
+  /** 按来源筛。**只在不按单号找的时候生效** —— 与 status / env 同一档。 */
+  purchase_source?: string | null;
   page?: number;
   page_size?: number;
+}
+
+/** 买家号那条事件流里的一条。 */
+export interface EnvEvent {
+  kind: "customer_id_seen" | "customer_id_mismatch" | "customer_id_override";
+  payload: { expected?: string | null; reported?: string | null;
+             operator?: string | null; note?: string | null };
+  created_at: string;
+  instance_uid: string | null;
 }
 
 /** `GET /v1/admin/meta` 的返回。
@@ -257,6 +283,12 @@ export interface Meta {
   /** 买家号浏览器的 Amazon 登录态。「登录态存疑」与「已登录」是两个词 ——
    *  读不到导航栏和读到了登录着,处置完全不同。 */
   login_state: { labels: Record<string, string>; tone: Record<string, string> };
+  /** 「这台机器登着的是不是这个买家号」。与 login_state 是两条独立的轴 ——
+   *  一条说「还登着吗」,一条说「登着的是不是这个号」,两句话指向不同的处置。 */
+  account_state: { labels: Record<string, string>; tone: Record<string, string> };
+  /** 这一单是谁买的。三种来源在界面上必须是三个词:外部单没有护栏结论,
+   *  给它写「未超」就是编了一句系统从没做过的判断。 */
+  purchase_source: { labels: Record<string, string>; tone: Record<string, string> };
   error_code: {
     labels: Record<string, string>;
     retryable: string[];

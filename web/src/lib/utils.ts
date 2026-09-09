@@ -24,19 +24,26 @@ export function money(v: string | number | null | undefined): string {
  *   详情页会写「总计 $0.00 · 限价 $1,000.00,未超」并配一个绿点。
  *
  * 所以判据收成一处,四态:
+ *   · **外部下单**              → 不适用(石板灰)。那一单没走过我们的结算页,
+ *                                 price_cap 是个占位的 0 —— 拿它去比会得出
+ *                                 「0 ≥ 0,未超」这种从没发生过的护栏结论
  *   · 没有任何数可比            → 没法核(空心琥珀)
  *   · 有数,但 ≤ 0              → 没法核(空心琥珀)。金额还在 shimmer,或者读错了格子
  *   · 有礼品卡抵扣              → 照常判超没超,但文案必须把两个数都说出来
  *   · 其余                      → 照常
+ *
+ * **「不适用」与「没法核」必须是两档。** 后者说的是「本该核、这次没核成」,
+ * 看到它的人会去查;外部单根本没有限价这回事,渲染成同一句会让人去查一批
+ * 其实一切正常的单。服务端那边的同一套判据在 services/task_query.over_cap。
  *
  * 比的是**货款**(goods_total,服务端在护栏那一步真正比过的那个数),
  * 没有它才退回 actual_total —— 强制回填的单和这一列落库之前的历史单没有它。
  * 服务端那边的同一套判据在 services/task_query.over_cap / cap_basis。
  */
 export type CapVerdict = {
-  state: "unknown" | "over" | "within";
-  tone: "amber-hollow" | "red" | "emerald";
-  /** 真正拿去跟限价比的那个数;没法核时是 null。 */
+  state: "unknown" | "over" | "within" | "not_applicable";
+  tone: "amber-hollow" | "red" | "emerald" | "dashed-zinc";
+  /** 真正拿去跟限价比的那个数;没法核 / 不适用时是 null。 */
   basis: string | null;
   text: string;
 };
@@ -46,7 +53,13 @@ export function capVerdict(t: {
   actual_total: string | null;
   goods_total?: string | null;
   gift_card_amount?: string | null;
+  purchase_source?: string;
 }): CapVerdict {
+  // 外部下单先判:限价这一条对它不成立,不是「这次没核成」。
+  if (t.purchase_source === "external") {
+    return { state: "not_applicable", tone: "dashed-zinc", basis: null,
+             text: "外部下单 —— 这一单不经本系统采购,限价这一条不适用" };
+  }
   const raw = t.goods_total ?? t.actual_total;
   const cap = Number(t.price_cap);
   if (raw === null || raw === undefined || raw === "") {

@@ -144,6 +144,8 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
   const statusLabel = useLabel("task_status");
   const shipLabel = useLabel("shipment_status");
   const eventLabel = useLabel("event_kind");
+  // 这一单是谁买的。中文与色调走 meta,前端不存副本。
+  const sourceLabel = useLabel("purchase_source");
 
   const [t, setT] = useState<TD | null>(null);
   const [err, setErr] = useState<string | null>(null);
@@ -395,11 +397,34 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
             </KV>
             <KV k="下单时间"><span className="id text-xs">{fullTime(t.purchased_at)}</span></KV>
             <KV k="信用卡"><span className="id text-xs">{t.payment_last4 ? `•••• ${t.payment_last4}` : "—"}</span></KV>
-            <Hint>断言在回填那一刻做,不符就不写库 —— 不存导入值/同步值两份再打红叉</Hint>
+            {/* 「这个单号是谁写进去的」:我们拍的 / 上游在别处买了填进来的 /
+                有人按「强制回填」写的。三种的可信程度不一样,而它们在这一格
+                原先长得一模一样。 */}
+            <KV k="来源">
+              {(() => {
+                const g = sourceLabel(t.purchase_source);
+                return <Tag tone={g.tone}>{g.label}</Tag>;
+              })()}
+            </KV>
+            {t.purchase_source === "external"
+              ? <Hint>这一单不经本系统采购:单号是上游填的,我们只负责同步物流 —— 也因此没有护栏结论、没有费用</Hint>
+              : <Hint>断言在回填那一刻做,不符就不写库 —— 不存导入值/同步值两份再打红叉</Hint>}
           </Group>
 
           <Group title="费用信息">
-            {hasMoney ? (
+            {t.purchase_source === "external" ? (
+              // 外部下单:这几格库里全是空的,而空着的原因不是「还没同步上」。
+              // **尤其不许落进下面那个 capVerdict 的分支** —— 那会拿一个占位的
+              // price_cap=0 去比,画一个绿点写「未超」,而这一单根本没被任何
+              // 一道护栏看过。这正是这一格栽过两次的那种毛病的第三种形状。
+              <div className="text-sm- text-zinc-500 leading-relaxed">
+                外部下单 —— 这一单是上游自己在别处买的,没走过我们的结算页,
+                所以没有实付、没有礼品卡抵扣,
+                <span className="text-zinc-900 font-medium">限价这一条也不适用</span>
+                (库里那个 {money(t.price_cap)} 是占位,不是真限价)。
+                本系统对这一单只做一件事:同步物流。
+              </div>
+            ) : hasMoney ? (
               <>
                 {([["运费", t.actual_shipping], ["税费", t.actual_tax]] as const).map(([k, v]) => (
                   <div key={k} className="flex items-center h-[26px] text-sm-">

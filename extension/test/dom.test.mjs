@@ -110,7 +110,34 @@ await withFixture("nav-signed-in.html", async (run) => {
      })()`), true);
 });
 
+// ── 买家号 ID(customerId)────────────────────────────────────────────
+//
+// 这一位是**登录探测顺手读到的**(同一张页面),用来发现「这台机器登着的不是
+// 这个买家号」。判错的两个方向同样不对等:
+//   · 抠到一个假值送上去 → 服务端「这一列为空就首次写入」会把它写成这个买家号的
+//     身份,从此这道闸永远拦着它自己,而运营看到的理由是假的(最坏)
+//   · 抠不到                → 这道闸这一轮用不上,与老插件的行为一样,无害
+// 所以形状卡死,而且**扫全部匹配取第一个形状对的**,不是取第一个匹配。
+await withFixture("nav-signed-in.html", async (run) => {
+  eq("customerId 跳过前面三个假值,取第一个形状对的",
+     await run("amzdom.readCustomerId(document)"), "A3KM7PLQ92XVYD");
+  // 干扰项自己也得验一遍:三个假值确实排在真值前面。
+  // 不然上面那条断言即使实现写成"取第一个匹配"也照样绿 —— 夹具没干扰,断言就没用。
+  eq("customerId 三个假值确实排在真值前面(干扰项确实存在)",
+     await run(`(() => {
+        const h = document.documentElement.innerHTML;
+        const at = (s) => h.indexOf(s);
+        return [at('customerId: ""') >= 0, at('"customerId": "0"') >= 0,
+                at('customerId: "A12"') >= 0,
+                at('customerId: ""') < at("'customerId': 'A3KM7PLQ92XVYD'")];
+     })()`), [true, true, true, true]);
+});
+
 await withFixture("nav-signed-out.html", async (run) => {
+  // 登出的页面上没有这一位。**返回 undefined,不是空串** —— 空串会被
+  // 上报出去,而服务端对空串的处置是"这一轮没有新消息",两种情况混成一个值。
+  eq("customerId 登出的页面上抠不到 → undefined",
+     await run("amzdom.readCustomerId(document) ?? null"), null);
   eq("nav 已登出", await run("amzdom.readLoginState(document)"), "signed_out");
   // 这张页面里藏着一个"已登录"的模板(连 signout 都有)。见到 signout 就判已登录的
   // 实现会在这里翻车 —— 而那正是最坏的那个方向。
@@ -176,6 +203,30 @@ await withFixture("cart-empty.html", async (run) => {
      await parse('<a id="nav-link-accountList" href="/gp/css/homepage.html?ref_=nav_ya"></a>'), "ok");
   eq("nav 账户入口指向 /ap/signin → signed_out",
      await parse('<a id="nav-link-accountList" href="/ap/signin?openid.pape=0"></a>'), "signed_out");
+
+  // customerId 的两种写法与几种假值。夹具那张只摆得下一种组合,其余在这里现造。
+  const cid = (html) =>
+    run(`amzdom.readCustomerId(new DOMParser().parseFromString(${JSON.stringify(html)}, "text/html")) ?? null`);
+  eq('customerId 写法一:customerId: "A…"',
+     await cid('<script>var x = { customerId: "A1B2C3D4E5" };</script>'), "A1B2C3D4E5");
+  eq("customerId 写法二:'customerId': 'A…'(键上带引号、值单引号)",
+     await cid("<script>var x = { 'customerId': 'A9Z8Y7X6W5V4' };</script>"), "A9Z8Y7X6W5V4");
+  eq('customerId 写法三:"customerId": "A…"(JSON 片段)',
+     await cid('<script>{"customerId": "AQQQWWWEEE1"}</script>'), "AQQQWWWEEE1");
+  // 空串是最要命的一种假值:厂商那种"取第一个匹配"的实现会把它送上去,
+  // 而服务端对空值的处置(首次写入)会把这个买家号的身份定成一个空串。
+  eq("customerId 空串不算数", await cid('<script>customerId: ""</script>'), null);
+  eq("customerId 不是 A 开头不算数",
+     await cid('<script>customerId: "1234567890"</script>'), null);
+  eq("customerId A 开头但太短不算数", await cid('<script>customerId: "A12"</script>'), null);
+  // 小写不是这个东西的形态(真值全是大写字母数字)。放松成不分大小写的话,
+  // 页面上一堆 "customerid" 之类的埋点字段会被认成买家号 ID。
+  eq("customerId 小写不算数", await cid('<script>customerId: "a1b2c3d4e5"</script>'), null);
+  eq("customerId 页面上一个都没有 → undefined", await cid("<p>nothing here</p>"), null);
+  // 前面全是假值、真值在最后一个 —— 这一条盯的正是"扫全部匹配"这件事本身
+  eq("customerId 三个假值之后才是真值",
+     await cid('<script>var a={customerId:""},b={"customerId":"0"},' +
+               "c={ 'customerId': 'AREAL12345XY' };</script>"), "AREAL12345XY");
 
   // 判据本身:URL 那一条收成了一处定义(parse.isSignInUrl),用它的有五处
   // (readLoginState 两处、AmazonDriver.readLoginState 两处、guardLogin)。

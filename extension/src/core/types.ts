@@ -58,6 +58,17 @@ export interface HeartbeatOut {
   /** 服务端的回话:这个买家号有单在等派,且上次读页面已经过了复检间隔,
    *  下一轮认领前去读一次导航栏。策略在服务端,改它不用发新插件版本。 */
   login_check_due: boolean;
+  /** 这台机器登着的账号跟这个买家号对不对得上(服务端现算的,与认领那道闸
+   *  同一个函数)。`mismatch` 时下一次认领会被 409 INSTANCE_ACCOUNT_MISMATCH 拒 ——
+   *  而那句拒绝到达之前,插件面板就该说得出为什么。
+   *
+   *  可选是为了兼容旧服务端:收不到就当作"这一条这会儿用不上",不作数。 */
+  account_state?: "ok" | "mismatch" | "unknown";
+  /** 服务端库里记着的、这台机器登着的那个账号(它刚收下的那一位)。 */
+  amazon_customer_id?: string | null;
+  /** 我们报上去的买家号 ID 形状不对,服务端**没写库、也没拒这条心跳**,
+   *  原样退回来让插件在日志里看得见。静默丢掉才是最不该有的处置。 */
+  customer_id_rejected?: string | null;
 }
 
 export interface RegisterOut {

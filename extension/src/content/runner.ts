@@ -20,7 +20,7 @@ import { SingleFlight } from "../core/singleflight.js";
 import type { Phase } from "../core/status.js";
 import type { Task } from "../core/types.js";
 import { Loop } from "../background/loop.js";
-import { AmazonDriver, AmazonShipmentReader } from "../flow/amazon.js";
+import { AmazonDriver, AmazonShipmentReader, lastReadCustomerId } from "../flow/amazon.js";
 import { SimulatedDriver, SimulatedShipmentReader } from "../flow/simulated.js";
 import type { PageDriver } from "../flow/driver.js";
 import type { LoginState } from "../flow/dom/parse.js";
@@ -118,7 +118,10 @@ export class Runner {
         // 读页面必须在内容脚本里(SW 没有 document),心跳发在 SW 里。
         // 所以这里只负责把读到的那一位交给 SW,由它挂在下一次心跳上。
         reportLogin: (state: LoginState) => {
-          chrome.runtime.sendMessage({ type: "amz.loginState", state })
+          // 买家号 ID 是登录探测那一步顺手抠到的(flow/amazon.rememberCustomerId),
+          // 搭这条现成的路一起上报 —— 它和登录态本来就是同一次读页面的两个结论。
+          chrome.runtime.sendMessage({ type: "amz.loginState", state,
+                                       customerId: lastReadCustomerId() })
             .catch(() => { /* SW 没起来:下一轮复检还会再报一次,不必在这里重试 */ });
         },
         loginCheckDue: () => this.loginCheckDue,
