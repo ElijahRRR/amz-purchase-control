@@ -16,9 +16,12 @@
      运营台上这一单看起来会是「领走了又回来了,什么也没说」。
 """
 
+import re
+
 import pytest
 
 from registry import paths
+from server import schemas
 
 UID = "inst-confirm-A"
 
@@ -63,23 +66,52 @@ def test_the_upstream_order_no_exists_in_both_halves_of_the_contract():
     这两份是同一个契约的两个副本(`extension/src/core/types.ts` 的文件头写着
     「这里是唯一的一份」)。厂商那套「文档写 subTotal、插件发 subtotal」的字段
     错位就是靠多处副本产生的。
+
+    **服务端这一半问的是对象,不是源码文本。** 原先它断言
+    `"upstream_order_no: str" in schemas.py 全文` —— 而这个字面量在那个文件里
+    出现三次(TaskOut / PendingShipmentOut / IntakeRow),盯的于是是「某处有」,
+    不是「TaskOut 里有」:把 TaskOut 那一行删掉,这条自称守着契约的测试照样绿
+    (实测只有上面那条行为测试会红)。一条守不住自己那半边的契约测试,
+    比没有更危险 —— 它会让下一个人以为这里有人盯着。
     """
-    schemas = (paths.repo_root() / "server" / "schemas.py").read_text(encoding="utf-8")
+    field = schemas.TaskOut.model_fields.get("upstream_order_no")
+    assert field is not None, "TaskOut 里没有 upstream_order_no,认领响应不会下发它"
+    assert field.is_required(), (
+        "这一项在服务端侧是必填的:可选意味着某些认领响应里没有它,"
+        "而确认屏那一行会在**没人说得清是哪些单**的时候变成「服务端未下发」")
     types_ts = (paths.repo_root() / "extension" / "src" / "core" / "types.ts").read_text(
         encoding="utf-8")
-    assert "upstream_order_no: str" in schemas
-    assert "upstream_order_no?: string" in types_ts, (
+    # 插件那半边只有源码可问(TS 类型不进运行时)。收窄到 `interface Task` 的类体上,
+    # 免得将来别处多出一个同名字段就把这条断言喂饱了 —— 与上面服务端那半同一个道理。
+    task_iface = re.search(r"export interface Task \{(.*?)\n\}", types_ts, re.S)
+    assert task_iface, "types.ts 里找不到 interface Task"
+    assert "upstream_order_no?: string" in task_iface.group(1), (
         "插件那份 Task 里没有这一项,确认屏上那一行会永远是「服务端未下发」")
 
 
 # ── 2. 三种结局在运营台上是三句不同的中文 ──────────────────────────────
 
-CONFIRM_STATES = {
-    "awaiting_confirm": "停在下单前等人按",
-    "confirm_approved": "人按了下单",
-    "confirm_cancelled": "人按了取消",
-    "confirm_timeout": "等人确认超时",
-}
+#: 「下单前确认」那一格的四个 `payload.state`。**这里只列状态名,不抄一份中文**
+#: —— 抄一份的话,运营台上那几句话改了而这里没改,这个列表就是一份写下来就
+#: 不成立的注释(项目把这类注释列为「比不写更危险」)。中文长什么样由下面
+#: 那两条断言按规则判,不按字面量对。
+CONFIRM_STATES = (
+    "awaiting_confirm",
+    "confirm_approved",
+    "confirm_cancelled",
+    "confirm_timeout",
+)
+
+
+def _payload_state_labels() -> dict[str, str]:
+    """读运营台那张渲染表 → {state: 中文标签}。"""
+    detail_tsx = (paths.repo_root() / "web" / "src" / "components" / "TaskDetail.tsx").read_text(
+        encoding="utf-8")
+    labels = {}
+    for state in CONFIRM_STATES:
+        line = next(ln for ln in detail_tsx.splitlines() if ln.strip().startswith(state + ":"))
+        labels[state] = line.split(":", 1)[1].strip().rstrip(",").strip('"')
+    return labels
 
 
 @pytest.mark.parametrize("state", sorted(CONFIRM_STATES))
@@ -105,13 +137,56 @@ def test_cancelled_and_timed_out_do_not_render_as_the_same_thing():
     合成一句的话,一台没人守的机器会一直产出「有人按了取消」,
     看的人会以为有人在把关 —— 这正是本项目反复记的那种假象。
     """
+    labels = _payload_state_labels()
+    assert labels["confirm_cancelled"] != labels["confirm_timeout"], labels
+
+
+def test_the_state_label_is_not_a_second_copy_of_the_step_text():
+    """`state` 那句中文**不许与同一条事件的 `step` 文案逐字相同**。
+
+    运营台把一条事件铺成「step · 其余键」,state 就在其余键里(TaskDetail.eventLine)。
+    两边一字不差的话,同一行会把同一句中文说两遍
+    (「人按了下单,继续 · 人按了下单,继续」),读的人第一反应是界面出了 bug。
+    分工是:step 说**发生了什么**,state 说**这一格是什么**。
+
+    判法:那句标签不许在 run.ts 里原样出现(step 文案都是 run.ts 里的字面量)。
+    **说清这条盯不住什么**:超时那条 step 是模板串
+    (`等人确认超时 ${waitedS} 秒,退回队列`),标签若只与它的某一段相同,
+    这里判不出来 —— 那一段由人眼和上面那条「取消 ≠ 超时」兜着。
+    """
+    run_ts = (paths.repo_root() / "extension" / "src" / "flow" / "run.ts").read_text(
+        encoding="utf-8")
+    for state, label in _payload_state_labels().items():
+        assert label not in run_ts, (
+            f"{state} 的标签「{label}」与插件写的 step 文案逐字相同,"
+            f"运营台会把同一句话说两遍")
+
+
+def test_every_machine_value_the_plugin_writes_gets_translated():
+    """确认那几条事件里的**机器值键**,运营台的 fmtPayload 都要认得。
+
+    认不出的键会落到最后那行 `${k}=${String(v)}`,在一套只出中文的界面上铺成
+    `waited_ms=142731` —— 一个英文键加一串毫秒。fmtPayload 存在的全部理由就是
+    不让这种东西上界面,而它漏掉一个新键的时候没有任何地方会喊。
+
+    键从 run.ts 的确认那一段里**扫出来**,不是在这里手抄一份:手抄的话,
+    插件下次多写一个键,这条测试不会知道(那正是它要防的那件事)。
+    约定:载荷键一律 snake_case,TS 里的局部变量是 camelCase,所以按下划线筛。
+    """
+    run_ts = (paths.repo_root() / "extension" / "src" / "flow" / "run.ts").read_text(
+        encoding="utf-8")
+    start = run_ts.index("if (deps.confirmBeforeOrder === true && deps.askConfirm) {")
+    end = run_ts.index("// **先说,再点", start)
+    section = re.sub(r"//[^\n]*", "", run_ts[start:end])      # 注释里的键名不算数
+    keys = sorted(set(re.findall(r"\b([a-z]+(?:_[a-z]+)+)\s*:", section)))
+    assert keys, "确认那一段里一个载荷键都没扫到,这条测试自己坏了"
+
     detail_tsx = (paths.repo_root() / "web" / "src" / "components" / "TaskDetail.tsx").read_text(
         encoding="utf-8")
-    labels = {}
-    for state in ("confirm_cancelled", "confirm_timeout"):
-        line = next(ln for ln in detail_tsx.splitlines() if ln.strip().startswith(state + ":"))
-        labels[state] = line.split(":", 1)[1].strip().rstrip(",")
-    assert labels["confirm_cancelled"] != labels["confirm_timeout"], labels
+    fmt = detail_tsx[detail_tsx.index("function fmtPayload("):]
+    for key in keys:
+        assert f'k === "{key}"' in fmt, (
+            f"运营台的 fmtPayload 不认得 {key},事件流里会原样铺成 {key}=<机器值>")
 
 
 # ── 3. 先写事件流,再 /release ─────────────────────────────────────────
