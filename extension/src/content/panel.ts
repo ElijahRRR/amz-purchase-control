@@ -8,6 +8,7 @@ import type { LogLine } from "../core/log.js";
 import { PHASE_LABEL, type Phase } from "../core/status.js";
 import type { Config } from "../core/config.js";
 import type { Task } from "../core/types.js";
+import type { ConfirmPreview } from "../flow/run.js";
 import { wireCopy } from "./copy.js";
 import { Runner } from "./runner.js";
 import { PANEL_CSS } from "./styles.js";
@@ -22,6 +23,10 @@ interface State {
   hasLease: boolean;
   /** 正在等操作员做发卡行验证时,这一段的到期时刻(epoch 毫秒)。 */
   verifyDeadlineMs: number | null;
+  /** 停在下单前等人按时,这一屏要摆出来的东西。null = 没在等。 */
+  confirm: ConfirmPreview | null;
+  /** 等人确认那一格的到期时刻(epoch 毫秒)。 */
+  confirmDeadlineMs: number | null;
 }
 
 const PHASE_TAG: Record<Phase, [string, string]> = {
@@ -32,7 +37,10 @@ const PHASE_TAG: Record<Phase, [string, string]> = {
   "no-server": ["tag", "background:#fef2f2;color:#b91c1c;border-color:#fecaca"],
   claimed: ["tag tagdash", "background:#fff;color:#b45309;border-color:#fde68a"],
   running: ["tag tagdash", "background:#fff;color:#b45309;border-color:#fde68a"],
-  confirm: ["tag tagdash", "background:#fff;color:#b45309;border-color:#fde68a"],
+  // 琥珀**实心**,和 verify 一档:这一格是「轮到你了」,不是「机器在跑,你不用管」。
+  // 与上面几个虚线琥珀(已认领 / 执行中)分开 —— 虚线在这块面板上的意思一直是
+  // 「你不用动」,而这一格恰恰是不按就什么也不会发生。
+  confirm: ["tag", "background:#fffbeb;color:#b45309;border-color:#fde68a"],
   // 琥珀**实心**:与 blocked 的紫色分开 —— 紫色是「已经定了要人工处理」,
   // 这一格是「此刻正在等你动手,还来得及」。也与上面几个虚线琥珀分开:
   // 虚线是「机器在跑,你不用管」。
@@ -65,13 +73,15 @@ const STEPS = [
 ];
 
 let state: State = { phase: "off", task: null, log: [], config: null, hasLease: false,
-                     verifyDeadlineMs: null };
+                     verifyDeadlineMs: null, confirm: null, confirmDeadlineMs: null };
 const runner = new Runner();
 let root: ShadowRoot;
 let mount: HTMLElement;
 let toast: HTMLElement;
-/** 等验证那一格的倒计时。只在那一格跑 —— 平时每秒重绘一次面板没有意义。 */
-let verifyTimer: ReturnType<typeof setInterval> | undefined;
+/** 「轮到人了」那两格的倒计时(等发卡行验证 / 等人确认下单)。**只在那两格跑**
+ *  —— 平时每秒重绘一次面板没有意义,而离开之后还在走的秒表配着一句「剩余 3:12」,
+ *  正是这个项目反复记的那种「看起来在盯、其实是假的」。 */
+let countdownTimer: ReturnType<typeof setInterval> | undefined;
 
 /** 输入:剩余毫秒 → 输出:M:SS。到点了写 0:00,不写负数。 */
 function mmss(ms: number): string {
@@ -122,6 +132,8 @@ function render(): void {
                 : phase === "confirm" || phase === "verify" ? 5
                 : phase === "done" ? 7 : 0;
   const leftMs = state.verifyDeadlineMs === null ? null : state.verifyDeadlineMs - Date.now();
+  const confirmLeftMs = state.confirmDeadlineMs === null
+    ? null : state.confirmDeadlineMs - Date.now();
 
   const modeBtn = (m: string, label: string) =>
     `<button data-mode="${m}" class="${config?.mode === m ? "on" : ""}">${label}</button>`;
@@ -161,6 +173,15 @@ function render(): void {
       连着几单清不动购物车,已暂停认领一段时间 —— 多半是 Amazon 改了购物车页的结构。
       请打开这个买家号的购物车看一眼(手动清空一次也好),日志里有每一次的失败原因。
     </div>` : ""}
+    ${phase === "confirm" ? `<div class="warnbar" style="background:#fffbeb;color:#92400e;border-color:#fde68a">
+      <b>等你确认${confirmLeftMs === null ? "" : ` · 剩余 ${mmss(confirmLeftMs)}`}:</b>
+      这一单已经过了护栏,<b>还没点下单,一分钱没花</b>。下面那一屏看清楚再按。${
+        // 到点会发生什么必须写出来,而且必须与代码里真正发生的事一致:
+        // run.ts 那条路是「清车 + 退回队列」,不是「自动下单」也不是「转待人工」。
+        // 这句话写错的代价是有人为了赶时间故意让它超时。
+        confirmLeftMs === null ? "" :
+        "到点<b>不会自动下单</b> —— 这一单会清车退回队列,谁都没花钱,过一会儿还会被再领一次。"}
+    </div>` : ""}
     ${phase === "verify" ? `<div class="warnbar" style="background:#fffbeb;color:#92400e;border-color:#fde68a">
       <b>轮到你了:</b>Amazon 把这一单转到了发卡行验证页,窗口已经弹在本页中间 ——
       请在里面完成验证,不要关闭或刷新本页。${
@@ -172,10 +193,15 @@ function render(): void {
     </div>` : ""}
 
     <div class="body">
+      ${state.confirm ? confirmCard(state.confirm, config?.envCode ?? null, confirmLeftMs) : ""}
       ${task ? taskCard(task) : ""}
       <div class="sec">执行步骤</div>
       <div class="steps">
-        ${STEPS.map((s, i) => {
+        ${STEPS.map((s0, i) => {
+          // 第 5 步在 confirm 相位上要换一句话:「下单 · 确认页」说的是
+          // **已经点了、在等 Amazon 的确认页**,而此刻一下都还没点、一分钱没花。
+          // 同一格写同一句话的话,步骤条会把「等你决定」渲染成「钱已经花了」。
+          const s = i === 5 && phase === "confirm" ? "等你确认 · 还没点下单" : s0;
           const cls = i < stepIdx ? "done" : i === stepIdx && phase !== "off" && phase !== "idle" ? "cur" : "";
           const dot = i < stepIdx
             ? '<span class="dot" style="background:#10b981"></span>'
@@ -192,6 +218,10 @@ function render(): void {
 
     <div class="ft">
       <span class="seg">${modeBtn("off", "停")}${modeBtn("simulate", "模拟")}${modeBtn("live", "真实")}</span>
+      ${/* 下单前确认。**默认关**(所有者定稿),照三档模式同一套存取方式:
+            改的是 chrome.storage 里那份配置,由 SW 广播回来 —— 面板不留副本。 */""}
+      <span class="seg"><button id="confirmsw" class="${config?.confirmBeforeOrder ? "on" : ""}"
+        title="开着的话每一单在下单前都停下来等人按;没人按就到点退回队列">下单前确认</button></span>
       <input id="env" placeholder="env-172" value="${esc(config?.envCode ?? "")}">
       <button class="btn bs" id="save">保存</button>
       <span style="margin-left:auto"></span>
@@ -202,6 +232,53 @@ function render(): void {
 
   toast = root.getElementById("toast") as HTMLElement;
   wire();
+}
+
+/** 下单前那一屏。**这一屏的存在意义是让人能独立回答「该不该现在买」** ——
+ *  所以摆的是上游单号、商品与数量、服务端真正比过的货款与限价、礼品卡抵扣、
+ *  交期原文、买家号。少一样它就退化成一个写着「确定?」的按钮,而那种按钮
+ *  只会训练人闭着眼睛点。
+ *
+ *  **两个按钮的分量不一样**:「下单」是红实心(会花真钱,不可撤销),
+ *  「取消」是次要按钮。红色一旦廉价,它就不再是刹车 —— 这块面板上再没有
+ *  第二个红按钮(design/DesignSystem.dc.html 那条)。 */
+function confirmCard(c: ConfirmPreview, envCode: string | null, leftMs: number | null): string {
+  const items = c.products.map((p) => `${id(p.asin)} × ${esc(p.quantity)}`).join("  ");
+  // 服务端回了货款就写「货款」,没回就写「实付」并说明。两者在礼品卡全额抵扣的
+  // 单子上差得很远(实付 0.00 / 货款 2241.86),写错一个字这一屏就在骗人。
+  const money = c.goodsTotal === null
+    ? `<span class="kvv">实付 ${id(c.actualTotal)} <span style="color:#a1a1aa">服务端没回货款,这里是结算页实付</span></span>`
+    : `<span class="kvv">货款 ${id(c.goodsTotal)} <span style="color:#a1a1aa">≤ 限价 ${esc(c.priceCap)}</span></span>`;
+  const gift = c.giftCard === null
+    ? "结算页上没有抵扣行"
+    : !c.giftCard.applied
+      ? "有抵扣行,但这一单没用上"
+      : c.giftCard.amount === null
+        ? "有抵扣,但金额没读出来"
+        : `抵扣 ${esc(c.giftCard.amount)}`;
+  return `
+    <div class="sec">下单前确认 · 会花真钱</div>
+    <div style="margin:2px 14px 0;border:1px solid #fecaca;background:#fef2f2;border-radius:6px;padding:11px 12px;display:flex;flex-direction:column;gap:6px">
+      <div class="kv" style="padding:0"><span class="kvk">上游单号</span><span class="kvv">${
+        // 收不到与「真的是空的」不许长成一个样子:老服务端的认领响应里没有这一项。
+        c.upstreamOrderNo ? id(c.upstreamOrderNo) : '<span style="color:#a1a1aa">服务端未下发</span>'
+      }</span></div>
+      <div class="kv" style="padding:0"><span class="kvk">买家号</span><span class="kvv">${
+        envCode ? id(envCode) : '<span style="color:#a1a1aa">未配置</span>'}</span></div>
+      <div class="kv" style="padding:0"><span class="kvk">商品</span><span class="kvv">${items}</span></div>
+      <div class="kv" style="padding:0"><span class="kvk">金额</span>${money}</div>
+      <div class="kv" style="padding:0"><span class="kvk">礼品卡</span><span class="kvv">${esc(gift)}</span></div>
+      <div class="kv" style="padding:0"><span class="kvk">交期</span><span class="kvv">${
+        // 原文照抄,面板不解析交期(服务端解析的那一条已经比过 max_delivery_days)。
+        c.deliveryRaw ? esc(c.deliveryRaw) : '<span style="color:#a1a1aa">服务端没采信任何一条</span>'}</span></div>
+      <div style="display:flex;align-items:center;gap:8px;margin-top:3px">
+        <button class="btn bdanger" id="cfyes">下单</button>
+        <button class="btn bs" id="cfno">取消</button>
+        <span style="margin-left:auto;font-size:11px;color:#b45309">${
+          // 这句话必须与代码里真正发生的事一致(run.ts:超时 → 清车 + 退回队列)。
+          leftMs === null ? "" : `剩余 ${mmss(leftMs)} · 到点退回队列`}</span>
+      </div>
+    </div>`;
 }
 
 function taskCard(t: Task): string {
@@ -226,6 +303,18 @@ function wire(): void {
   root.getElementById("tick")?.addEventListener("click", () => {
     void runner.tick();
   });
+  // 与三档模式同一套存取方式:改的是配置,由 SW 存进 chrome.storage 再广播回来。
+  // 面板不留副本 —— 留一份的话,广播丢一次这个开关就和真正生效的那一位对不上了。
+  root.getElementById("confirmsw")?.addEventListener("click", () => {
+    chrome.runtime.sendMessage({
+      type: "amz.setConfig",
+      patch: { confirmBeforeOrder: !state.config?.confirmBeforeOrder },
+    });
+  });
+  // 那两个按钮只把人的那一下传给执行器。**到点不由这里说了算** ——
+  // 上界在 flow/run.ts,一个渲染卡住的面板不该等于「没有上界」。
+  root.getElementById("cfyes")?.addEventListener("click", () => runner.answerConfirm(true));
+  root.getElementById("cfno")?.addEventListener("click", () => runner.answerConfirm(false));
 }
 
 function boot(): void {
@@ -246,14 +335,15 @@ function boot(): void {
   // 所以状态是本地的,不用跟后台来回要。
   runner.onChange((rs) => {
     state = { ...state, phase: rs.phase, task: rs.task, hasLease: rs.hasLease,
-              verifyDeadlineMs: rs.verifyDeadlineMs };
-    // 倒计时只在等验证那一格跑。**离开那一格必须把定时器收掉** ——
+              verifyDeadlineMs: rs.verifyDeadlineMs,
+              confirm: rs.confirm, confirmDeadlineMs: rs.confirmDeadlineMs };
+    // 倒计时只在「轮到人了」那两格跑。**离开必须把定时器收掉** ——
     // 一个还在走的秒表配着一句「剩余 3:12」,而其实没有任何东西在等,
     // 正是这个项目反复记的那种「看起来在盯、其实是假的」。
-    if (verifyTimer !== undefined) { clearInterval(verifyTimer); verifyTimer = undefined; }
-    if (rs.phase === "verify" && rs.verifyDeadlineMs !== null) {
-      verifyTimer = setInterval(render, 1000);
-    }
+    if (countdownTimer !== undefined) { clearInterval(countdownTimer); countdownTimer = undefined; }
+    const ticking = (rs.phase === "verify" && rs.verifyDeadlineMs !== null) ||
+                    (rs.phase === "confirm" && rs.confirmDeadlineMs !== null);
+    if (ticking) countdownTimer = setInterval(render, 1000);
     render();
   });
   runner.log.onChange((lines) => {
