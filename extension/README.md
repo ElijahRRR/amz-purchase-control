@@ -143,6 +143,12 @@ node tools/smoke.mjs --scenario login_lost      # 跑到一半被登出:退回�
 node tools/smoke.mjs --scenario manual_verify   # 转到发卡行验证页,人做完了 → 照常回填
 node tools/smoke.mjs --scenario manual_verify_timeout   # 人没做完 → 发卡行验证超时,转待人工
 
+# 替买家号切支付卡(所有者定稿①)。这两个场景**要先给买家号配上期望卡**,
+# 否则服务端下发 null、插件一步都不做,这一轮是空跑 —— smoke 会直接判失败并说清怎么配。
+#   psql <库> -c "UPDATE procure.buyer_envs SET expected_card_last4='4417' WHERE code='env-172'"
+node tools/smoke.mjs --scenario card_switch      # 当前 9021 → 切成 4417 → 重读结算页 → 照常拍单
+node tools/smoke.mjs --scenario card_switch_fail # 切不动 → 不下单、不转人工、清车
+
 # 物流同步是独立一条流,加 --ship 顺带跑一轮
 node tools/smoke.mjs --scenario happy --ship in_transit
 node tools/smoke.mjs --scenario happy --ship delivered
@@ -168,6 +174,8 @@ node tools/smoke.mjs --scenario happy --ship delivered
 | login_lost | `ready`(**退回队列**) | — （单子没毛病，是这台机器被登出了；事件流里有一条「登录态失效，退回队列」） |
 | manual_verify | `purchased` | — （事件流里有「等待人工完成支付验证」「人工支付验证已完成」两条） |
 | manual_verify_timeout | `manual` | `PAYMENT_VERIFICATION_TIMEOUT`（**可能已下单**，重置前要有人去买家号里看一眼） |
+| card_switch | `purchased` | — （事件流里有「切换支付卡」「支付卡已切换」「切卡后重读结算页」三条；护栏比的是**重读那一份**） |
+| card_switch_fail | `exception` | `PAYMENT_METHOD_UNEXPECTED`（**没到下单点**，钱一分没花；不转人工、已清车） |
 
 ## 写在代码里的几条规矩
 

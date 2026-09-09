@@ -4,7 +4,7 @@
  * 这一整套能不能真的跑通。场景与 tools/mock_plugin.py 一致,便于两边对照。
  */
 
-import { DriverError, LoginLostError, type AddResult, type CheckoutReading, type OrderCard, type PageDriver, type PlaceOrderHooks } from "./driver.js";
+import { DriverError, LoginLostError, type AddResult, type CheckoutReading, type OrderCard, type PageDriver, type PaymentCardHooks, type PaymentCardResult, type PlaceOrderHooks } from "./driver.js";
 import type { LoginState } from "./dom/parse.js";
 import type { ShipmentReader, TrackingRead } from "./shipment.js";
 import type { Shipping } from "../core/types.js";
@@ -21,7 +21,15 @@ export type Scenario =
   | "manual_verify"
   /** 同上,但人没在时限内做完。这一格必须落成 PAYMENT_VERIFICATION_TIMEOUT
    *  且 to_manual —— 订单可能已经提交,退回队列就是重复下单。 */
-  | "manual_verify_timeout";
+  | "manual_verify_timeout"
+  /** 买家号当前刷的是 9021,任务下发的期望卡是 4417 → 切成功 → 照常拍单。
+   *  验的是所有者定稿①那条链:期望卡随认领下发、插件切、**切完重读结算页**、
+   *  护栏拿重读的那一份裁决。 */
+  | "card_switch"
+  /** 同上但切不动(模拟「没有唯一命中的那张卡」)。这一格必须落成
+   *  PAYMENT_METHOD_UNEXPECTED、**to_manual=false**(归 BUSINESS_BLOCKED:
+   *  重试多少次结果都一样,而且这一步在下单**之前**,钱一分没花)、且清车。 */
+  | "card_switch_fail";
 
 export class SimulatedDriver implements PageDriver {
   readonly name = "simulated";
@@ -30,7 +38,17 @@ export class SimulatedDriver implements PageDriver {
   readonly calls: string[] = [];
   private added: Array<{ asin: string; quantity: number }> = [];
 
-  constructor(private readonly scenario: Scenario = "happy") {}
+  /** 结算页此刻选中的卡尾号。切卡那两个场景故意从"不是期望的那张"开始 ——
+   *  其余场景照旧是 4417,与 tests/test_server_flow.py 里那条护栏用例同一个数。
+   *
+   *  **它是可变的**:切成功之后 readCheckout 必须读到新的那张。写死成常量的话,
+   *  「切了」和「没切」在事件流与护栏上报里长成同一个样子,这个场景就白跑了。 */
+  private card: string;
+
+  constructor(private readonly scenario: Scenario = "happy") {
+    this.card = (scenario === "card_switch" || scenario === "card_switch_fail")
+      ? "9021" : "4417";
+  }
 
   private mark(step: string) { this.calls.push(step); }
 
@@ -95,9 +113,36 @@ export class SimulatedDriver implements PageDriver {
       actualTax: "0.80",
       deliveryTexts,
       isFba: this.scenario === "not_fba" ? false : true,
-      paymentLast4: "4417",
+      paymentLast4: this.card,
       unitPrices: this.added.map((p) => ({ asin: p.asin, unit_price: "9.99" })),
     };
+  }
+
+  /** 期望为空一步不做;已经是那张就不动;否则"切"一下(改一个字段)。
+   *
+   *  `card_switch_fail` 抛的是真驱动那一段会抛的东西:同一个错误码、
+   *  同一句「切支付卡停在「...」」的前缀。smoke 那一格断言的就是这条链
+   *  在服务端落成 PAYMENT_METHOD_UNEXPECTED / to_manual=false / 清了车。 */
+  async ensurePaymentCard(expected: string | null | undefined,
+                          hooks: PaymentCardHooks = {}): Promise<PaymentCardResult> {
+    this.mark("ensurePaymentCard:" + (expected ?? "-"));
+    const want = (expected ?? "").trim();
+    if (!want) return { last4: this.card, switched: false };
+    if (this.card === want) return { last4: this.card, switched: false };
+
+    const from = this.card;
+    await hooks.onSwitchStart?.({ from, to: want });
+    if (this.scenario === "card_switch_fail") {
+      throw new DriverError(
+        "PAYMENT_METHOD_UNEXPECTED",
+        `切支付卡停在「没有唯一命中的那张卡」:支付选择页上有 2 个卡片单选钮,` +
+        `但没有**恰好一个**的尾号是 ${want}(模拟)`);
+    }
+    this.card = want;
+    this.mark(`cardSwitched:${from}->${want}`);
+    // matched 给 null:模拟档没有页面,编一段"比中的原文"出来就是假证据。
+    await hooks.onSwitched?.({ from, to: want, matched: null });
+    return { last4: want, switched: true };
   }
 
   async placeOrder(hooks: PlaceOrderHooks = {}): Promise<void> {

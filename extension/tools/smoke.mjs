@@ -72,6 +72,55 @@ const r = await loop.tickOnce();
 
 console.log("\n  结果:", JSON.stringify(r.kind === "ran" ? { kind: r.kind, task: r.task.task_id, outcome: r.outcome } : r));
 
+// ── 替买家号切支付卡(所有者定稿①)──────────────────────────────────
+//
+// 这两个场景验的是一条**跨服务端与插件**的链:期望卡从 buyer_envs 随认领下发 →
+// 插件切 → 切完重读结算页 → 护栏拿重读的那一份裁决。
+//
+// 跑之前要先给这个买家号配上期望卡,否则服务端下发的是 null、插件一步都不做,
+// 而这一轮照样会「成功」—— 那种成功什么也没验到。所以这里先查那一位,
+// 没配就直接判失败并说清该怎么配:**「没配」和「配了且切成了」不许长成同一个结果**。
+if (scenario === "card_switch" || scenario === "card_switch_fail") {
+  const fail = (msg) => { console.error("  ✗ " + msg); process.exit(2); };
+  if (r.kind !== "ran") fail(`这一轮没跑起来(${r.kind}),切卡场景什么也没验到`);
+
+  const want = r.task.guards?.expected_card_last4 ?? null;
+  if (want !== "4417") {
+    fail(`服务端下发的 expected_card_last4 是 ${JSON.stringify(want)},不是 "4417" —— ` +
+         `这一轮插件一步都不会做,场景是空跑。先配上再来:\n` +
+         `      psql <库> -c "UPDATE procure.buyer_envs SET expected_card_last4='4417' ` +
+         `WHERE code='${envCode}'"`);
+  }
+  // 驱动确实收到了那一位,而且**真的动了手**(模拟档当前卡是 9021)。
+  if (!driver.calls.includes("ensurePaymentCard:4417")) {
+    fail(`插件没按下发的期望卡去切:calls=${JSON.stringify(driver.calls)}`);
+  }
+
+  if (scenario === "card_switch") {
+    if (!driver.calls.includes("cardSwitched:9021->4417")) {
+      fail(`没切成:calls=${JSON.stringify(driver.calls)}`);
+    }
+    // 切完必须重读结算页 —— 切卡会让页面重渲染,报给护栏的必须是重读的那一份。
+    const reads = driver.calls.filter((c) => c === "readCheckout").length;
+    if (reads !== 2) fail(`结算页读了 ${reads} 遍,切卡之后应当再读一遍(共 2 遍)`);
+    if (r.outcome.kind !== "purchased") {
+      fail(`切卡成功之后这一单该照常拍下来,实际 ${JSON.stringify(r.outcome)}`);
+    }
+    console.log(`  ✓ 切卡:9021 → 4417,切完重读结算页(readCheckout ×${reads}),照常拍单`);
+  } else {
+    // 切不动 → PAYMENT_METHOD_UNEXPECTED、**不转人工**(归 BUSINESS_BLOCKED:
+    // 重试多少次结果都一样,而且这一步在下单之前,钱一分没花)、且清了车。
+    const o = r.outcome;
+    if (o.kind !== "failed") fail(`切不动的单该落成 failed,实际 ${JSON.stringify(o)}`);
+    if (o.code !== "PAYMENT_METHOD_UNEXPECTED") fail(`错误码是 ${o.code}`);
+    if (o.toManual !== false) fail("切不动的单不该转人工:这一步在下单之前,钱一分没花");
+    if (o.cartCleared !== true) fail(`没清车(cartCleared=${o.cartCleared}) —— 残留会污染下一单`);
+    // 而且**绝不能**已经点过下单:切卡在护栏之前,越过下单点是不可能的。
+    if (driver.calls.includes("placeOrder")) fail("切卡失败却已经点过下单按钮");
+    console.log("  ✓ 切不动:PAYMENT_METHOD_UNEXPECTED / 不转人工 / 已清车 / 没点下单");
+  }
+}
+
 // 登录态失效那条路走完之后,还要验后半截:这一位真的会到服务端,
 // 而服务端据此**拒绝**下一次认领 —— 拒得说得出名字,不是回一个"没有单"。
 if (reportedLogin) {
