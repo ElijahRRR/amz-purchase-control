@@ -15,18 +15,25 @@ Amazon 采购自动化:**服务端派单 + 浏览器插件在防关联环境内�
 ```
 上游 ERP
    │  cli.py task_intake  /  POST /v1/admin/tasks/import
-   ▼
-pending ──放行──► ready ──插件认领──► claimed
+   │
+   ├─ 那一行带了 AMZ 单号? ──► purchased(外部下单)──┐  不经拍单、不经护栏
+   ▼                                                 │
+pending ──放行──► ready ──插件认领──► claimed         │
                                         │
                         ┌───────────────┼───────────────┐
                         ▼               ▼               ▼
                     purchased        exception        manual
                    (单号已回填)      (可重置回队列)   (需人工确认)
-                        │
-                        │  插件另一条流:物流同步
-                        ▼
-              logistics.shipments + shipment_events
+                        │                               │
+                        │  插件另一条流:物流同步          │
+                        ▼                               │
+              logistics.shipments + shipment_events ◄────┘
 ```
+
+外部下单那条(所有者定稿 ④:订单可能不经本系统采购,但要由本系统同步物流)
+只要三样东西就够格:上游单号、买家号、AMZ 单号。它**没有限价、没有护栏结论**,
+界面上那一档写的是「外部下单,不适用」——**不是**「限价 0.00,未超」。
+展开见 `docs/01-系统设计.md` §10。
 
 插件那一侧:清车 → 商品页(库存/FBA)→ 加购 → 回读购物车 → 去结算 → 填地址 →
 读结算页 → **服务端护栏裁决** → 下单 → 读订单卡 → **ASIN 断言** → 回填。
@@ -40,7 +47,7 @@ python cli.py db_init
 
 # 2. 跑测试(需要一个可连的 PostgreSQL 17;连不上会整体 skip)
 export AMZ_TEST_ADMIN_DSN="dbname=postgres"
-python -m pytest -q                       # 409 条
+python -m pytest -q                       # 453 条
 
 # 3. 起服务
 python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
@@ -59,7 +66,7 @@ python tools/mock_plugin.py --scenario no_asin     # 一个 ASIN 都没采到:�
 # 6. 插件侧
 cd extension && npm install
 npm run typecheck && npm run build        # → dist/,可加载进 Chrome
-npm run test:dom                          # 225 条 DOM 解析断言(不需要服务端),顺带跑 test:unit 95 条
+npm run test:dom                          # 237 条 DOM 解析断言(不需要服务端),顺带跑 test:unit 95 条
 npm run smoke                             # 用插件自己的 Loop/runTask 跑闭环
 node tools/smoke.mjs --scenario happy --ship in_transit
 node tools/smoke.mjs --scenario login_lost         # 跑到一半被登出:退回队列,不记异常
@@ -187,11 +194,13 @@ python cli.py feishu_writeback
 
 | | 状态 |
 |---|---|
-| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 409 条 pytest,跑在真 PostgreSQL 17 上 |
+| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 453 条 pytest,跑在真 PostgreSQL 17 上 |
 | 插件与服务端的时序(认领 → 执行 → 护栏 → 回填 → 失败清车) | ✅ 全部 smoke 场景实跑,跑的是插件自己的 `Loop`/`runTask`(清单见 `extension/README.md`,那张表就是唯一的场景清单 —— 写死一个数字每加一条就过期一次) |
 | 物流同步时序 | ✅ 实跑 |
-| DOM 解析层(选择器是否按报告的语义在读) | ✅ 225 条断言,对着按报告造的夹具跑(地址/购物车/商品页从 0 条到有断言);另有 95 条纯 Node 断言盯等待原语、单飞闸、租约、认领循环、看门狗、清车熔断、「下单点留痕没落地就不许点」,以及「上界由服务端反推」那条算式 |
+| DOM 解析层(选择器是否按报告的语义在读) | ✅ 237 条断言,对着按报告造的夹具跑(地址/购物车/商品页从 0 条到有断言);另有 95 条纯 Node 断言盯等待原语、单飞闸、租约、认领循环、看门狗、清车熔断、「下单点留痕没落地就不许点」,以及「上界由服务端反推」那条算式 |
 | 登录态(被登出 → 拒绝派单 → 重新登录后自愈) | ✅ 心跳落库/认领被拒/恢复/unknown 的 pytest,加一轮 `--scenario login_lost` 实跑 |
+| 登错号(这台机器登的不是这个买家号 → 拒绝派单 → 换回来自愈) | ✅ pytest:首次写入/不覆盖/认领被拒/换回自愈/「以这个为准」留痕/形状不对不堵心跳。⚠ **customerId 是在夹具上验的** —— 真实 Amazon 页面上它长什么样、还在不在,同「真实 Amazon 页面」那一行 |
+| 外部下单(上游在别处买的单只同步物流) | ✅ pytest:落库/五条状态迁移/回写只写物流三列/「不适用」不渲染成「未超」;另有一次 curl 闭环(import → `/v1/shipments/pending` 出现它)|
 | 下单后的三段等待(发卡行验证 → 露窗口 → 上报 → 有界超时) | ⚠️ **只验到时序那一半**:两条 step 事件、`claim_timeout_min` 下发、列表徽标、新错误码转人工,都有 pytest 与 `--scenario manual_verify / manual_verify_timeout` 实跑;**「iframe 真被导到跨域页之后 `urlState()` 读到什么、`reveal()` 出来的窗口能不能真的输验证码」没验过** —— 那要一个真买家号 |
 | 运营台前端 | ✅ 真库 + 真服务 + 真浏览器跑过四页、详情弹窗、改地址、剪贴板、NEEDS_ACK 流程 |
 | **真实 Amazon 页面** | ❌ **从未跑过**。这里没有可登录的买家号 |
@@ -320,8 +329,8 @@ python cli.py task_retry
 
 | | |
 |---|---|
-| `POST /v1/instances/register` `/heartbeat` | 实例注册与心跳。心跳捎上插件读到的**登录态**,回一句「该不该复检」 |
-| `POST /v1/tasks/claim` | 按买家号认领一单。被登出的实例回 409 `INSTANCE_SIGNED_OUT` —— **不是**回一个「没有单」 |
+| `POST /v1/instances/register` `/heartbeat` | 实例注册与心跳。心跳捎上插件读到的**登录态**与**买家号 ID**(两者都是「不带 = 没有新消息」),回一句「该不该复检」以及「登着的是不是这个买家号」 |
+| `POST /v1/tasks/claim` | 按买家号认领一单。被登出的实例回 409 `INSTANCE_SIGNED_OUT`、**登错号**的实例回 409 `INSTANCE_ACCOUNT_MISMATCH` —— **都不是**回一个「没有单」 |
 | `POST /v1/tasks/{id}/events` | 执行步骤上报(只追加)。回执带 `may_have_ordered`:**这条任务**此刻越没越过下单点,不是「这一批里有没有那条 step」 |
 | `POST /v1/tasks/{id}/guard-check` | **护栏裁决在服务端**,插件只报数 |
 | `POST /v1/tasks/{id}/complete` `/fail` `/release` | 落终态 |
@@ -330,6 +339,8 @@ python cli.py task_retry
 | `POST /v1/admin/tasks/{id}/release` `/reset` `/force-backfill` `/address` `/asin` | 五个人工动作 |
 | `POST /v1/admin/tasks/batch-reset` | 批量重置。**不接受 acknowledged** —— 可能已下单的原样报回来,让人逐条去看 |
 | `POST /v1/admin/envs/{id}/expected-card` | 就地改这个买家号该刷哪张卡的后四位(留空 = 关掉这道闸;只校验、不替买家号切卡) |
+| `POST /v1/admin/envs/{id}/customer-id` | 「以这个为准」:把这个买家号记的 Amazon 账号改成插件报上来的那个。**这个动作会打开一道认领闸**(登错号被拒的那道),所以它带操作人并写 `procure.env_events` |
+| `GET /v1/admin/envs/{id}/events` | 这个买家号身上发生过什么(眼下只有买家号 ID 那三条)。⚠ 运营台还没渲染这条流 |
 
 | `GET /v1/admin/instances` | 买家号与判活 |
 | `GET /v1/admin/meta` | 封闭集连中文标签下发,外加 `auto_retry: {enabled, max, backoff_min, max_age_min, batch}`。**前端不存副本** |
