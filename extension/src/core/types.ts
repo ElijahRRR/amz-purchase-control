@@ -35,6 +35,13 @@ export interface Guards {
 
 export interface Task {
   task_id: number;
+  /** 上游订单号。**给人看的那个号** —— 下单前的确认屏上要摆出来,
+   *  操作员拿它去上游系统对一眼「这一单是不是我要的那一单」;
+   *  task_id 是我们库里的自增数,上游那边搜不到。
+   *
+   *  可选是为了兼容旧服务端(TaskOut 里原先没有这一项):收不到的时候面板要
+   *  说「服务端未下发」,不许留白 —— 留白和「上游单号真的是空的」长得一样。 */
+  upstream_order_no?: string;
   marketplace: string;
   shipping: Shipping;
   products: Product[];

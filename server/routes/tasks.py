@@ -46,6 +46,8 @@ def claim(req: schemas.ClaimReq, conn=Depends(conn_ctx)) -> schemas.Envelope:
 
     return schemas.Envelope(ok=True, data=schemas.TaskOut(
         task_id=task["id"],
+        # 下单前那一屏要摆给人看的号(见 schemas.TaskOut.upstream_order_no)。
+        upstream_order_no=task["upstream_order_no"],
         marketplace=task["marketplace"],
         shipping=schemas.ShippingOut(
             name=task["ship_name"], phone=task["ship_phone"], line1=task["ship_line1"],

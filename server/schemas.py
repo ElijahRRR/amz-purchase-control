@@ -77,6 +77,11 @@ class GuardsOut(BaseModel):
 
 class TaskOut(BaseModel):
     task_id: int
+    #: 上游订单号。**给人看的那个号** —— 插件在「下单前确认」那一屏上摆出来,
+    #: 操作员拿它去上游系统对一眼「这一单是不是我要的那一单」。
+    #: task_id 是我们库里的自增数,上游那边搜不到它。
+    #: (下发它不额外查一次库:认领那条 SQL 本来就 `RETURNING procure.tasks.*`。)
+    upstream_order_no: str
     marketplace: str
     shipping: ShippingOut
     products: list[ProductOut]
