@@ -94,10 +94,15 @@ const PAYLOAD_STATE: Record<string, string> = {
   // 一个是「有人看了一眼,决定不买」,一个是「没有人在看这台机器」。
   // 渲染成同一句的话,一台没人守的机器看起来像是一直有人在按取消。
   // (跨文件字面量,有 tests/test_confirm_before_order.py 盯着。)
-  awaiting_confirm: "停在下单前等人按",
-  confirm_approved: "人按了下单,继续",
-  confirm_cancelled: "人按了取消,退回队列",
-  confirm_timeout: "等人确认超时,退回队列",
+  //
+  // 这几句**不许与 payload.step 逐字相同**:同一行里 step 在前、state 在后,
+  // 一字不差的话运营台会把同一句中文说两遍(「人按了下单,继续 · 人按了下单,
+  // 继续」),读的人第一反应是界面出了 bug。分工是:step 说**发生了什么**,
+  // state 说**这一格是什么**。
+  awaiting_confirm: "下单前确认 · 等人来按",
+  confirm_approved: "下单前确认 · 人放行了",
+  confirm_cancelled: "下单前确认 · 人否了这一单",
+  confirm_timeout: "下单前确认 · 没人来按",
 };
 
 function fmtPayload(k: string, v: unknown): string {
@@ -105,12 +110,19 @@ function fmtPayload(k: string, v: unknown): string {
   if (k === "cap_ms" && typeof v === "number") return `上限 ${minutesText(Math.round(v / 60_000))}`;
   if (k === "state" && typeof v === "string") return PAYLOAD_STATE[v] ?? `state=${v}`;
   if (k === "warning" && v === "cart_not_cleared") return "清车没清动";
-  // 等人确认那一格的上界是谁钳的。**两种处置完全不同**:configured 是
-  // 「配的就这么短,想多等去调插件的 confirmWait」,claim_window 是
-  // 「认领窗口快到了,调插件没用,要调的是服务端的认领超时」。
+  // 等人确认那一格的上界是谁钳的。取值是**封闭的两个**(run.ts 的 cappedBy):
+  // confirm_wait 是「配的就这么短,想多等去调插件的 confirmWait」,
+  // claim_window 是「认领窗口快到了,调插件没用,要调的是服务端的认领超时」。
+  // 两种处置完全不同 —— 一个改插件,一个改服务端。
   if (k === "capped_by" && v === "confirm_wait") return "上界:插件配的等待预算";
   if (k === "capped_by" && v === "claim_window") return "上界:认领窗口快到了(不是插件配的那个数)";
-  if (k === "wait_ms" && typeof v === "number") return `等了最多 ${Math.round(v / 1000)} 秒`;
+  // wait_ms 是**上界**,不带时态:同一个键出现在两条事件上 ——
+  // awaiting_confirm 是刚开始等的时候发的(那一刻一秒都还没等),
+  // confirm_timeout 是等满了才发的。写成「等了 N 秒」在前一条上就是假话。
+  if (k === "wait_ms" && typeof v === "number") return `上界 ${Math.round(v / 1000)} 秒`;
+  // 人真的花了多久才按下那一下。没有这一条的话它会原样铺成 waited_ms=142731 ——
+  // 一个英文键加一串毫秒机器值,而这一层存在的全部理由就是不让机器值上界面。
+  if (k === "waited_ms" && typeof v === "number") return `人等了 ${Math.round(v / 1000)} 秒`;
   if (k === "cart" && v === "not_touched_after_order_point") return "越过下单点后按规矩没动购物车";
   return `${k}=${typeof v === "object" ? JSON.stringify(v) : String(v)}`;
 }
