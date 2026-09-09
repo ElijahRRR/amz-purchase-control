@@ -186,7 +186,9 @@ export interface InstanceRow {
   daily_cap: number;
   /** 这个买家号该刷哪张卡的后四位。null = 这一道不校验(闸是可关的)。
    *  配上之后,结算页读到的尾号与它不符即 PAYMENT_METHOD_UNEXPECTED,
-   *  **在下单之前**拦下。只校验、不替买家号切卡。 */
+   *  **在下单之前**拦下。
+   *  **先切后验**(所有者定稿①):插件在下单前按它把卡切过去、切完重读结算页,
+   *  服务端再拿重读的尾号判 —— 切是插件的动作,验仍在服务端。 */
   expected_card_last4: string | null;
   instance_uid: string | null;
   plugin_version: string | null;

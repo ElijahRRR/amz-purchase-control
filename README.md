@@ -194,6 +194,7 @@ python cli.py feishu_writeback
 | 登录态(被登出 → 拒绝派单 → 重新登录后自愈) | ✅ 心跳落库/认领被拒/恢复/unknown 的 pytest,加一轮 `--scenario login_lost` 实跑 |
 | 下单后的三段等待(发卡行验证 → 露窗口 → 上报 → 有界超时) | ⚠️ **只验到时序那一半**:两条 step 事件、`claim_timeout_min` 下发、列表徽标、新错误码转人工,都有 pytest 与 `--scenario manual_verify / manual_verify_timeout` 实跑;**「iframe 真被导到跨域页之后 `urlState()` 读到什么、`reveal()` 出来的窗口能不能真的输验证码」没验过** —— 那要一个真买家号 |
 | 运营台前端 | ✅ 真库 + 真服务 + 真浏览器跑过四页、详情弹窗、改地址、剪贴板、NEEDS_ACK 流程 |
+| 替买家号切支付卡（所有者定稿①） | ⚠️ **只验到我们自己那一半**：期望卡随认领下发、「切完重读结算页」、切不动时不下单/不转人工/清车，都有 pytest 与 `--scenario card_switch / card_switch_fail` 实跑；payselect 页那一整套判据**没有任何证据**——厂商自己承认那一页只有截图、没有 DOM 样本，夹具 `payselect.html` 是照他们的猜测造的。夹具上跑通只说明我们按自己写的语义在读。第一次开 live 档跑到这一步之前，先在真页面上核一遍 `selectors.checkout.payselect` |
 | **真实 Amazon 页面** | ❌ **从未跑过**。这里没有可登录的买家号 |
 
 最后一行是这套系统眼下最大的未知。夹具能保证「报告里记着的选择器,我们确实按它们的语义在读」,
@@ -306,7 +307,7 @@ python cli.py task_retry
 | `AMZ_SHIPMENT_BATCH` | `20` | 一次给插件多少条待同步的单 |
 | `AMZ_PRICE_CONSISTENCY_TOLERANCE_PCT` | `15` | `Σ单价×数量` 与货款差多少个百分点开始在事件流里记一笔。**这不是护栏,超了不拦单** —— 结算页单价是税前不含运费的,与货款天然有差。默认 15 而不是更紧:一条每单都出现的告警等于没有告警 |
 | （库里）`buyer_envs.daily_cap` | `0` | 该买家号一天最多拍几单，`0` = 不限。闸门在认领的那条 SQL 里 |
-| （库里）`buyer_envs.expected_card_last4` | 空 | 这个买家号该刷哪张卡的后四位。**留空 = 不校验**;填了之后结算页读到的尾号不符即 `PAYMENT_METHOD_UNEXPECTED`,在下单**之前**拦下。只校验、不替买家号切卡 —— 改支付配置是人的动作。运营台买家号那一页可就地改 |
+| （库里）`buyer_envs.expected_card_last4` | 空 | 这个买家号该刷哪张卡的后四位。**留空 = 不校验**;填了之后结算页读到的尾号不符即 `PAYMENT_METHOD_UNEXPECTED`,在下单**之前**拦下。**先切后验**(所有者定稿①):插件在下单前按它把卡切过去,切完重读结算页,服务端再拿重读的尾号判 —— 切是插件的动作,验仍在服务端。切不动就是 `PAYMENT_METHOD_UNEXPECTED`,钱一分没花。运营台买家号那一页可就地改 |
 | （库里）`tasks.require_fba` | `true` | 这一单要不要求 Amazon 自营发货。**它现在真的是一列** —— 在此之前是 `GuardsOut` 里一个 `= True` 的默认值,路由不往 `adjudicate` 传,一道号称「可关」的闸恒为真 |
 | `AMZ_SERVER_HOST` / `AMZ_SERVER_PORT` | `127.0.0.1` / `8781` | HTTP 监听 |
 

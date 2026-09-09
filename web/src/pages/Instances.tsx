@@ -158,7 +158,7 @@ export default function InstancesPage() {
         <Card className="overflow-hidden">
           <CardHead right={<span className="text-xs text-zinc-400">
             派单只会派给「在线、未暂停、没到日上限、且还登着 Amazon」的买家号 ·
-            支付卡尾号留空表示不校验
+            支付卡尾号留空 = 不校验也不切卡;填上之后插件会在下单前替这个买家号切到这张卡
           </span>}>买家号 · 实例</CardHead>
 
           <table className="w-full">
@@ -204,8 +204,13 @@ export default function InstancesPage() {
                       {r.daily_cap === 0 ? "不限" : r.daily_cap}
                     </td>
                     <td className="px-3">
-                      {/* 留空 = 不校验。这一格与 daily_cap 的 0 是同一种表达:
-                          「不设限」得写出来,别让人对着一个空格去猜。 */}
+                      {/* 留空 = 不校验也不切。这一格与 daily_cap 的 0 是同一种表达:
+                          「不设限」得写出来,别让人对着一个空格去猜。
+
+                          所有者定稿①之后这一格**有了副作用**:填上之后插件会在
+                          下单前点开 Amazon 的支付选择页,替这个买家号把卡换成它。
+                          界面上得说出来 —— 一个看起来只是"校验用"的输入框,
+                          实际会去改别人 Amazon 账号的配置,那是不该让人事后才发现的事。 */}
                       <ExpectedCard row={r} onSaved={() => void refresh()} />
                     </td>
                     <td className="px-3"><Tag tone={L.tone}>{L.label}</Tag></td>
