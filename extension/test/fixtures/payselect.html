@@ -1,0 +1,161 @@
+<!--
+================================================================================
+  夹具：Amazon **支付选择页**（payselect）· 四张卡 + 一个隐藏模板
+================================================================================
+  ⚠️⚠️ **这张夹具不构成证据。**
+
+  别的夹具是照着 `docs/插件功能深度分析.md` 里记的、厂商几万单实际在跑的选择器
+  造的；这一张不是。厂商自己在 task_plan.md:25 与 findings.md:10 里承认：
+  **支付选择页他们只有截图、没有 DOM 样本**，v2.5.3 :2081-2144 那 17 条判据是
+  照着截图和通用的 pmts/ppw 命名猜出来的。我们照那 17 条造了这张页面，
+  所以「解析器在这张夹具上跑通了」只说明**我们按自己写的语义在读**，
+  不说明真实的 Amazon 支付选择页长这样。
+
+  第一次开 live 档跑到切卡这一步之前，请在真页面上核一遍 selectors.ts
+  `checkout.payselect` 那一节。核之前，这一段的每一次失败都应当先怀疑选择器。
+
+  夹具存在的意义因此不是「验证判据对不对」，而是**验证 fail-closed 兜不兜得住**：
+  下面五个干扰项，每一个都对应一种「按厂商的写法会选错卡」的现场，
+  而选错卡的后果不是这一单失败，是**拿别人的卡付了钱**。
+================================================================================
+  页面        ：Select a payment method
+  URL 形态    ：https://www.amazon.com/gp/buy/payselect/handlers/display.html
+                ?ie=UTF8&fromAnywhere=0&hasWorkingJavascript=1
+                （入口在结算页支付面板里，见 checkout.html 的 pay-entry-* 三个）
+  事实来源    ：厂商 v2.5.3 popup.js
+                :2081-2144  findPaymentCardRadio（radio / 容器 / 细节元素）
+                :2229-2310  ensurePreferredPaymentCard（入口 → 选卡 → 确认 → 复核）
+                :2278-2280  确认按钮 ppw-widgetEvent:SetPaymentPlanSelectContinueEvent
+                ——— 以上全部标注为「厂商按截图推的，可信度低」———
+
+  ------------------------------------------------------------------------------
+  干扰项清单（每一条都是一种会让「切错卡」发生的现场）
+  ------------------------------------------------------------------------------
+   A. **有效期年份**：每张卡块里都写着 `Expires 08/2029` 这类文本。
+      尾号判据是「四位连续数字」，不把有效期抹掉的话，一个被配成期望卡 `2029`
+      的买家号会命中这张 Visa 4417 —— 然后事件流里写着「支付卡已切换 → 2029」，
+      而实际切成了 4417。服务端那道闸事后拦得住（它读的是真正选中的尾号），
+      钱不会花错，但**事件流里留下的是一句假话**，比一次失败更难查。
+      → parse.stripExpiry / 断言「年份诱饵」
+
+   B. **同尾号两张卡**：Mastercard 9021 与 Visa 9021 同时在钱包里。
+      换卡不换号、虚拟卡、同号的借记/信用，这不是奇事。厂商 `return radio`
+      在第一个命中处返回 —— 而两张卡是两个账、两笔额度、甚至两个持卡人。
+      → 断言「两张卡都命中时返回 null」
+
+   C. **隐藏模板 radio**：`#pmts-template`（display:none）里有一张尾号也是 4417
+      的卡。它既不该被点中，也不该在「这个块里有几个 radio」那道计数里占位。
+      → 断言「隐藏 radio 不算」
+
+   D. **圈大了的容器**：整个列表 `#instrument-list` 自己带着
+      `class="instrument-row-list"`，`[class*="instrument-row"]` 会命中它。
+      容器里有四个 radio —— 不要求「容器内恰好一个 radio」的话，
+      这个块的文本是四张卡拼在一起的，拿它比尾号必然比中，
+      于是**每一张卡都命中**，`hits.length !== 1` 之后一张都点不了（这是对的），
+      而按厂商的写法会点中排在最前面的那一张（这是错的）。
+      卡 A 自己没有 .pmts-instrument-box，所以它必然走这条路。
+      → 向上爬 8 层找最小块那一段
+
+   E. **确认按钮的隐藏副本**：`#ppw-confirm-ghost`（在隐藏壳里）**没有** disabled，
+      排在真身前面。裸 querySelector 会取到它 —— 一个"可用"的假按钮。
+      而真身 `#ppw-confirm` 一开始是 disabled：click() 打在 disabled 按钮上
+      返回 true，浏览器却不派发事件，于是「点过了」和「没点动」长成同一个结果。
+      → 断言「确认按钮先 disabled（null）后可用」
+================================================================================
+-->
+<!doctype html>
+<html lang="en">
+<head><meta charset="utf-8"><title>Select a payment method</title></head>
+<body>
+
+<!-- 干扰项 C：隐藏模板。Amazon 把整套 pmts 组件的模板塞在这种壳里，
+     里面预填的是**上一次用过的**卡，而且它排在真身前面。 -->
+<div id="pmts-template" style="display:none">
+  <div class="pmts-instrument-box" data-pmts-instrument-id="tmpl-0000">
+    <input type="radio" name="ppw-instrumentRowSelection" id="radio-template" value="tmpl">
+    <span data-testid="method-details-number">Visa ending in 4417</span>
+    <span class="pmts-instrument-expiry">Expires 01/2030</span>
+  </div>
+</div>
+
+<h1>Select a payment method</h1>
+
+<!-- 干扰项 D：这个 class 会被 [class*="instrument-row"] 命中，
+     而它把四张卡整个圈在里面。卡 A 自己**没有** .pmts-instrument-box，
+     所以它的 closest(容器候选) 命中的就是这个大壳 —— 「容器内恰好一个 radio」
+     那道判断在这里落空，接下来必须向上爬去找最小块。
+     不做这道判断的话，卡 A 的"块"是四张卡的文本拼在一起，比任何尾号都命中。 -->
+<div id="instrument-list" class="instrument-row-list">
+
+  <!-- ── 卡 A：Visa · 4417 —— 唯一命中的那一张，走**向上爬**那条路 ─── -->
+  <div class="a-row a-spacing-base">
+    <label>
+      <input type="radio" name="ppw-instrumentRowSelection" id="radio-4417" value="ins-4417">
+      <span class="pmts-instrument-brand">Visa</span>
+      <!-- 干扰项 A：有效期年份**在细节元素自己的 aria-label 里**。
+           屏幕阅读器要一句话说完整张卡，Amazon 的 aria-label 就长这样。
+           二次比对读的正是这些属性（厂商 :2126-2133 读 textContent / aria-label /
+           placeholder / value / data-last-four / data-tail 六样），
+           所以不抹有效期的话，期望卡配成 "2029" 会命中这张 4417。
+           块里另有一个独立的有效期 span —— 那是给「退回整块比」那条路准备的。 -->
+      <span data-testid="method-details-number"
+            aria-label="Visa ending in 4417, expires 08/2029">Visa ending in 4417</span>
+      <span class="pmts-instrument-expiry">Expires 08/2029</span>
+      <span class="pmts-billing-address">Billing: 6060 Center Dr, Los Angeles, CA 90045</span>
+    </label>
+  </div>
+
+  <!-- ── 卡 B：Mastercard · 9021 —— 走**容器候选**那条路 ──────────── -->
+  <div class="pmts-instrument-box" data-pmts-instrument-id="ins-9021-mc">
+    <label>
+      <input type="radio" name="ppw-instrumentRowSelection" id="radio-9021-mc" value="ins-9021-mc" checked>
+      <span class="pmts-instrument-brand">Mastercard</span>
+      <span data-testid="method-details-number">Mastercard ending in 9021</span>
+      <span class="pmts-instrument-expiry">Expires 04/2027</span>
+    </label>
+  </div>
+
+  <!-- ── 卡 C：Visa · 9021 —— 干扰项 B，与卡 B 同尾号 ─────────────── -->
+  <div class="pmts-instrument-box" data-pmts-instrument-id="ins-9021-visa">
+    <label>
+      <input type="radio" name="ppw-instrumentRowSelection" id="radio-9021-visa" value="ins-9021-visa">
+      <span class="pmts-instrument-brand">Visa</span>
+      <span data-testid="method-details-number">Visa ending in 9021</span>
+      <span class="pmts-instrument-expiry">Expires 11/2028</span>
+    </label>
+  </div>
+
+  <!-- ── 卡 D：Amex · 3005 —— **块里一个细节元素都没有**（没有
+       data-testid="method-details-number"，也没有 pmts-instrument-number-tail）。
+       这一档退回拿整块文本比，而整块文本里就有 "Expires 09/2030"：
+       年份诱饵在这条退化路径上同样成立，抹有效期必须两条路都做。 ── -->
+  <div class="pmts-instrument-box" data-pmts-instrument-id="ins-3005">
+    <label>
+      <input type="radio" name="ppw-instrumentRowSelection" id="radio-3005" value="ins-3005">
+      American Express ending in 3005 · Expires 09/2030
+    </label>
+  </div>
+
+</div>
+
+<!-- 报告未记载，仅作包裹：新增卡的入口。这里也有一个 4 位数（邮编），
+     但它不在任何 radio 的块里，所以够不着。 -->
+<div class="pmts-add-instrument">
+  <a href="/cpe/yourpayments/wallet">Add a credit or debit card · ZIP 90045</a>
+</div>
+
+<!-- 干扰项 E：确认按钮的隐藏副本，**没有 disabled**，排在真身前面。 -->
+<div style="display:none">
+  <input type="submit" id="ppw-confirm-ghost"
+         name="ppw-widgetEvent:SetPaymentPlanSelectContinueEvent" value="Use this payment method">
+</div>
+
+<!-- 真身：一开始 disabled（页面还在算这张卡能不能用）。
+     dom.test 会把 disabled 摘掉再验一次 —— 两种状态必须给出两种结果。 -->
+<div class="ppw-continue-block">
+  <input type="submit" id="ppw-confirm" disabled
+         name="ppw-widgetEvent:SetPaymentPlanSelectContinueEvent" value="Use this payment method">
+</div>
+
+</body>
+</html>

@@ -301,6 +301,39 @@
           Pay over 4 months, 2026 promo &middot; Visa ending in 4417
         </div>
       </div>
+
+      <!-- ⚠️⚠️ 「更改支付方式」入口三形态（v2.5.3 :2248-2260）。
+           所有者定稿①之后这个入口是要**点下去**的：点开支付选择页替买家号
+           换卡（见夹具 payselect.html）。这三条与 payselect 那一整节同属
+           「厂商按截图推的，可信度低」那一档。
+
+           三条按序试，第一条命中就用它。dom.test 会逐条摘掉验后备是不是接得住 ——
+           一条选择器失效时静默落空的表现是：等满一个预算之后报「入口没找到」，
+           而真实原因是"还有两条备胎没被试到"。
+
+           干扰项 G-1：隐藏的模板入口 `#pay-entry-ghost` 排在三个真身**前面**，
+                       而且它命中的是第二条判据。裸 querySelector 会取到它，
+                       click() 打在隐藏 a 上不报错也不跳转。
+           干扰项 G-2：面板**外面**还有一个一模一样的 href（页脚「管理支付方式」，
+                       见文件末尾 #pay-entry-outside）。不收窄到面板就会点到它 ——
+                       那个链接把 iframe 导到钱包页，从那里再也回不到结算页，
+                       表现是等满预算后一句「切完读到的仍不是期望」，
+                       而真实原因是点错了链接。 -->
+      <div style="display:none">
+        <a id="pay-entry-ghost"
+           href="/gp/buy/payselect/handlers/display.html?toPage=payselect">Change (模板副本)</a>
+      </div>
+      <div class="a-row a-size-small">
+        <a id="pay-entry-a"
+           href="/cpe/yourpayments/wallet/pay?redirectReason=ChangePaymentMethod&amp;ref=chk_pymt">Change payment method</a>
+      </div>
+      <div class="a-row a-size-small">
+        <a id="pay-entry-b"
+           href="/gp/buy/payselect/handlers/display.html?toPage=payselect&amp;ref=chk_pymt">Use a different payment method</a>
+      </div>
+      <div class="a-row a-size-small" data-action="page-transit-no-update-action">
+        <a id="pay-entry-c" href="#">Change</a>
+      </div>
     </div>
 
     <!-- 报告未记载，仅作包裹：账单地址。邮编 90045，又一个 /\d{5}/ 诱饵。 -->
@@ -691,4 +724,14 @@
     </div>
   </div>
 
+</div>
+
+<!-- 干扰项 G-2：**面板外面**的那一个「管理支付方式」。href 与面板里第一条
+     判据一模一样，而且它在整份文档里排在支付面板**后面** —— 也就是说
+     单靠 querySelector 的文档顺序侥幸躲不过它：把面板换成折叠态（真实结算页
+     常态）之后，文档级取到的就是这一个。它把 iframe 导到钱包页，
+     从那里回不到结算页，而失败原因会显示成「切完读到的仍不是期望」。 -->
+<div id="nav-footer-payments" class="a-section">
+  <a id="pay-entry-outside"
+     href="/cpe/yourpayments/wallet/pay?redirectReason=ChangePaymentMethod&amp;ref=footer">Manage payment methods</a>
 </div>

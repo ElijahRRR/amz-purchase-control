@@ -674,6 +674,49 @@ await withFixture("checkout.html", async (run) => {
      await run("amzdom.findSubmitOrderButton(document)?.type"), "submit");
   eq("checkout 下单按钮不带 name=anti-csrftoken-a2z",
      await run("amzdom.findSubmitOrderButton(document)?.getAttribute('name')"), null);
+
+  // ── 「更改支付方式」入口(所有者定稿①:替买家号切卡)────────────────
+  //
+  // 三条判据按序试,逐条摘掉看后备接不接得住。一条失效时静默落空的表现是
+  // 「入口没找到」等满一个预算,而真实原因是"还有两条备胎没被试到"。
+  eq("checkout 更改支付入口三形态按序命中、全摘掉才落空",
+     await run(`(() => {
+        const ids = ["pay-entry-a", "pay-entry-b", "pay-entry-c"];
+        const saved = ids.map((id) => {
+          const el = document.getElementById(id);
+          return { el, parent: el.parentElement, next: el.nextSibling };
+        });
+        const got = [];
+        got.push(amzdom.findPaymentChangeEntry(document)?.id ?? null);
+        for (const s of saved) {
+          s.el.remove();
+          got.push(amzdom.findPaymentChangeEntry(document)?.id ?? null);
+        }
+        // 原样放回,不影响后面的断言
+        for (const s of saved) s.parent.insertBefore(s.el, s.next);
+        return got;
+     })()`), ["pay-entry-a", "pay-entry-b", "pay-entry-c", null]);
+
+  // 最后那个 null 说的就是这件事:面板**外面**那个一模一样的 href 不算数。
+  // 它把 iframe 导到钱包页,从那里回不到结算页 —— 而失败原因会显示成
+  // 「切完读到的仍不是期望」,和"点错了链接"完全不是一回事。
+  eq("checkout 面板外的同 href 入口确实存在(干扰项确实存在)",
+     await run(`(() => {
+        const out = document.querySelector("#pay-entry-outside");
+        const panel = document.querySelector("#checkout-payment-option-panel");
+        return [!!out, panel.contains(out),
+                out.matches('a[href*="/pay?"][href*="redirectReason=ChangePaymentMethod"]')];
+     })()`), [true, false, true]);
+
+  // 隐藏的模板入口排在三个真身**前面**,而且它命中的是第二条判据。
+  // 裸 querySelector 会取到它,click() 打在隐藏 a 上不报错也不跳转。
+  eq("checkout 隐藏的模板入口没被选中(干扰项确实存在)",
+     await run(`(() => {
+        const ghost = document.querySelector("#pay-entry-ghost");
+        const all = [...document.querySelectorAll('a[href*="toPage=payselect"]')];
+        return [all[0].id, ghost.closest("[style*='display:none']") !== null,
+                amzdom.findPaymentChangeEntry(document).id];
+     })()`), ["pay-entry-ghost", true, "pay-entry-a"]);
 });
 
 // 礼品卡抵扣的几个边界:用 DOMParser 现造,不值得为它们各建一张夹具。
@@ -706,6 +749,108 @@ await withFixture("checkout.html", async (run) => {
 
   eq("礼品卡 没有标记 → applied=false",
      await gift("<table><tr><td>Order total: $10.00</td></tr></table>"), { applied: false });
+});
+
+// ── 支付选择页 payselect · 替买家号切卡(所有者定稿①)────────────────
+//
+// ⚠️⚠️ **这一节的通过不构成证据。** 夹具 payselect.html 是照厂商 v2.5.3
+// :2081-2144 那 17 条判据造的,而厂商自己承认那一页他们**只有截图、没有 DOM
+// 样本**。跑通只说明我们按自己写的语义在读,不说明真实页面长这样。
+//
+// 这一节验的是另一件事:**fail-closed 兜不兜得住**。下面每一条对应一种
+// 「按厂商的写法会选错卡」的现场,而选错卡的后果不是这一单失败,
+// 是拿别人的卡付了钱 —— 所以判据不满足时必须返回 null(调用方据此不点确认)。
+await withFixture("payselect.html", async (run) => {
+  const hit = (last4, prop = "radio.id") =>
+    run(`amzdom.findCardRadioByLast4(document, ${JSON.stringify(last4)})?.${prop} ?? null`);
+
+  // ① 唯一命中。这张卡自己没有 .pmts-instrument-box,走的是「向上爬找最小块」
+  //    那条路 —— 它的 closest(容器候选) 命中的是整个列表(四个 radio)。
+  eq("payselect 唯一命中尾号 4417", await hit("4417"), "radio-4417");
+  eq("payselect 命中的块是最小块、不是整个列表(向上爬那一段真的走了)",
+     await run(`(() => {
+        // 可选链是必要的:这一条转红时该报「期望 X 实际 null」,
+        // 而不是抛一个 TypeError 把后面几十条断言一起带走 ——
+        // 崩掉的测试和红掉的测试,看的人得到的信息不是一回事。
+        const h = amzdom.findCardRadioByLast4(document, "4417");
+        return [h?.block?.tagName ?? null,
+                h?.block?.contains(document.querySelector("#radio-9021-mc")) ?? null];
+     })()`), ["LABEL", false]);
+  eq("payselect 命中的是细节元素里那一段文字(不是整块)",
+     await hit("4417", "matchedText"), "Visa ending in 4417");
+  eq("payselect 卡 4417 的 closest(容器候选) 确实是四个 radio 的大壳(干扰项确实存在)",
+     await run(`(() => {
+        const r = document.querySelector("#radio-4417");
+        const box = r.closest('.pmts-instrument-box, [data-pmts-instrument-id],'
+                            + ' [data-pmts-component-id*="instrument"], [class*="instrument-row"]');
+        return [box.id, box.querySelectorAll('input[type="radio"]').length];
+     })()`), ["instrument-list", 4]);
+
+  // ② 容器候选那条路:这张卡有 .pmts-instrument-box,不必往上爬。
+  eq("payselect 唯一命中尾号 3005(块里没有细节元素,退回整块比)",
+     await hit("3005"), "radio-3005");
+
+  // ③ 年份诱饵。卡 4417 那一块里写着 "Expires 08/2029",卡 3005 那一块里
+  //    写着 "Expires 09/2030"。不抹有效期的话这两个年份都会被当成尾号 ——
+  //    服务端那道闸事后拦得住,但事件流里会留下「支付卡已切换 → 2029」这句假话。
+  //    两条路径(细节元素 / 退回整块)都要抹,所以两个年份都要验。
+  eq("payselect 年份诱饵:2029 不能当尾号(细节元素那条路)", await hit("2029"), null);
+  eq("payselect 年份诱饵:2030 不能当尾号(退回整块那条路)", await hit("2030"), null);
+  eq("payselect 两个年份确实在页面上(干扰项确实存在)",
+     await run(`(() => {
+        const t = document.querySelector("#instrument-list").textContent;
+        return [/Expires 08\\/2029/.test(t), /Expires 09\\/2030/.test(t)];
+     })()`), [true, true]);
+  // 抹掉的只是"月/年"那一段,不是所有四位数 —— 4417 自己还在。
+  eq("payselect 抹有效期没有把真尾号一起抹掉", await hit("4417"), "radio-4417");
+
+  // ④ 同尾号两张卡 → **一张都不点**。厂商在第一个命中处就 return,
+  //    而两张卡是两个账、两笔额度、甚至两个持卡人。
+  eq("payselect 两张卡都是 9021 时返回 null(不敢挑)", await hit("9021"), null);
+  eq("payselect 确实有两张 9021(干扰项确实存在)",
+     await run(`[...document.querySelectorAll('[data-testid="method-details-number"]')]
+                  .filter((e) => /9021/.test(e.textContent)).length`), 2);
+
+  // ⑤ 隐藏模板里那张 4417 不算数。算的话 4417 就成了"两张命中"→ null,
+  //    这个买家号从此一单也切不了卡;点中它的话,click() 打在隐藏 radio 上
+  //    不报错也不生效,然后等满预算报一句"切完读到的仍不是期望"。
+  eq("payselect 隐藏模板里的 4417 不算数(干扰项确实存在)",
+     await run(`(() => {
+        const t = document.querySelector("#radio-template");
+        return [!!t, t.closest("[style*='display:none']") !== null,
+                [...document.querySelectorAll('input[name="ppw-instrumentRowSelection"]')].length];
+     })()`), [true, true, 5]);
+
+  // ⑥ 期望尾号本身不是四位数字 → 一律 null,不猜。这一列是人在运营台上手填的。
+  eq("payselect 期望值不是四位数字时不猜:'**** 4417'", await hit("**** 4417"), null);
+  eq("payselect 期望值不是四位数字时不猜:'441'", await hit("441"), null);
+  eq("payselect 期望值为空时不猜", await hit(""), null);
+
+  // ⑦ 确认按钮:先 disabled(不可点)后可用。两种状态必须给出两种结果 ——
+  //    click() 打在 disabled 按钮上返回 true 而浏览器不派发事件,
+  //    「点过了」和「没点动」长成同一个结果正是这条断言要防的。
+  eq("payselect 确认按钮 disabled 时是 null",
+     await run("amzdom.findPaymentConfirmButton(document)?.id ?? null"), null);
+  eq("payselect 摘掉 disabled 之后拿得到、而且不是隐藏那个",
+     await run(`(() => {
+        const real = document.querySelector("#ppw-confirm");
+        real.removeAttribute("disabled");
+        const got = amzdom.findPaymentConfirmButton(document)?.id ?? null;
+        real.setAttribute("disabled", "");          // 原样放回
+        return got;
+     })()`), "ppw-confirm");
+  eq("payselect 隐藏的确认按钮副本没 disabled、且排在真身前面(干扰项确实存在)",
+     await run(`(() => {
+        const all = [...document.querySelectorAll(
+          '[name="ppw-widgetEvent:SetPaymentPlanSelectContinueEvent"]')];
+        return [all.length, all[0].id, all[0].disabled,
+                all[0].closest("[style*='display:none']") !== null];
+     })()`), [2, "ppw-confirm-ghost", false, true]);
+
+  // ⑧ 支付选择页上没有结算页的支付面板 —— findPaymentChangeEntry 在这里必须是
+  //    null,不许退到文档级去乱找一个 a。
+  eq("payselect 这一页没有结算页支付面板 → 更改入口是 null",
+     await run("amzdom.findPaymentChangeEntry(document)"), null);
 });
 
 // ── 结算页 · 礼品卡抵扣 ──────────────────────────────────────────────

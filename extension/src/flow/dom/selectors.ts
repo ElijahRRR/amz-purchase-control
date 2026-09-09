@@ -11,7 +11,13 @@
  *   · `厂商 v2.5.3:行号` —— 厂商 2.5.3 版 popup.js(`SP/v253.pretty.js`)。
  *     这一档**可信度最高**:那是他们拿真实 Amazon 页面校准出来的,
  *     而且能看出哪几条是被他们**换掉**的(换掉说明线上已经变了)。
- *   · `报告未记载` —— 我们自己按常见形态补的,可信度最低一档,坏了先怀疑它们。
+ *   · `报告未记载` —— 我们自己按常见形态补的,坏了先怀疑它们。
+ *   · `厂商按截图推的` —— 厂商 2.5.3 写了、但他们**自己承认没有 DOM 样本**
+ *     (task_plan.md:25、findings.md:10)的那些。**可信度比上一档还低一档**:
+ *     上一档至少是我们按见过的页面形态补的,这一档连页面都没人见过。
+ *     眼下只有 checkout.payselect 那一整节属于这一档,它标着 ⚠️⚠️。
+ *     「同一个出处」不等于「同样可信」—— 一条从没在真页面上验过的判据,
+ *     混在几万单跑出来的判据里不标出来,下次改版排查时就没人知道该先怀疑谁。
  *
  * **二、一样东西有多种形态时写成有序数组,顺序是「结构判据在前、文案判据垫底」。**
  * 文案判据(`[aria-label="Change delivery address"]`、`input[value="Delete"]`)
@@ -114,11 +120,17 @@ export const SEL = {
 
     // ── 支付区(出处 v2.5.3 popup.js:2021-2050)────────────────────────
     //
-    // **只读不写。** 厂商 v2.5.3 :2229-2310 会点开 payselect 页、替买家号勾选
-    // 指定尾号的卡、再点 SetPaymentPlanSelectContinueEvent 确认 —— 依据是插件
-    // 本地 localStorage 里一个操作员随手能改的输入框。我们不做:
-    // 改一个买家号的支付配置是**人**的动作,不是拍单流程的动作;
-    // 而且那等于把闸门交给被管的一方。不符就转人工(PAYMENT_METHOD_UNEXPECTED)。
+    // **先切后验,验在服务端。**(所有者定稿①,2026-09-09)
+    //
+    // 此前这里写的是「只读不写」—— 那句话现在不成立了,所有者定了要替买家号切卡。
+    // 但决定改的只是「切不切」,没有改「谁说了算」:
+    //   · 切:插件的动作。读结算页之后、报护栏之前,按 guards.expected_card_last4
+    //         把卡切过去(flow/amazon.ensurePaymentCard)。
+    //   · 验:仍然只在服务端。price_guard 那道 PAYMENT_METHOD_UNEXPECTED 一个字
+    //         没改 —— 插件说"我切成了"不算数,服务端拿插件重新读的那一遍尾号
+    //         自己判。把校验也搬进插件就是把闸门交给被管的一方。
+    // 与厂商的另一处不同:期望卡尾号来自**服务端下发的 buyer_envs 那一列**,
+    // 不是插件本地 localStorage 里一个操作员随手能改的输入框(v2.5.3 :266-270)。
     payment: {
       /** 一切支付读取的作用域(v2.5.3 :2029-2031)。
        *  **拿不到就当读不到,不要退到文档级** —— Amazon 结算页有同 id 的隐藏
@@ -140,6 +152,67 @@ export const SEL = {
        *  checkout-giftcard.html 的两个槽位),扣不扣得由知道 gift_card.applied
        *  的那一方来做,插件这里只报个数。 */
       selectedSlots: '[id^="selected-payment-method-"]',
+      /** 「更改支付方式」入口,三候选按序试(v2.5.3 :2248-2260)。
+       *
+       *  ⚠️ **厂商按截图推的,可信度低** —— 见下面 payselect 那一节的说明,
+       *  这三条与那一整节同属一档。前两条是结构判据(href 里的参数),
+       *  第三条是 Amazon 那套「页面跳转」声明式壳子里的任意 a,最松,垫底。
+       *
+       *  **必须限定在 payment.panel 里面**(厂商也是 paymentPanel.querySelector):
+       *  同样的 href 在页脚「管理支付方式」、账户浮层里也有一份,
+       *  文档级取到那一个会把整个 iframe 导到钱包页 —— 从那里再也回不到结算页,
+       *  表现是等满预算之后一句「切完读到的仍不是期望」,而真实原因是点错了链接。 */
+      changeEntry: [
+        'a[href*="/pay?"][href*="redirectReason=ChangePaymentMethod"]',
+        'a[href*="toPage=payselect"]',
+        '[data-action="page-transit-no-update-action"] a',
+      ],
+    },
+
+    /** ── 支付选择页 payselect(v2.5.3 popup.js:2081-2144 / :2283)──────
+     *
+     *  ⚠️⚠️ **这一整节的可信度是全文件最低的一档,比「报告未记载」还低一档。**
+     *
+     *  为什么:厂商自己在 task_plan.md:25 与 findings.md:10 里承认,支付选择页
+     *  **只有截图、没有 DOM 样本** —— 这 17 条判据是照着截图和通用的 pmts/ppw
+     *  命名猜出来的。别的条目至少是他们在真页面上校准过、几万单在跑的;
+     *  这一节没有任何东西担保。我们的夹具 payselect.html 也是照这些判据造的,
+     *  所以「夹具上跑通」这件事在这一节**不构成证据**,只说明我们按自己写的
+     *  语义在读。第一次开 live 档跑到这一步,请在真页面上先核一遍。
+     *
+     *  正因为如此,ensurePaymentCard 的每一步都是 fail-closed:判据不满足就
+     *  **不点确认**,抛 PAYMENT_METHOD_UNEXPECTED 并在 detail 里写清停在哪一步、
+     *  读到了什么。一道"看起来能切卡、实际点错了地方"的流程,比不切更危险 ——
+     *  不切最坏是这一单转人工,点错了是拿别人的卡付了钱。 */
+    payselect: {
+      /** URL 里认得出「这是支付选择页」的那一段(v2.5.3 :2256 的 toPage 参数)。 */
+      urlHint: "payselect",
+      /** 卡片行的单选钮(v2.5.3 :2082-2084)。第二条是他们自己留的宽松兜底。 */
+      radio: 'input[type="radio"][name="ppw-instrumentRowSelection"],'
+           + ' input[type="radio"][name*="instrumentRowSelection"]',
+      /** 一张卡的容器,四候选(v2.5.3 :2088-2090)。
+       *  只有「容器内恰好一个 radio」才认 —— 否则说明这个候选圈大了,
+       *  往上爬去找更小的块(见 parse.findCardRadioByLast4)。 */
+      blocks: [
+        ".pmts-instrument-box",
+        "[data-pmts-instrument-id]",
+        '[data-pmts-component-id*="instrument"]',
+        '[class*="instrument-row"]',
+      ],
+      /** 块内真正写着卡号的那一格,用来做尾号的二次比对(v2.5.3 :2121-2124)。
+       *  不拿整块文本比是因为块里还有有效期(Expires 08/2029)、账单地址邮编、
+       *  积分数 —— 拿整块比,一个 2029 就能被当成尾号。 */
+      details: [
+        '[data-testid="method-details-number"]',
+        '[data-testid*="card-number"]',
+        ".pmts-instrument-number-tail",
+        '[class*="instrument-number"]',
+      ],
+      /** 确认按钮(v2.5.3 :2278-2280)。**必须同时不 disabled** ——
+       *  click() 打在 disabled 按钮上返回 true(元素在),浏览器却不派发事件,
+       *  于是「点过了」和「没点动」长成同一个样子,然后等满一个预算。
+       *  与商品页加购按钮那条是同一个坑(见 product.addToCart)。 */
+      confirm: '[name="ppw-widgetEvent:SetPaymentPlanSelectContinueEvent"]',
     },
 
     /** 礼品卡 / 余额抵扣行(出处 v2.5.3 popup.js:2054、2062、2066-2068)。
