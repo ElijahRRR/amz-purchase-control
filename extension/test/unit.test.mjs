@@ -235,16 +235,30 @@ function fakeTask(id) {
 function fakeClient(n) {
   const queue = Array.from({ length: n }, (_, i) => fakeTask(i + 1));
   const fails = [];
+  // **复刻服务端的持有语义**:`/release` 之后这条任务就不再归本实例持有,
+  // 之后再写 `/events` 会被 TASK_NOT_HELD 拒掉(pytest 的
+  // test_writing_the_step_after_release_is_too_late 证的就是这一条)。
+  //
+  // 不复刻的话,「先写事件流,再 /release」这条被文档、注释和 pytest docstring
+  // 一起称作硬要求的顺序,在插件这一侧**没有任何测试盯着**:把两行调换,
+  // typecheck / test:unit / test:dom / pytest 全绿,而运营台上那一单会变成
+  // 「领走了又回来了,什么也没说」—— 正是这一轮反复要防的那件事。
+  // (顺带钉住另一格:release 说不上话时结局是 unreported。)
+  const releasedIds = new Set();
   return {
     fails,
+    releasedIds,
     claim: async () => ({ ok: true, data: queue.shift() ?? null }),
-    events: async () => ({ ok: true, data: { recorded: 1 } }),
+    events: async (id) => (releasedIds.has(id)
+      ? { ok: false, kind: "business", code: "TASK_NOT_HELD",
+          message: "任务不由该实例持有" }
+      : { ok: true, data: { recorded: 1 } }),
     guardCheck: async () => ({ ok: true, data: { allow: true, error_code: null,
                                                  detail: null, delivery_date: null,
                                                  delivery_raw_used: null } }),
     complete: async () => ({ ok: true, data: {} }),
     fail: async (_id, body) => { fails.push(body); return { ok: true, data: {} }; },
-    release: async () => ({ ok: true, data: {} }),
+    release: async (id) => { releasedIds.add(id); return { ok: true, data: {} }; },
   };
 }
 
@@ -912,14 +926,25 @@ function confirmDriver(extra = {}) {
  *  预览屏上那两行说的必须是服务端真正比过/采信的那一份。 */
 function confirmClient() {
   const c = fakeClient(1);
+  // 两本账分开:`sent` 记「发出去过」,`events2` 只记**服务端收下了的**。
+  // 合成一本的话,「先 release 再写事件流」这个回归照样能凑出
+  // [awaiting_confirm, confirm_cancelled] —— 而那两条 step 一条都没落库。
+  c.sent = [];
   c.events2 = [];
   const inner = c.events;
-  c.events = async (id, evs) => { c.events2.push(...evs); return inner(id, evs); };
+  c.events = async (id, evs) => {
+    c.sent.push(...evs);
+    const r = await inner(id, evs);
+    if (r.ok) c.events2.push(...evs);
+    return r;
+  };
   c.guardCheck = async () => ({ ok: true, data: {
     allow: true, error_code: null, detail: null, delivery_date: "2026-08-27",
     delivery_raw_used: "Thursday, August 27", goods_total: "15.79" } });
   c.releases = 0;
-  c.release = async () => { c.releases += 1; return { ok: true, data: {} }; };
+  const innerRelease = c.release;
+  // 计数归计数,**持有语义要留着**(release 之后 events 被 TASK_NOT_HELD 拒)。
+  c.release = async (id) => { c.releases += 1; return innerRelease(id); };
   return c;
 }
 
@@ -1002,8 +1027,13 @@ const statesOf = (c) => c.events2.map((e) => e.payload?.state).filter(Boolean);
   check("事件流里那条文案说的是「人按了取消」",
         stepsOf(client).includes("人按了取消,退回队列"), JSON.stringify(stepsOf(client)));
   eq("state 与超时那一条分开", statesOf(client), ["awaiting_confirm", "confirm_cancelled"]);
-  check("**先写事件流再 release** —— 反过来的话这条 step 会被 TASK_NOT_HELD 拒掉",
-        client.events2.length > 0);
+  // **顺序断言。** fakeClient 复刻了服务端的持有语义:release 之后 events 回
+  // TASK_NOT_HELD,被拒的那条不进 events2。所以「两行调换」这个回归在这里
+  // 是红的 —— 发是发出去了(sent 里有),但一条都没落库。
+  check("**先写事件流再 release**:那条 step 真的落库了,不是发出去被拒掉",
+        statesOf(client).includes("confirm_cancelled"),
+        `发出去的:${JSON.stringify(client.sent.map((e) => e.payload?.state))},` +
+        `落库的:${JSON.stringify(statesOf(client))}`);
 }
 
 {
@@ -1028,6 +1058,10 @@ const statesOf = (c) => c.events2.map((e) => e.payload?.state).filter(Boolean);
         !stepsOf(client).includes("人按了取消,退回队列"));
   eq("state 与取消那一条分开", statesOf(client), ["awaiting_confirm", "confirm_timeout"]);
   eq("一条 /fail 都不该有(这一刻还没花钱)", client.fails.length, 0);
+  check("超时这一条同样是**先写事件流再 release**(落库了,不是被 TASK_NOT_HELD 拒掉)",
+        statesOf(client).includes("confirm_timeout"),
+        `发出去的:${JSON.stringify(client.sent.map((e) => e.payload?.state))},` +
+        `落库的:${JSON.stringify(statesOf(client))}`);
 }
 
 {
