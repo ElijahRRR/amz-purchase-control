@@ -16,7 +16,13 @@ from services import error_codes, task_event
 
 CLAIM_SQL = """
 WITH env AS (
-    SELECT daily_cap FROM procure.buyer_envs WHERE id = %(env_id)s
+    -- expected_card_last4 跟着一起选出来:所有者定稿「替买家号切换支付卡」之后,
+    -- 插件在读完结算页、报护栏之前要按它把卡切过去,所以它得随认领一起下发。
+    -- 与 daily_cap 同一个 CTE、同一个事务:认领那一刻读到的期望卡,就是这一单
+    -- 要切的那张。分成两条语句读的话,中间有人在运营台上改了这一格,
+    -- 插件切的是旧值、服务端 guard-check 比的是新值 —— 两边各自都"对",
+    -- 合起来是一单必然被 PAYMENT_METHOD_UNEXPECTED 拦下、而谁也说不清为什么。
+    SELECT daily_cap, expected_card_last4 FROM procure.buyer_envs WHERE id = %(env_id)s
 ),
 done_today AS (
     -- 今天这个买家号已经拍成了多少单。日限是防关联场景下最基本的一条闸:
@@ -45,9 +51,9 @@ UPDATE procure.tasks
        claimed_by = %(instance_id)s,
        claimed_at = now(),
        updated_at = now()
-  FROM candidate
+  FROM candidate, env
  WHERE procure.tasks.id = candidate.id
-RETURNING procure.tasks.*
+RETURNING procure.tasks.*, env.expected_card_last4
 """
 
 PRODUCTS_SQL = """
@@ -95,7 +101,8 @@ def login_blocks_claim(login_state: str | None) -> bool:
 
 
 def claim(conn, env_id: int, instance_id: int) -> dict[str, Any] | None:
-    """输入:连接 + 买家环境 id + 插件实例 id → 输出:任务 dict(含 products),无可派时 None。
+    """输入:连接 + 买家环境 id + 插件实例 id → 输出:任务 dict(含 products
+    与买家号的 expected_card_last4),无可派时 None。
 
     一条 SQL 完成「选中 + 置位」,不存在「选完还没置位」的窗口。
 

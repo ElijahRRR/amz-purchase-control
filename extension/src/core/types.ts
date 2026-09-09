@@ -31,6 +31,15 @@ export interface Guards {
   price_cap: string;
   max_delivery_days: number;
   require_fba: boolean;
+  /** 这个买家号该刷哪张卡的后四位(服务端 GuardsOut.expected_card_last4)。
+   *
+   *  **null / undefined = 不校验,也不切** —— `ensurePaymentCard` 一步都不做。
+   *  收到值时插件在读完结算页、报护栏之前把卡切过去(所有者定稿①);
+   *  切没切成不由插件说了算,服务端 guard-check 会自己从结算页读一遍再判。
+   *
+   *  可选是为了兼容旧服务端:收不到就是「不切」—— 与此前「只校验不切换」
+   *  的行为一模一样,是安全的那一侧。 */
+  expected_card_last4?: string | null;
 }
 
 export interface Task {

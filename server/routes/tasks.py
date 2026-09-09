@@ -60,6 +60,9 @@ def claim(req: schemas.ClaimReq, conn=Depends(conn_ctx)) -> schemas.Envelope:
             # 从库里那一列来。此前这里不传,走的是 GuardsOut 里的 `= True` 默认值
             # —— 一道号称"可关"的闸恒为真,而插件侧 run.ts 读的就是它。
             require_fba=task["require_fba"],
+            # 认领 SQL 顺带从 buyer_envs 选出来的(services/task_queue.CLAIM_SQL)。
+            # null = 这个买家号不校验也不切,插件那一步一步都不做。
+            expected_card_last4=task["expected_card_last4"],
         ),
         # 插件那边所有「等下去」的上界都要按它反推,别让 sweep 在插件还在等的时候
         # 把单收走(见 schemas.TaskOut.claim_timeout_min)。

@@ -276,6 +276,57 @@ def test_expected_card_gate_is_off_until_the_env_has_one(client, conn, seed):
                        ).json()["data"]["allow"] is True
 
 
+def test_claim_hands_the_plugin_the_expected_card_so_it_can_switch(client, conn, seed):
+    """认领响应里要带上这个买家号的 expected_card_last4。
+
+    所有者定稿①(2026-09-09):替买家号切换支付卡。**先切后验,验在服务端。**
+    切是插件的动作,而插件不查库 —— 期望卡这一位必须随认领一起下发,
+    否则 flow/amazon.ensurePaymentCard 无从知道该切成哪张,那条链整个是死的。
+
+    留空的语义是「不校验也不切」,所以这一位下发 null 时插件一步都不做。
+    这两种情形必须分得开:下发 null 的单插件什么也不干,下发 '4417' 的单
+    插件会去点开支付选择页 —— 把「没配」渲染成一个空字符串或者干脆漏掉这一位,
+    插件那边就只能靠猜。
+    """
+    _register(client)
+
+    # 这个买家号没配 → 下发 null → 插件一步都不做(既不校验也不切)
+    t = _claim(client)
+    assert t["guards"]["expected_card_last4"] is None
+
+    # 配上之后,同一条任务重新派出去时下发的就是库里那个值
+    conn.execute("UPDATE procure.buyer_envs SET expected_card_last4 = '4417'")
+    conn.execute("UPDATE procure.tasks SET status='ready', claimed_by=NULL, claimed_at=NULL")
+    t2 = _claim(client)
+    assert t2["guards"]["expected_card_last4"] == "4417"
+
+    # **而服务端那道闸一个字没改。** 插件切没切成不算数:guard-check 拿插件
+    # 重新读到的尾号自己判。这两条断言合起来才是「先切后验」——
+    # 少了后面这一条,「插件负责切」就滑成了「插件说了算」。
+    body = {"instance_uid": UID, "actual_total": "10.79", "payment_last4": "9021",
+            "delivery_raw": "Tomorrow", "is_fba": True}
+    d = client.post(f"/v1/tasks/{t2['task_id']}/guard-check", json=body).json()["data"]
+    assert d["allow"] is False and d["error_code"] == "PAYMENT_METHOD_UNEXPECTED"
+
+
+def test_claim_still_works_when_the_env_has_no_expected_card(client, conn, seed):
+    """认领 SQL 现在跨接了 buyer_envs —— 别让它把「没配期望卡」的买家号派不出单。
+
+    CLAIM_SQL 里 env 这个 CTE 从「只选 daily_cap」变成了「还要选
+    expected_card_last4」,并且被加进了 UPDATE 的 FROM。写错的话最坏的形态不是
+    报错,是**认领静默返回 None** —— 而那和「队列里没单」长得一模一样,
+    插件继续每 10 秒问一次,运营台上那台机器显示「待命」,谁也看不出它领不到单。
+    """
+    _register(client)
+    conn.execute("UPDATE procure.buyer_envs SET expected_card_last4 = NULL")
+    t = _claim(client)
+    assert t is not None and t["guards"]["expected_card_last4"] is None
+    # 空字符串也是"没配"的一种写法(界面上清空那一格),同样要派得出去
+    conn.execute("UPDATE procure.buyer_envs SET expected_card_last4 = ''")
+    conn.execute("UPDATE procure.tasks SET status='ready', claimed_by=NULL, claimed_at=NULL")
+    assert _claim(client) is not None
+
+
 def test_guard_check_event_carries_the_numbers_the_guard_actually_used(client, conn, seed):
     """事件流是「不拦但要留痕」那类信号的去处 —— 自洽记录写在这里。"""
     _register(client)
