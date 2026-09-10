@@ -407,6 +407,69 @@ def test_dry_run_also_leaves_the_crossed_order_point_alone(conn, seed):
     assert preview["details"][0]["reason"] == real["details"][0]["reason"]
 
 
+def test_a_reader_that_cannot_speak_for_this_env_does_not_get_to_blame_the_order_no(
+        client, conn, seed):
+    """**外部单根本不经过 claim**,所以登错号 / 已登出那两道闸对它一次都不生效。
+
+    这一辈子它只走 /v1/shipments/pending + /sync。一台登错号的机器照样领得到它:
+    它在**错的账号**下打开订单详情页,自然打不开,回 `order_state=not_found` ——
+    而服务端原先一律记「回填的单号可能不属于这个买家号,待人工复核」。
+    那是**错的诊断**:单号没问题,是这台机器登错了号。运营照着它去查上游填的单号
+    (而它是对的),真正要做的是去那个 profile 里换回账号。
+
+    这里不拦 /pending(同步不花钱,拦了只会让轨迹停更,而认领那道闸已经在插件面板上
+    把「登错号」说出来了);要的是**那句结论分两种情况说**。判据走
+    `instance.cannot_speak_for_env`,接的就是认领那两道闸的唯一定义处。
+    """
+    env_id, inst_id, _ = seed
+    task_intake.ingest(conn, [_row(amazon_order_no="111-2223334-5556667",
+                                   price_cap=None)])
+    task_id = _task(conn)["id"]
+    body = {"instance_uid": "inst-A", "task_id": task_id, "order_state": "not_found",
+            "status": "not_shipped", "events": []}
+
+    def _note():
+        return conn.execute(
+            """SELECT payload FROM procure.task_events
+                WHERE task_id = %s AND kind = 'shipment'
+                ORDER BY id DESC LIMIT 1""", (task_id,)).fetchone()["payload"]
+
+    # **前提:一台登错号的机器此刻确实领得到这张外部单** —— 那正是这条测试存在的理由。
+    # 认领那两道闸在这条路上一次都不生效(外部单根本不经过 claim)。
+    conn.execute("UPDATE procure.buyer_envs SET amazon_customer_id='A3KM7PLQ92XVYD'"
+                 " WHERE id=%s", (env_id,))
+    conn.execute("UPDATE procure.plugin_instances SET login_state='ok',"
+                 " amazon_customer_id='A9ZZZZZZZZZZZZ' WHERE id=%s", (inst_id,))
+    assert client.post("/v1/tasks/claim",
+                       json={"instance_uid": "inst-A"}).status_code == 409
+    pend = client.post("/v1/shipments/pending", json={"instance_uid": "inst-A"})
+    assert [i["task_id"] for i in pend.json()["data"]["items"]] == [task_id]
+
+    # ① 这台机器说得了话(账号对得上、没被登出)→ 照旧那句「单号可能挂错了」
+    conn.execute("UPDATE procure.plugin_instances SET amazon_customer_id='A3KM7PLQ92XVYD'"
+                 " WHERE id=%s", (inst_id,))
+    assert client.post("/v1/shipments/sync", json=body).status_code == 200
+    p1 = _note()
+    assert p1["reader_blind"] is None
+    assert "单号可能不属于这个买家号" in p1["note"]
+
+    # ② 同一台机器登错了号 → **另一句话**,而且说得出这一次 not_found 说明不了什么
+    conn.execute("UPDATE procure.plugin_instances SET amazon_customer_id='A9ZZZZZZZZZZZZ'"
+                 " WHERE id=%s", (inst_id,))
+    assert client.post("/v1/shipments/sync", json=body).status_code == 200
+    p2 = _note()
+    assert p2["reader_blind"] and "登着的不是这个买家号" in p2["reader_blind"]
+    assert "说明不了" in p2["note"] and "单号可能不属于这个买家号" not in p2["note"]
+
+    # ③ 被登出的机器同一形状(订单页 302 到 /ap/signin → readOrder 也回 not_found)
+    conn.execute("UPDATE procure.plugin_instances SET amazon_customer_id='A3KM7PLQ92XVYD',"
+                 " login_state='signed_out' WHERE id=%s", (inst_id,))
+    assert client.post("/v1/shipments/sync", json=body).status_code == 200
+    p3 = _note()
+    assert p3["reader_blind"] and "已登出" in p3["reader_blind"]
+    assert "说明不了" in p3["note"]
+
+
 # ── 上游给的采购时间 ────────────────────────────────────────────────────
 
 def test_the_upstreams_own_purchased_at_is_what_lands(conn, seed):

@@ -357,6 +357,46 @@ def resolve(conn, instance_uid: str) -> dict[str, Any] | None:
     ).fetchone()
 
 
+def cannot_speak_for_env(conn, instance_id: int) -> str | None:
+    """输入:连接 + 实例 id → 输出:这台机器**此刻代表不了这个买家号**的理由;能代表则 None。
+
+    判据一个字都不新写:走的正是认领那两道闸的唯一定义处
+    (`task_queue.login_blocks_claim` / `account_blocks_claim`)。
+
+    **给物流同步那条路用的。** 外部下单这一辈子只走 `/v1/shipments/pending` + `/sync`,
+    **根本不经过 claim** —— 认领那两道闸对它们一次都不生效。一台登错号(或已登出)
+    的机器照样领得到外部单去同步:它在**错的账号**下打开订单详情页,自然打不开,
+    回 `order_state=not_found`,而服务端会记一条「回填的单号可能不属于这个买家号,
+    待人工复核」。**那句话是错的诊断** —— 单号没问题,是这台机器登错了号 / 被登出了。
+    运营照着它去查上游填的单号(而它是对的),真正要做的是去那个 profile 里换回账号。
+
+    这里**不拦** `/pending`:同步不花钱,拦了只会让物流轨迹停更,而认领那道闸已经
+    在面板上把「登错号」说出来了(`background/loop.ts` 的 account-mismatch 相位)。
+    这里做的是让那条 `not_found` 事件**分成两句话说** —— 两种处置完全不同的情况
+    原先渲染成同一句结论,那正是这个项目最不许有的事。
+    """
+    row = conn.execute(
+        """SELECT i.login_state,
+                  i.amazon_customer_id AS reported,
+                  e.amazon_customer_id AS expected
+             FROM procure.plugin_instances i
+             JOIN procure.buyer_envs e ON e.id = i.buyer_env_id
+            WHERE i.id = %s""",
+        (instance_id,),
+    ).fetchone()
+    if row is None:
+        return None
+    if task_queue.login_blocks_claim(row["login_state"]):
+        return "这台机器此刻是已登出状态"
+    state = task_queue.account_state(row["expected"], row["reported"])
+    if task_queue.account_blocks_claim(state):
+        return ("这台机器登着的不是这个买家号"
+                f"({row['reported'] or '还没报过'} ≠ {row['expected']})"
+                if state == "mismatch"
+                else "这台机器还没报过它登着哪个 Amazon 账号")
+    return None
+
+
 LIST_SQL = f"""
 SELECT e.id            AS env_id,
        e.code          AS env_code,

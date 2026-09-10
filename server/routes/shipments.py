@@ -5,7 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException
 from server import schemas
 from server.deps import conn_ctx, require_instance
 from registry import settings
-from services import shipment, task_event
+from services import instance, shipment, task_event
 
 router = APIRouter(prefix="/v1/shipments", tags=["shipments"])
 
@@ -50,13 +50,31 @@ def sync(req: schemas.ShipmentSyncReq, conn=Depends(conn_ctx)) -> schemas.Envelo
     })
 
     if req.order_state == "not_found":
-        # 订单详情页打不开这一单,说明我们回填的那个号可能根本不属于这个买家号。
-        # 这里**只记不改**:一次打不开也可能是页面抽风,自动把 purchased 打回
-        # 待人工会在 Amazon 抽风的那天把一整批已完成的单全掀翻。
+        # 订单详情页打不开这一单。**这句结论要分两种情况说。**
+        #
+        # 外部下单这一辈子只走 /pending + /sync,**根本不经过 claim** —— 认领那两道闸
+        # (登出 / 登错号)对它们一次都不生效。一台登错号或已登出的机器照样领得到
+        # 外部单来同步:它在**错的账号**下打开订单详情页,自然打不开,回 not_found。
+        # 那时说「回填的单号可能不属于这个买家号」是**错的诊断** —— 单号没问题,
+        # 是这台机器登错了号。运营照着它去查上游填的单号(而它是对的),
+        # 真正要做的是去那个 profile 里换回账号。两种处置完全不同的情况渲染成
+        # 同一句结论,正是这个项目最不许有的事。
+        #
+        # 判据不新写:走 instance.cannot_speak_for_env(它接的就是认领那两道闸的
+        # 唯一定义处)。这里**只记不改**:一次打不开也可能是页面抽风,自动把
+        # purchased 打回待人工会在 Amazon 抽风的那天把一整批已完成的单全掀翻。
         # 连续多少次才该转人工,要等真实数据说话 —— 见 docs/03 §5。
+        blind = instance.cannot_speak_for_env(conn, inst["id"])
         task_event.record(conn, req.task_id, "shipment", instance_id=inst["id"], payload={
             "order_state": "not_found",
-            "note": "订单详情页打不开;回填的单号可能不属于这个买家号,待人工复核",
+            # 这一位单独留一格:事后要答得出「当时是不是这台机器的问题」,
+            # 而 note 是给人读的一句话,不该拿它去做判据。
+            "reader_blind": blind,
+            "note": (f"订单详情页打不开;但{blind} —— "
+                     "这一次 not_found **说明不了**单号有没有挂错。"
+                     "请先把这台机器的账号/登录态弄对,再看这一单"
+                     if blind else
+                     "订单详情页打不开;回填的单号可能不属于这个买家号,待人工复核"),
         })
 
     return schemas.Envelope(ok=True, data={"shipment_id": sid, "events": len(req.events),
