@@ -10,11 +10,13 @@
 所以「不适用」必须是单独一档,与「未核」也要分开(后者是「本该核、这次没核成」)。
 """
 
+from datetime import datetime, timezone
 from decimal import Decimal
 
 import pytest
 
-from services import feishu_writeback, shipment, task_admin, task_intake, task_query
+from services import (feishu_writeback, instance, ops_query, shipment, task_admin,
+                      task_intake, task_query, task_queue)
 
 
 def _row(**over):
@@ -133,12 +135,12 @@ def test_the_same_amz_order_no_cannot_land_on_two_tasks(conn, seed):
 
 # ── 状态迁移表(docs/01 §10)────────────────────────────────────────────
 
-def _land(conn, status, *, error_code=None):
+def _land(conn, status, *, error_code=None, may_have_ordered=False):
     """先落一张普通任务,再把它摆成想要的状态。"""
     task_intake.ingest(conn, [_row()])
     t = _task(conn)
-    conn.execute("UPDATE procure.tasks SET status=%s, error_code=%s WHERE id=%s",
-                 (status, error_code, t["id"]))
+    conn.execute("UPDATE procure.tasks SET status=%s, error_code=%s, may_have_ordered=%s"
+                 " WHERE id=%s", (status, error_code, may_have_ordered, t["id"]))
     return t["id"]
 
 
@@ -229,6 +231,156 @@ def test_dry_run_predicts_the_same_migrations_as_the_real_run(conn, seed):
     real = task_intake.ingest(conn, rows)
     for k in ("inserted", "duplicated", "rejected", "migrated", "conflicted"):
         assert preview[k] == real[k], k
+
+
+@pytest.mark.parametrize("status,error_code", [
+    ("manual", "ORDER_CONFIRM_TIMEOUT"),
+    ("exception", "PLUGIN_INTERNAL"),
+    ("ready", None),
+])
+def test_a_task_that_crossed_the_order_point_is_left_alone(conn, seed, status, error_code):
+    """**越过下单点的单一动不动**,不管它此刻停在哪个状态。
+
+    这是这张迁移表里与 claimed 同源的一格:`may_have_ordered` 记的是插件在点
+    下单按钮**之前**自己说过的那句话,意思是「这一单可能已经在亚马逊上真花过钱」。
+    转成外部下单会一口气做掉三件不该做的事:把它挪出待人工桶(从此没人再核对)、
+    清掉错误码(红色警告消失)、把库里的单号写成上游那一张(插件真下成的那张
+    订单从此不在任何系统里)。而 NEEDS_ACK 那道「先去买家号订单页确认过再动」的闸
+    一次都没被问过 —— 回队列的四道闸都判这一位,转终态这条路也必须判。
+    """
+    task_id = _land(conn, status, error_code=error_code, may_have_ordered=True)
+    got = task_intake.ingest(conn, [_row(amazon_order_no="111-2223334-5556667",
+                                         price_cap=None)])
+    assert got["conflicted"] == 1 and got["migrated"] == 0
+    d = got["details"][0]
+    assert d["result"] == "conflicted"
+    # 措辞必须把人指向那件要做的事,而不只是说「没动」。
+    assert "越过过下单点" in d["reason"] and "到底买了几次" in d["reason"]
+    t = _task(conn)
+    assert (t["status"], t["amazon_order_no"]) == (status, None)
+    assert t["error_code"] == error_code       # 红色警告不许被这条路清掉
+    assert t["purchase_source"] == "plugin"
+    assert "purchased" not in _kinds(conn, task_id)
+
+
+def test_dry_run_also_leaves_the_crossed_order_point_alone(conn, seed):
+    """空跑与真跑判的是同一个 `_can_migrate`,越过下单点那一格也不例外。"""
+    _land(conn, "manual", error_code="ORDER_CONFIRM_TIMEOUT", may_have_ordered=True)
+    rows = [_row(amazon_order_no="111-2223334-5556667", price_cap=None)]
+    preview = task_intake.dry_run(conn, rows)
+    real = task_intake.ingest(conn, rows)
+    for k in ("inserted", "duplicated", "rejected", "migrated", "conflicted"):
+        assert preview[k] == real[k], k
+    assert preview["details"][0]["reason"] == real["details"][0]["reason"]
+
+
+# ── 上游给的采购时间 ────────────────────────────────────────────────────
+
+def test_the_upstreams_own_purchased_at_is_what_lands(conn, seed):
+    """上游给了采购时间就用它的,**不能换成同步那一天的 now()**。
+
+    运营把上个月的外部单整理成一个文件灌进来,每行带 `purchased_at`。
+    静默丢掉的话,40 张八月的单全部记成同步那一天 —— 「按采购时间」的筛选、
+    统计、日限一起失真,而 docs/01 §10.1 写的是「上游给就用它的」。
+    """
+    task_intake.ingest(conn, [_row(amazon_order_no="111-2223334-5556667",
+                                   price_cap=None,
+                                   purchased_at="2026-08-12T03:00:00Z")])
+    assert _task(conn)["purchased_at"] == datetime(2026, 8, 12, 3, 0,
+                                                   tzinfo=timezone.utc)
+
+
+def test_a_purchased_at_we_cannot_read_is_rejected_with_a_reason(conn, seed):
+    """认不出的时间要拒成一条**带理由**的 rejected,不是静默当作没给。
+
+    静默丢掉的代价不是「少一列数据」:那一格是人手填在上游那张表里的,
+    填错是常态,而没人会去查一个从没报过错的字段。
+    """
+    got = task_intake.ingest(conn, [_row(amazon_order_no="111-2223334-5556667",
+                                         price_cap=None, purchased_at="上个月")])
+    assert got["rejected"] == 1 and got["inserted"] == 0
+    assert "不是时间" in got["details"][0]["reason"]
+    assert _task(conn) is None
+
+
+# ── 缺列的外部行不许把整批带下水 ────────────────────────────────────────
+
+def test_an_external_row_without_a_price_cap_key_at_all_lands(conn, seed):
+    """README 与飞书字段表都说「外部单的限价可以不填」——那就包括**根本没有这个键**。
+
+    这一格原先是下标取值:一行没有 `price_cap` 键的外部单会在落库时 KeyError,
+    `pg_conn` 遇异常回滚**整批** —— 同批前面已经写进去的行连同 task_products
+    一起没了,而 details 里一句解释都没有;空跑对同一行还说「将新增」。
+    """
+    row = _row(upstream_order_no="UP-NO-CAP", amazon_order_no="111-2223334-5556667")
+    row.pop("price_cap")
+    rows = [_row(), row]
+    preview = task_intake.dry_run(conn, rows)
+    got = task_intake.ingest(conn, rows)
+    assert preview["inserted"] == got["inserted"] == 2
+    # 同批那张普通单必须还在 —— 这条断言盯的是「整批回滚」那个后果本身。
+    assert _task(conn, "UP-EXT-1") is not None
+    t = _task(conn, "UP-NO-CAP")
+    assert t["status"] == "purchased" and t["price_cap"] == Decimal("0.00")
+
+
+def test_two_rows_in_one_batch_cannot_share_an_amz_order_no(conn, seed):
+    """同一批里两行填了同一个 AMZ 单号:空跑与真跑必须报同一批数字。
+
+    人手滑把同一个号填进两行是常事。真跑一直是拒的(第一行落库、第二行撞库),
+    而空跑只查库、不记同批已经用掉的号,于是预览说「两行都会新增」——
+    而这一批数字正是运营用来判断「这一轮同步对不对」的唯一依据。
+    """
+    rows = [_row(upstream_order_no="UP-A", amazon_order_no="111-2223334-5556667"),
+            _row(upstream_order_no="UP-B", amazon_order_no="111-2223334-5556667",
+                 products=[{"asin": "B0FB3VS68K", "quantity": 1}])]
+    preview = task_intake.dry_run(conn, rows)
+    real = task_intake.ingest(conn, rows)
+    for k in ("inserted", "duplicated", "rejected", "migrated", "conflicted"):
+        assert preview[k] == real[k], k
+    assert preview["rejected"] == 1
+    assert "这一批里出现了两次" in preview["details"][1]["reason"]
+
+
+# ── 外部单不占本系统的额度,也不进本系统的分母 ──────────────────────────
+
+def test_external_orders_do_not_eat_the_buyer_envs_daily_cap(conn, seed):
+    """日限数的是**我们今天拍成了多少单**,外部单不算。
+
+    上游把 40 张历史外部单一次填上 AMZ 单号,一轮同步之后这个买家号当天
+    一单也派不出去 —— 而那些单根本不是本系统拍的。插件面板会写
+    「待命 · 队列里没有本买家号的单」,运营台会写「已到日上限」,
+    两句话都是假的。
+    """
+    env_id, inst_id, _ = seed
+    conn.execute("UPDATE procure.buyer_envs SET daily_cap = 2 WHERE id = %s", (env_id,))
+    for i in range(2):
+        task_intake.ingest(conn, [_row(upstream_order_no=f"UP-EXT-{i}",
+                                       amazon_order_no=f"111-222333{i}-5556667",
+                                       price_cap=None,
+                                       products=[{"asin": f"B0FB3VS6{i}0", "quantity": 1}])])
+    assert task_queue.claim(conn, env_id, inst_id) is not None
+    # 界面上那两个「今日已拍」必须跟真闸算同一个数 —— 分叉一次的表现是
+    # 「可派」绿着而实际派不出,daily_cap 已经栽过一次。
+    env = instance.list_with_liveness(conn, stale_seconds=90)[0]
+    assert (env["purchased_today"], env["at_daily_cap"]) == (0, False)
+    assert task_query.summary(conn)["purchased_today"] == 0
+
+
+def test_external_orders_do_not_dilute_the_assert_skipped_denominator(conn, seed):
+    """外部单不进「回填条数」这个分母 —— 它根本不过 ASIN 断言。
+
+    分母被稀释的后果是这张卡片从此不会响:近 7 天真回填 4 单、1 单没采到 ASIN
+    (25%,该报警),同期同步进来 500 张外部单,比例变成 0.2%。而这个指标存在的
+    全部理由就是「断言整体失效时库里只剩一批看着完全正常的 purchased」。
+    """
+    before = ops_query.assert_skipped(conn)["backfills"]
+    for i in range(5):
+        task_intake.ingest(conn, [_row(upstream_order_no=f"UP-EXT-{i}",
+                                       amazon_order_no=f"111-222333{i}-5556667",
+                                       price_cap=None,
+                                       products=[{"asin": f"B0FB3VS6{i}0", "quantity": 1}])])
+    assert ops_query.assert_skipped(conn)["backfills"] == before == 0
 
 
 def test_dry_run_writes_nothing(conn, seed):

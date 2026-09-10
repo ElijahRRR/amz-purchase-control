@@ -14,17 +14,34 @@ from typing import Any
 
 from services import error_codes, task_event
 
-CLAIM_SQL = """
+#: 「这一单是**我们**拍的吗」—— 日限那道闸与运营台上两个「今日已拍」共用的判据,
+#: **唯一定义处**(services/instance.LIST_SQL、services/task_query.summary 都接它)。
+#:
+#: 外部下单不算:那一单不经本系统采购(所有者定稿 ④),没占这台机器的时间,
+#: 也没过任何一道护栏。算进去的后果是实打实的:上游把 40 张历史外部单一次填上
+#: AMZ 单号,一轮同步之后这个买家号当天**一单也派不出去**,而插件面板写着
+#: 「待命 · 队列里没有本买家号的单」、运营台写着「已到日上限」——
+#: 而我们今天一单都没拍。同一个数还挂在两处给人看的地方,「今天拍了 40 单」
+#: 这句话会变成假话。
+#:
+#: `manual_backfill` 照旧算:那一单是插件真拍出来的,只是单号后来由人补上。
+OURS_ONLY_SQL = "purchase_source <> 'external'"
+
+CLAIM_SQL = f"""
 WITH env AS (
     SELECT daily_cap FROM procure.buyer_envs WHERE id = %(env_id)s
 ),
 done_today AS (
     -- 今天这个买家号已经拍成了多少单。日限是防关联场景下最基本的一条闸:
     -- 一个号一天买太多本身就是风控信号。
+    -- **只数我们自己拍的**(判据在 OURS_ONLY_SQL):外部下单是上游在别处买的,
+    -- 拿它去吃这个买家号今天的派单额度,等于让一批与我们无关的历史单
+    -- 把今天的活儿全堵死。
     SELECT count(*) AS n
       FROM procure.tasks
      WHERE buyer_env_id = %(env_id)s
        AND status = 'purchased'
+       AND {OURS_ONLY_SQL}
        AND purchased_at >= date_trunc('day', now())
 ),
 candidate AS (

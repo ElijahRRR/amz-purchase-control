@@ -312,7 +312,7 @@ def resolve(conn, instance_uid: str) -> dict[str, Any] | None:
     ).fetchone()
 
 
-LIST_SQL = """
+LIST_SQL = f"""
 SELECT e.id            AS env_id,
        e.code          AS env_code,
        e.marketplace,
@@ -333,8 +333,12 @@ SELECT e.id            AS env_id,
          WHERE t.buyer_env_id = e.id AND t.status = 'ready')     AS queue_depth,
        (SELECT count(*) FROM procure.tasks t
          WHERE t.buyer_env_id = e.id AND t.status = 'manual')    AS manual_count,
+       -- 「今日已拍」与真正那道日限闸必须是同一个数:判据在
+       -- task_queue.OURS_ONLY_SQL(外部下单不算 —— 那不是我们拍的)。
+       -- 分叉一次的表现是界面上绿着的「可派」和实际派不出,daily_cap 已经栽过一次。
        (SELECT count(*) FROM procure.tasks t
          WHERE t.buyer_env_id = e.id AND t.status = 'purchased'
+           AND t.{task_queue.OURS_ONLY_SQL}
            AND t.purchased_at >= date_trunc('day', now()))       AS purchased_today,
        -- 最近 24 小时里,这个买家号有几单**试着清车但没清动**。
        --

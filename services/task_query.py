@@ -11,6 +11,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from registry import settings
+from services import task_queue
 
 #: Amazon 单号形态。运营手里的表两种号混排是常态,粘进来自动分流,
 #: 不该逼人先分好类再贴。
@@ -386,8 +387,12 @@ def summary(
     # 顶栏那两个数字是**全局**的,不跟着筛选走 —— 它们回答的是「今天整体怎么样」,
     # 筛掉一半再报数就不是那个问题的答案了。
     today = conn.execute(
+        # 「今日已拍」= **我们今天拍成了多少单**。外部下单不算(判据在
+        # task_queue.OURS_ONLY_SQL,认领 SQL 的日限与买家号页那一格接的是同一条):
+        # 上游在别处买的单混进这个数,顶栏那句「今天拍了 40 单」就是假话。
         "SELECT count(*) AS n FROM procure.tasks "
-        " WHERE status = 'purchased' AND purchased_at >= date_trunc('day', now())"
+        f" WHERE status = 'purchased' AND {task_queue.OURS_ONLY_SQL}"
+        "   AND purchased_at >= date_trunc('day', now())"
     ).fetchone()["n"]
     queue = conn.execute(
         "SELECT count(*) AS n FROM procure.tasks WHERE status = 'ready'"

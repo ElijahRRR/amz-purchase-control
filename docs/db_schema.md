@@ -38,7 +38,7 @@
 | `marketplace` | text | 首期恒为 `US` |
 | `amazon_customer_id` | text | 这个买家号**应该**是哪个 Amazon 账号。插件从页面 HTML 里抠出来(`customerId:"A…"`)随心跳上报,**为空时首次上报即写入**;已经有值而插件报上来的不一样时**不覆盖**,认领时直接拒(`INSTANCE_ACCOUNT_MISMATCH`)。**身份仍然是买家号环境本身**,这一列是对账 + 登错号拦截,不拿它去派单、也不拿它当主键。改它只有一条路:运营台买家号页的「以这个为准」(写 `procure.env_events`,带 operator) |
 | `status` | text | `active` / `paused` / `blocked` / `retired`（封闭集） |
-| `daily_cap` | integer | 日单量上限，`0` = 不限 |
+| `daily_cap` | integer | 日单量上限，`0` = 不限。数的是**我们今天拍成了多少单** —— `purchase_source='external'` 的单不算（那是上游在别处买的，没占这台机器的时间、也没过任何一道护栏），判据在 `services/task_queue.OURS_ONLY_SQL`，认领 SQL 的 `done_today` 与界面上两个「今日已拍」接的是同一条。`manual_backfill` 照旧算：那一单是插件真拍出来的，只是单号后来由人补上 |
 | `expected_card_last4` | text | **这个买家号该刷哪张卡**的后四位。留空 = 这一道不校验（与 `tasks.require_fba` 同一形态：闸门可关，但关不关是库里的数据说了算，不是代码里的默认值）。填了之后，结算页读到的卡尾号与它不符即 `PAYMENT_METHOD_UNEXPECTED`，**在下单之前拦下**。只校验、不替买家号切卡——改支付配置是人的动作，不是拍单流程的动作。**改这一列不留痕**：`task_events` 挂在 `task_id` 上，这张表套不进去，而 `buyer_envs` 眼下整张表都没有审计流（`daily_cap`、`status` 同样没有），所以「谁在什么时候关掉了这个买家号的支付校验」目前答不出来 |
 | `note` | text | |
 | `created_at` / `updated_at` | timestamptz | |

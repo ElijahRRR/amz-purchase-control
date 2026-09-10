@@ -22,7 +22,8 @@ CREATE TABLE IF NOT EXISTS procure.buyer_envs (
                                   -- 这一列是对账 + 登错号拦截。改它只有「以这个为准」一条路
     status             text NOT NULL DEFAULT 'active',
                                   -- active / paused / blocked / retired(封闭集)
-    daily_cap          integer NOT NULL DEFAULT 0,    -- 0 = 不限
+    daily_cap          integer NOT NULL DEFAULT 0,    -- 0 = 不限；只数我们自己拍的
+                                                     -- (services/task_queue.OURS_ONLY_SQL)
     expected_card_last4 text,
                                   -- 这个买家号该刷哪张卡的后四位。
                                   -- 留空 = 这一道不校验(与 tasks.require_fba 同一形态)。

@@ -38,7 +38,31 @@ PURCHASE_SOURCES = frozenset({"plugin", "external", "manual_backfill"})
 #:
 #: 这几个状态可以转成「外部下单」:单子还没被买到,或者买砸了/在等人 ——
 #: 上游既然已经在别处买了,我们这边那张单就不该再被拍一次。
+#:
+#: **状态只是判据的一半**,另一半是「越过没越过下单点」,两半在 `_can_migrate` 里
+#: 取与。光看状态的话,一张 `manual + may_have_ordered` 的单(插件在点下单按钮
+#: 之前报过 step、随后 ORDER_CONFIRM_TIMEOUT,正等着人去买家号订单页看一眼到底
+#: 下没下成)会被一轮定时同步静默转成「已拍单 · 外部下单」并清掉错误码 ——
+#: 全项目唯一「可能已经花过钱」的那一桶被清空,而 NEEDS_ACK 那道要人亲自确认的闸
+#: 一次都没被问过。
 _MIGRATABLE = frozenset({"pending", "ready", "exception", "manual"})
+
+
+def _can_migrate(t: dict[str, Any]) -> bool:
+    """输入:库里那一行 → 输出:能不能转成「外部下单」。**状态迁移表的判据,唯一定义处。**
+
+    两条取与:
+      · 状态在 `_MIGRATABLE` 里 —— 单子还没被买到,或者买砸了/在等人
+      · **没越过下单点** —— `may_have_ordered` 为真意味着插件已经点过下单按钮
+        (或者点的过程中崩了),这一单可能已经在亚马逊上真花过钱
+
+    第二条与「回队列」那四道闸(人工重置 / 批量重置 / 自动重试选单 / 插件的
+    `/release`)判的是同一件事,只是方向相反:**回队列与转终态都不许替人做
+    那次「去买家号订单页看一眼到底买了几次」的确认。** `claimed` 那一格早就有
+    这条保护(报 conflicted 让人去看),而 `manual + may_have_ordered` 恰恰是
+    我们**已经知道**可能花过钱的那一格,原先反而没有。
+    """
+    return t["status"] in _MIGRATABLE and not t["may_have_ordered"]
 
 
 def line_key(upstream_order_no: str, products: list[dict[str, Any]]) -> str:
@@ -97,6 +121,17 @@ def parse_purchased_at(value: Any) -> datetime | None:
     # **不带时区的字符串按数据库会话时区算**(psycopg 原样送进 timestamptz,
     # 由 PostgreSQL 解释)。上游填 "2026-09-01 10:00" 时我们无从知道那是哪儿的
     # 十点,不在这里替它猜一个 —— 猜出来的偏移会安静地把一张单算到前一天。
+    #
+    # 下面这几行原先只有上面那两段注释、**没有实现**:任何字符串都静默变成 None,
+    # 于是 docstring 承诺的「认不出抛 ValueError」与 _validate 里那条
+    # 「purchased_at 不是时间」的拒收一次都不会触发,而上游给的时间被丢掉、
+    # 换成落库时的 now() —— 八月的单全部记成同步那一天。
+    if not isinstance(value, str):
+        raise ValueError(f"purchased_at 只认时间或 ISO 字符串,收到 {type(value).__name__}")
+    text = value.strip()
+    if text.endswith(("Z", "z")):
+        text = text[:-1] + "+00:00"
+    return datetime.fromisoformat(text)
 
 
 def _validate(row: dict[str, Any]) -> str | None:
@@ -181,6 +216,18 @@ def _order_no_taken(conn, amazon_order_no: str, line_key: str) -> int | None:
     return row["id"] if row else None
 
 
+def _order_no_taken_reason(amazon_order_no: str, task_id: int | None) -> str:
+    """输入:AMZ 单号 + 占着它的任务 id(同一批里的前一行则为 None)→ 输出:拒收理由。
+
+    **只管措辞,不参与决定。** 真跑与空跑共用它 —— 两套措辞的话,空跑说的和
+    真跑说的对不上,而人是照空跑那份去核对的。
+    """
+    if task_id is None:
+        return (f"AMZ 单号 {amazon_order_no} 在这一批里出现了两次 —— "
+                f"两张上游订单不可能是同一张亚马逊订单,这一行没落库")
+    return f"AMZ 单号 {amazon_order_no} 已经挂在任务 {task_id} 上了"
+
+
 def _mark_external(conn, *, line_key: str, amazon_order_no: str,
                    purchased_at: datetime | None) -> tuple[str, str | None]:
     """输入:已在库的那一行 + 上游填的 AMZ 单号 → 输出:(result, 说明)。
@@ -188,6 +235,7 @@ def _mark_external(conn, *, line_key: str, amazon_order_no: str,
     **状态迁移表的执行处**(表在模块顶上的 `_MIGRATABLE`,文字版在 docs/01 §10):
 
       pending / ready / exception / manual  → 转 purchased(external),写一条事件
+      **任一状态 + 越过下单点**              → **一动不动**,报出来让人看
       claimed                               → **一动不动**,报出来让人看
       purchased 且单号相同                   → 什么都不做,也不报(幂等,回写就是这么来的)
       purchased 且单号不同                   → 一动不动,报出来
@@ -196,9 +244,14 @@ def _mark_external(conn, *, line_key: str, amazon_order_no: str,
     `claimed` 那一格是这张表里最要紧的一条:插件此刻正拿着这一单在亚马逊上下单。
     这时候把它改成「已拍单」,插件几分钟后回来 complete 会拿到 409 TASK_NOT_HELD
     —— 钱花了、货发了,而库里记的是上游那张单号。所以宁可不动、报给人看。
+
+    「越过下单点」那一行同源:那一单**已经**可能花过钱,转成外部下单等于替人
+    做掉了「去订单页看一眼到底买了几次」那次确认,还顺手清掉了错误码 ——
+    离开待人工桶之后没有人会再去核对它。
     """
     t = conn.execute(
-        "SELECT id, status, amazon_order_no FROM procure.tasks WHERE line_key = %s",
+        "SELECT id, status, amazon_order_no, may_have_ordered"
+        "  FROM procure.tasks WHERE line_key = %s",
         (line_key,),
     ).fetchone()
     if t is None:
@@ -210,7 +263,7 @@ def _mark_external(conn, *, line_key: str, amazon_order_no: str,
     # 剩下的才查这个集合」,于是这个集合并不是它自称的那个唯一定义处:
     # 往里面加一个 claimed 什么都不会变,而那正是这张表最要紧的一格
     # (实测:加进去之后那条测试照旧全绿)。
-    if t["status"] not in _MIGRATABLE:
+    if not _can_migrate(t):
         return "conflicted", _why_not_migrated(t, amazon_order_no)
 
     conn.execute(
@@ -281,7 +334,7 @@ def ingest(conn, rows: list[dict[str, Any]], *, release: bool = False) -> dict[s
         if external and (taken := _order_no_taken(conn, order_no, key)) is not None:
             rejected += 1
             details.append({**entry, "result": "rejected",
-                            "reason": f"AMZ 单号 {order_no} 已经挂在任务 {taken} 上了"})
+                            "reason": _order_no_taken_reason(order_no, taken)})
             continue
 
         got = conn.execute(_INSERT, {
@@ -297,7 +350,10 @@ def ingest(conn, rows: list[dict[str, Any]], *, release: bool = False) -> dict[s
             "ship_country": (row.get("ship_country") or "US").upper(),
             # 外部单没有限价:库里那一列 NOT NULL,落一个 0 占位,
             # 而界面对 external 一律显示「外部下单,不适用」,不写「未超」。
-            "price_cap": Decimal(str(row["price_cap"] or 0)),
+            # **一律 .get**:_validate 对外部行跳过 price_cap 的必填检查,
+            # 于是一行干脆没有这个键的外部单在这里会 KeyError,pg_conn 回滚整批
+            # —— 连同前面已经写进去的几十行一起没了,而 dry_run 对同一行说「会新增」。
+            "price_cap": Decimal(str(row.get("price_cap") or 0)),
             "max_delivery_days": int(row.get("max_delivery_days") or 7),
             "amazon_order_no": order_no,
             # None 时由上面那句 SQL 用库里的 now() 补(只对 purchased 补)。
@@ -356,6 +412,11 @@ def dry_run(conn, rows: list[dict[str, Any]]) -> dict[str, Any]:
     details: list[dict[str, Any]] = []
     inserted = duplicated = rejected = migrated = conflicted = 0
     seen_keys: set[str] = set()
+    # 同一批里已经用掉的 AMZ 单号。**必须有它**:真跑时第一行落库、第二行被
+    # `_order_no_taken` 拒掉,空跑这一侧不记的话就说「两行都会新增」——
+    # 而这一批数字正是运营用来判断「这一轮同步对不对」的唯一依据。
+    # line_key 那一侧的 `seen_keys` 是同一个道理。
+    seen_order_nos: set[str] = set()
 
     for idx, row in enumerate(rows):
         entry = {"index": idx, "upstream_order_no": row.get("upstream_order_no")}
@@ -376,14 +437,17 @@ def dry_run(conn, rows: list[dict[str, Any]]) -> dict[str, Any]:
         external = is_external(row)
         order_no = str(row["amazon_order_no"]).strip() if external else None
 
-        if external and (taken := _order_no_taken(conn, order_no, key)) is not None:
-            rejected += 1
-            details.append({**entry, "result": "rejected",
-                            "reason": f"AMZ 单号 {order_no} 已经挂在任务 {taken} 上了"})
-            continue
+        if external:
+            taken = _order_no_taken(conn, order_no, key)
+            if taken is not None or order_no in seen_order_nos:
+                rejected += 1
+                details.append({**entry, "result": "rejected",
+                                "reason": _order_no_taken_reason(order_no, taken)})
+                continue
 
         in_db = conn.execute(
-            "SELECT status, amazon_order_no FROM procure.tasks WHERE line_key = %s", (key,)
+            "SELECT status, amazon_order_no, may_have_ordered"
+            "  FROM procure.tasks WHERE line_key = %s", (key,)
         ).fetchone()
         dup = key in seen_keys or in_db is not None
         if dup:
@@ -393,8 +457,9 @@ def dry_run(conn, rows: list[dict[str, Any]]) -> dict[str, Any]:
                 if in_db["status"] == "purchased" and in_db["amazon_order_no"] == order_no:
                     duplicated += 1
                     details.append({**entry, "result": "duplicated", "line_key": key})
-                elif in_db["status"] in _MIGRATABLE:
+                elif _can_migrate(in_db):
                     migrated += 1
+                    seen_order_nos.add(order_no)
                     details.append({**entry, "result": "migrated", "line_key": key,
                                     "amazon_order_no": order_no})
                 else:
@@ -406,6 +471,8 @@ def dry_run(conn, rows: list[dict[str, Any]]) -> dict[str, Any]:
             details.append({**entry, "result": "duplicated", "line_key": key})
             continue
         seen_keys.add(key)      # 同一批里重复的行,第二次也是重复
+        if external:
+            seen_order_nos.add(order_no)
         inserted += 1
         details.append({**entry, "result": "inserted", "line_key": key,
                         **({"amazon_order_no": order_no} if external else {})})
@@ -424,6 +491,13 @@ def _why_not_migrated(t: dict[str, Any], amazon_order_no: str) -> str:
         # 这张表里最要紧的一格:插件此刻正拿着这一单在亚马逊上下单。
         return (f"插件正在拍这单(claimed),上游却填了 AMZ 单号 {amazon_order_no} —— "
                 f"这一单没动。请去买家号订单页看一眼到底买了几次")
+    if t["may_have_ordered"]:
+        # 与 claimed 那一格同源:两者都是「可能已经花过钱」,只是一个正在花、
+        # 一个已经花完还没确认。措辞里必须出现「到底买了几次」——
+        # 这一句就是要人去买家号订单页做的那件事。
+        return (f"这一单越过过下单点(可能已经在亚马逊上真花过钱,状态 {t['status']}),"
+                f"上游又填了 AMZ 单号 {amazon_order_no} —— 这一单没动。"
+                f"请去这个买家号的订单页确认到底买了几次")
     if t["status"] == "purchased":
         return (f"这一单已经是已拍单,库里的 AMZ 单号是 {t['amazon_order_no']},"
                 f"上游填的是 {amazon_order_no} —— 两个号不一样,没动")

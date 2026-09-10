@@ -251,14 +251,24 @@ ASSERT_SKIPPED_ALERT_RATIO = 0.2
 
 #: 分子分母同一个窗口、同一张表、同一条 SQL —— 分开查会出现「分子取的是这 7 天、
 #: 分母取的是上一次刷新那 7 天」这种谁也发现不了的错位。
-#: 分母取 `purchased` 事件:回填成功才有这条(services/task_queue.complete),
-#: 而 assert_skipped 与它写在同一个事务里,两个数天然同口径。
+#:
+#: 分母取 `purchased` 事件,**且只数插件拍的那些**(`purchase_source = 'plugin'`)。
+#: 这条 kind 有第二个写入方了:外部下单落库时也记一条(services/task_intake),
+#: 而那种单**根本不过 ASIN 断言** —— 它只进分母、永远不进分子。上游同步 500 张
+#: 历史外部单进来,真实的 1/4(断言已经整体失效)会被稀释成 1/504,这张卡片
+#: 从此常年安静,而它存在的全部理由就是「断言整体失效时库里只剩一批看着完全
+#: 正常的 purchased,没有任何错误码提示」。
+#: 与 task_queue.OURS_ONLY_SQL 那条判据**刻意不是同一条**:那一条问的是
+#: 「这钱是不是我们花的」(强制回填算),这一条问的是「这一单的 ASIN 断言跑过吗」
+#: (强制回填正是**跳过断言**的那一批,不能算进分母)。
 _ASSERT_SKIPPED_SQL = """
-SELECT count(*) FILTER (WHERE kind = 'assert_skipped') AS n,
-       count(*) FILTER (WHERE kind = 'purchased')      AS backfills
-  FROM procure.task_events
- WHERE kind IN ('assert_skipped', 'purchased')
-   AND created_at >= now() - make_interval(days => %(days)s)
+SELECT count(*) FILTER (WHERE ev.kind = 'assert_skipped') AS n,
+       count(*) FILTER (WHERE ev.kind = 'purchased')      AS backfills
+  FROM procure.task_events ev
+  JOIN procure.tasks t ON t.id = ev.task_id
+ WHERE ev.kind IN ('assert_skipped', 'purchased')
+   AND t.purchase_source = 'plugin'
+   AND ev.created_at >= now() - make_interval(days => %(days)s)
 """
 
 
