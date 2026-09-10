@@ -317,7 +317,7 @@ python cli.py task_retry
 | `AMZ_SHIPMENT_BATCH` | `20` | 一次给插件多少条待同步的单 |
 | `AMZ_PRICE_CONSISTENCY_TOLERANCE_PCT` | `15` | `Σ单价×数量` 与货款差多少个百分点开始在事件流里记一笔。**这不是护栏,超了不拦单** —— 结算页单价是税前不含运费的,与货款天然有差。默认 15 而不是更紧:一条每单都出现的告警等于没有告警 |
 | （库里）`buyer_envs.daily_cap` | `0` | 该买家号一天最多拍几单，`0` = 不限。闸门在认领的那条 SQL 里 |
-| （库里）`buyer_envs.expected_card_last4` | 空 | 这个买家号该刷哪张卡的后四位。**留空 = 不校验**;填了之后结算页读到的尾号不符即 `PAYMENT_METHOD_UNEXPECTED`,在下单**之前**拦下。**先切后验**(所有者定稿①):插件在下单前按它把卡切过去,切完重读结算页,服务端再拿重读的尾号判 —— 切是插件的动作,验仍在服务端。切不动就是 `PAYMENT_METHOD_UNEXPECTED`,钱一分没花。运营台买家号那一页可就地改 |
+| （库里）`buyer_envs.expected_card_last4` | 空 | 这个买家号该刷哪张卡的后四位。**留空 = 不校验**;填了之后结算页读到的尾号不符即 `PAYMENT_METHOD_UNEXPECTED`,在下单**之前**拦下。**先切后验**(所有者定稿①):插件在下单前按它把卡切过去,切完重读结算页,服务端再拿重读的尾号判 —— 切是插件的动作,验仍在服务端。切不动就是 `PAYMENT_METHOD_UNEXPECTED`,钱一分没花。**认领那一刻的值会快照进 `tasks.expected_card_last4_at_claim`,guard-check 比的是它** —— 所以在途改这一格不会把那一单拦下,改的是下一次认领。但那个买家号在 Amazon 上的默认卡此刻可能已经被切成旧值了,所以运营台那一格在有在途单时会问一句。运营台买家号那一页可就地改 |
 | （库里）`tasks.require_fba` | `true` | 这一单要不要求 Amazon 自营发货。**它现在真的是一列** —— 在此之前是 `GuardsOut` 里一个 `= True` 的默认值,路由不往 `adjudicate` 传,一道号称「可关」的闸恒为真 |
 | `AMZ_SERVER_HOST` / `AMZ_SERVER_PORT` | `127.0.0.1` / `8781` | HTTP 监听 |
 
@@ -340,7 +340,7 @@ python cli.py task_retry
 | `POST /v1/admin/tasks/import` `/search` `/export` · `GET /{id}` | 落库、查询、导出 CSV(整个筛选结果,不只当前页) |
 | `POST /v1/admin/tasks/{id}/release` `/reset` `/force-backfill` `/address` `/asin` | 五个人工动作 |
 | `POST /v1/admin/tasks/batch-reset` | 批量重置。**不接受 acknowledged** —— 可能已下单的原样报回来,让人逐条去看 |
-| `POST /v1/admin/envs/{id}/expected-card` | 就地改这个买家号该刷哪张卡的后四位。**有副作用**:填上之后插件会在下单前替这个买家号把 Amazon 上选中的支付卡切成这一张(先切后验,校验仍在服务端);留空 = 既不校验也不切 |
+| `POST /v1/admin/envs/{id}/expected-card` | 就地改这个买家号该刷哪张卡的后四位。**有副作用**:填上之后插件会在下单前替这个买家号把 Amazon 上选中的支付卡切成这一张(先切后验,校验仍在服务端);留空 = 既不校验也不切。改的是**下一次认领** —— 在途那一单比的是它认领时的快照 |
 | `POST /v1/admin/envs/{id}/customer-id` | 「以这个为准」:把这个买家号记的 Amazon 账号改成插件报上来的那个。**这个动作会打开一道认领闸**(登错号被拒的那道),所以它带操作人并写 `procure.env_events` |
 | `GET /v1/admin/envs/{id}/events` | 这个买家号身上发生过什么(眼下只有买家号 ID 那三条)。⚠ 运营台还没渲染这条流 |
 

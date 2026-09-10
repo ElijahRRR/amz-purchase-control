@@ -30,14 +30,21 @@ import type { InstanceRow } from "@/types";
  *  没有人切、也没有人验。原先是「按了退格再点别处」就生效:没有二次确认、
  *  没有成功提示,而按 set_expected_card 自己的自述也没有任何审计记录。
  *  对照:同一套界面里危险性小得多的「强制回填单号」必须过一个红色预览步。
- *  **填一个新值不需要确认**(填错了的表现是每一单都被拦下,吵而安全);
- *  只有「关掉」这个方向要。 */
+ *
+ *  **两个方向都要问一句的,是「这个买家号此刻有单在途」那一刻**(`row.in_flight > 0`)。
+ *  「填错了的表现是每一单都被拦下,吵而安全」这句话在那一刻不成立:认领时下发的是
+ *  快照,在途那一单**不会**被拦(docs/01 §5.3),它会照着**旧**尾号在 Amazon 上
+ *  切卡并下单 —— 而运营刚刚把库里那一格改成了新值。库与账号在这一刻是不一致的,
+ *  下一单才会把它切回来。所以这一格在有在途单时把这件事说出来,让人自己决定
+ *  「现在就改」还是「等它跑完」。 */
 function ExpectedCard({ row, onSaved }: { row: InstanceRow; onSaved: () => void }) {
   const [v, setV] = useState(row.expected_card_last4 ?? "");
   const [err, setErr] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
   /** 等人确认「确实要关掉这道闸」。null = 没在等。 */
   const [confirmOff, setConfirmOff] = useState(false);
+  /** 等人确认「这个买家号此刻有单在途,确实现在就改」。 */
+  const [confirmBusy, setConfirmBusy] = useState<string | null>(null);
   // 别人改了库(或者别的标签页改了)时跟着刷新,但正在输入的时候不抢用户的光标
   const [focused, setFocused] = useState(false);
   useEffect(() => {
@@ -49,6 +56,7 @@ function ExpectedCard({ row, onSaved }: { row: InstanceRow; onSaved: () => void 
     const r = await api.setExpectedCard(row.env_id, next);
     setBusy(false);
     setConfirmOff(false);
+    setConfirmBusy(null);
     if (r.ok) { setErr(null); onSaved(); }
     else setErr(r.kind === "transport" ? "没说上话" : r.message);
   };
@@ -62,6 +70,9 @@ function ExpectedCard({ row, onSaved }: { row: InstanceRow; onSaved: () => void 
     }
     // 从「配着一张卡」变成「留空」= 关掉一道下单前的护栏。先问一句。
     if (!next && row.expected_card_last4) { setConfirmOff(true); return; }
+    // 有单在途:改这一格不会拦下它(比的是认领那一刻的快照),但它此刻正照着
+    // **旧**尾号在 Amazon 上切卡 —— 改完库里与账号上不是同一张卡。说出来再改。
+    if (row.in_flight > 0) { setConfirmBusy(next); return; }
     await commit(next);
   };
 
@@ -80,6 +91,21 @@ function ExpectedCard({ row, onSaved }: { row: InstanceRow; onSaved: () => void 
                           : "border-zinc-200 text-zinc-700 focus:border-sky-400")}
       />
       {err && <span className="text-2xs text-red-600">{err}</span>}
+      {confirmBusy !== null && (
+        <span className="inline-flex items-center gap-1.5 text-2xs text-amber-700">
+          这个买家号现在有 {row.in_flight} 单在跑。改这一格<b>不会</b>把它拦下
+          (它拿的是认领那一刻的尾号),但它正照着旧的那张卡在 Amazon 上切卡下单 ——
+          改完库里写的是新卡、账号上选中的是旧卡,下一单才会切回来。建议等它跑完。
+          <button className="px-1.5 py-0.5 rounded border border-amber-300 bg-white text-amber-800"
+                  disabled={busy}
+                  onClick={() => void commit(confirmBusy)}>现在就改</button>
+          <button className="px-1.5 py-0.5 rounded border border-zinc-200 bg-white text-zinc-600"
+                  disabled={busy}
+                  onClick={() => { setConfirmBusy(null); setV(row.expected_card_last4 ?? ""); }}>
+            等它跑完
+          </button>
+        </span>
+      )}
       {confirmOff && (
         <span className="inline-flex items-center gap-1.5 text-2xs text-red-700">
           关掉之后这个买家号的每一单都不再核对支付卡,插件也不再替它切卡

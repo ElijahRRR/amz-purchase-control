@@ -19,6 +19,20 @@ def _claim(client):
     return r.json()["data"]
 
 
+def _claim_with_card(client, conn, last4):
+    """配上期望卡,**然后**认领 —— guard-check 比的是认领那一刻的快照。
+
+    顺序不能反过来:`tasks.expected_card_last4_at_claim` 是认领 SQL 在置 claimed
+    的同一条 UPDATE 里写下的,认领之后再改 `buyer_envs` 那一格,对这一单没有作用
+    (那正是这一轮专门关掉的那条窗口,见
+    test_expected_card_changed_mid_flight_uses_the_snapshot_from_claim)。
+    """
+    conn.execute("UPDATE procure.buyer_envs SET expected_card_last4 = %s", (last4,))
+    conn.execute("UPDATE procure.tasks SET status='ready', claimed_by=NULL, claimed_at=NULL"
+                 " WHERE status='claimed'")
+    return _claim(client)
+
+
 def test_health(client):
     assert client.get("/health").json()["ok"] is True
 
@@ -260,6 +274,11 @@ def test_zero_total_no_longer_slips_through(client, seed):
 
 
 def test_expected_card_gate_is_off_until_the_env_has_one(client, conn, seed):
+    """这道闸可关:买家号没配 = 不校验也不切;配了才拦。
+
+    **两次都在认领之前配**:guard-check 比的是 `tasks.expected_card_last4_at_claim`
+    (认领那一刻的快照),不是此刻 `buyer_envs` 里那个值。
+    """
     _register(client)
     t = _claim(client)
     body = {"instance_uid": UID, "actual_total": "10.79", "payment_last4": "9021",
@@ -267,7 +286,7 @@ def test_expected_card_gate_is_off_until_the_env_has_one(client, conn, seed):
     assert client.post(f"/v1/tasks/{t['task_id']}/guard-check", json=body
                        ).json()["data"]["allow"] is True
 
-    conn.execute("UPDATE procure.buyer_envs SET expected_card_last4 = '4417'")
+    t = _claim_with_card(client, conn, "4417")
     d = client.post(f"/v1/tasks/{t['task_id']}/guard-check", json=body).json()["data"]
     assert d["allow"] is False and d["error_code"] == "PAYMENT_METHOD_UNEXPECTED"
 
@@ -327,40 +346,62 @@ def test_claim_still_works_when_the_env_has_no_expected_card(client, conn, seed)
     assert _claim(client) is not None
 
 
-def test_expected_card_changed_mid_flight_still_blocks_the_order(client, conn, seed):
-    """认领 → guard-check 之间改期望卡:这一单**必然被拦**,而且今天没人说得清为什么。
+def test_expected_card_changed_mid_flight_uses_the_snapshot_from_claim(client, conn, seed):
+    """认领 → guard-check 之间改期望卡:比的是**认领那一刻的快照**,这一单照旧放行。
 
-    CLAIM_SQL 里 env 那个 CTE 只保证一件事:daily_cap 与 expected_card_last4 是
-    **同一瞬间**从库里读到的。它管不着这条真正的窗口 —— guard-check 是另一个请求、
-    另一个事务,每次都重新查一遍 buyer_envs(server/routes/tasks.py)。
-
-    所以下面这条链今天是开着的,而且切卡上线之后代价升了一级:
+    这条窗口原先是开着的:guard-check 每次重新查一遍 `buyer_envs`,而认领与它
+    是两个请求、两个事务,中间隔着几分钟。表现是:
       认领下发 4417 → 运营在运营台上把这一格改成 9021(插件此刻正在支付选择页上
       照着 4417 点确认)→ 插件切完重读结算页得到 4417 → guard-check 上报 4417 →
       服务端重新读库拿到 9021 → PAYMENT_METHOD_UNEXPECTED。
-    净结果:一单必然被拦,而且**这个买家号在 Amazon 上的默认支付卡已经被我们
-    改成 4417 了** —— 事件流里没有任何一条说过「这次失败是因为期望卡在途中被改了」。
+    净结果是一单必然被拦,而且**这个买家号在 Amazon 上的默认支付卡已经被我们真切成
+    4417 了** —— 事件流里没有任何一条说得出这次失败的真正原因,运营会去查买家号
+    钱包里的卡,查不出任何问题。
 
-    这条断言不是在庆祝这个行为,是把它钉住:注释里不许再写「同一个 CTE 关掉了
-    这条分叉」那句假话。真要关掉它得把期望卡快照进 tasks 行(走改表流程),
-    那跨了这条线的文件边界,留给合并那一轮定夺。docs/01 §5.3 记了这一格。
+    现在认领 SQL 把那一位快照进 `tasks.expected_card_last4_at_claim`(与置 claimed
+    同一条 UPDATE),guard-check 比的就是它:**「按我们当初告诉插件的那张卡验」**。
+    改配置只影响下一次认领 —— 下面第二段钉的正是这一条,少了它,「快照」会滑成
+    「这一列从此再也不跟着配置走」。docs/01 §5.3 是文字版。
     """
     _register(client)
-    conn.execute("UPDATE procure.buyer_envs SET expected_card_last4 = '4417'")
-    t = _claim(client)
+    t = _claim_with_card(client, conn, "4417")
     assert t["guards"]["expected_card_last4"] == "4417"
 
-    # 在途改配置 —— 插件已经拿着 4417 上路了
+    # 在途改配置 —— 插件已经拿着 4417 上路了,而且多半已经在 Amazon 上切完了
     conn.execute("UPDATE procure.buyer_envs SET expected_card_last4 = '9021'")
 
-    d = client.post(f"/v1/tasks/{t['task_id']}/guard-check", json={
-        "instance_uid": UID, "actual_total": "10.79", "payment_last4": "4417",
-        "delivery_raw": "Tomorrow", "is_fba": True,
-    }).json()["data"]
-    assert d["allow"] is False and d["error_code"] == "PAYMENT_METHOD_UNEXPECTED"
-    # 而理由里说的是「配的是 9021」—— 一句对着新配置说的话,
-    # 看的人无从知道插件当时拿到的是 4417。
-    assert "9021" in d["detail"] and "4417" in d["detail"]
+    body = {"instance_uid": UID, "actual_total": "10.79", "payment_last4": "4417",
+            "delivery_raw": "Tomorrow", "is_fba": True}
+    d = client.post(f"/v1/tasks/{t['task_id']}/guard-check", json=body).json()["data"]
+    assert d["allow"] is True, d
+
+    # 而闸并没有被关掉:切成了别的卡照样拦,理由里说的是**快照**那一张。
+    d2 = client.post(f"/v1/tasks/{t['task_id']}/guard-check",
+                     json={**body, "payment_last4": "9021"}).json()["data"]
+    assert d2["allow"] is False and d2["error_code"] == "PAYMENT_METHOD_UNEXPECTED"
+    assert "4417" in d2["detail"]
+
+    # 下一次认领拿到的是**新**配置 —— 快照跟着认领走,不是跟着任务一辈子。
+    t2 = _claim_with_card(client, conn, "9021")
+    assert t2["guards"]["expected_card_last4"] == "9021"
+    row = conn.execute("SELECT expected_card_last4_at_claim FROM procure.tasks"
+                       " WHERE id = %s", (t2["task_id"],)).fetchone()
+    assert row["expected_card_last4_at_claim"] == "9021"
+
+
+def test_the_expected_card_snapshot_normalises_the_empty_string(client, conn, seed):
+    """界面上清空那一格存的是空串,而空串与 NULL 是同一件事(不校验也不切)。
+
+    两种写法都留在库里的话,读这一列的人得自己记得再 strip 一次 —— price_guard
+    那边确实记得(`(expected_card_last4 or "").strip()`),而这一列会被别处读到。
+    所以快照那一步就归一成 NULL。
+    """
+    _register(client)
+    t = _claim_with_card(client, conn, "   ")
+    assert t["guards"]["expected_card_last4"] is None
+    row = conn.execute("SELECT expected_card_last4_at_claim FROM procure.tasks"
+                       " WHERE id = %s", (t["task_id"],)).fetchone()
+    assert row["expected_card_last4_at_claim"] is None
 
 
 def test_guard_check_event_carries_the_numbers_the_guard_actually_used(client, conn, seed):
@@ -441,8 +482,8 @@ def test_split_payment_is_refused_when_the_env_checks_its_card(client, conn, see
     另一张卡也被扣了钱,而库里记的是 4417,运营看到的是一道「已核过支付卡」的绿灯。
     """
     _register(client)
-    t = _claim(client)
-    conn.execute("UPDATE procure.buyer_envs SET expected_card_last4 = '4417'")
+    # 先配期望卡再认领:guard-check 比的是认领那一刻的快照(见 _claim_with_card)。
+    t = _claim_with_card(client, conn, "4417")
     body = {"instance_uid": UID, "actual_total": "10.79", "payment_last4": "4417",
             "delivery_raw": "Tomorrow", "is_fba": True}
 
@@ -467,8 +508,8 @@ def test_gift_card_slot_does_not_count_as_a_second_card(client, conn, seed):
     一道把每一单都拦下的闸门等于没有闸门。
     """
     _register(client)
-    t = _claim(client)
-    conn.execute("UPDATE procure.buyer_envs SET expected_card_last4 = '4417'")
+    # 先配期望卡再认领:guard-check 比的是认领那一刻的快照(见 _claim_with_card)。
+    t = _claim_with_card(client, conn, "4417")
     body = {"instance_uid": UID, "actual_total": "8.79", "payment_last4": "4417",
             "gift_card": {"applied": True, "amount": "2.00"},
             "delivery_raw": "Tomorrow", "is_fba": True}

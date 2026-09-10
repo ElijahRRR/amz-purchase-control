@@ -39,7 +39,7 @@
 | `amazon_customer_id` | text | 这个买家号**应该**是哪个 Amazon 账号。插件从页面 HTML 里抠出来(`customerId:"A…"`)随心跳上报,**为空时首次上报即写入**;已经有值而插件报上来的不一样时**不覆盖**,认领时直接拒(`INSTANCE_ACCOUNT_MISMATCH`);已经有值而这台机器从没报过时同样拒(`INSTANCE_ACCOUNT_UNVERIFIED`,报上来就自动恢复)。**身份仍然是买家号环境本身**,这一列是对账 + 登错号拦截,不拿它去派单、也不拿它当主键。改它只有一条路:运营台买家号页的「以这个为准」(写 `procure.env_events`,带 operator) |
 | `status` | text | `active` / `paused` / `blocked` / `retired`（封闭集） |
 | `daily_cap` | integer | 日单量上限，`0` = 不限。数的是**我们今天拍成了多少单** —— `purchase_source='external'` 的单不算（那是上游在别处买的，没占这台机器的时间、也没过任何一道护栏），判据在 `services/task_queue.OURS_ONLY_SQL`，认领 SQL 的 `done_today` 与界面上两个「今日已拍」接的是同一条。`manual_backfill` 照旧算：那一单是插件真拍出来的，只是单号后来由人补上 |
-| `expected_card_last4` | text | **这个买家号该刷哪张卡**的后四位。留空 = 这一道不校验（与 `tasks.require_fba` 同一形态：闸门可关，但关不关是库里的数据说了算，不是代码里的默认值）。填了之后，结算页读到的卡尾号与它不符即 `PAYMENT_METHOD_UNEXPECTED`，**在下单之前拦下**。只校验、不替买家号切卡——改支付配置是人的动作，不是拍单流程的动作。**改这一列不留痕**：`task_events` 挂在 `task_id` 上，这张表套不进去，而 `buyer_envs` 眼下整张表都没有审计流（`daily_cap`、`status` 同样没有），所以「谁在什么时候关掉了这个买家号的支付校验」目前答不出来 |
+| `expected_card_last4` | text | **这个买家号该刷哪张卡**的后四位。留空 = 这一道不校验（与 `tasks.require_fba` 同一形态：闸门可关，但关不关是库里的数据说了算，不是代码里的默认值）。填了之后，结算页读到的卡尾号与它不符即 `PAYMENT_METHOD_UNEXPECTED`，**在下单之前拦下**。**先切后验，验在服务端**（所有者定稿①，2026-09-09）：填上之后插件会在下单前点开 Amazon 的支付选择页，**把这个买家号的默认支付方式真改成这一张**——所以这一格有副作用，**不是纯配置**；校验仍然只在 `services/price_guard`（插件说「我切成了」不算数，服务端拿它切完重读到的尾号自己判）。改这一格时在途的单会怎样：见下面 `tasks.expected_card_last4_at_claim` 与 `docs/01` §5.3。**改这一列不留痕**：`task_events` 挂在 `task_id` 上，这张表套不进去，而 `buyer_envs` 眼下整张表都没有审计流（`daily_cap`、`status` 同样没有），所以「谁在什么时候关掉了这个买家号的支付校验」目前答不出来 |
 | `note` | text | |
 | `created_at` / `updated_at` | timestamptz | |
 
@@ -102,6 +102,7 @@
 | `price_cap` | numeric(12,2) | **限价**。由上游 ERP 算好下发，本系统只取用不计算。护栏拿**这一单的货款**（`goods_total`）跟它比，不是拿「这张卡实际扣了多少」比。NOT NULL,所以 `purchase_source='external'` 的行落一个 `0` 进来 —— **那不是「限价 0」,是「这一单没有限价这回事」**:界面与导出对 external 一律显示「外部下单,不适用」,不许渲染成「未超」(判据只有一处:`services/task_query.over_cap` 与 `web/src/lib/utils.capVerdict`) |
 | `max_delivery_days` | smallint | 交期上限，默认 7 |
 | `require_fba` | boolean | 这一单要不要求 Amazon 自营发货，默认 `true`。**必须有这一列**：在此之前它只是 `GuardsOut` 里一个 `= True` 的默认值，路由压根没往 `price_guard.adjudicate` 传，于是「可关的闸」是个恒为真的常量——照文档去配置它的人会发现改哪儿都不生效，而界面上那道闸一直亮着 |
+| `expected_card_last4_at_claim` | text | **认领那一刻**这个买家号的 `buyer_envs.expected_card_last4`。认领 SQL（`services/task_queue.CLAIM_SQL`）在置 `claimed` 的同一条 UPDATE 里写进来，随认领下发给插件（`GuardsOut.expected_card_last4`），**而 guard-check 比的就是它**（`server/routes/tasks.guard_check` 读这一列，不再重查 `buyer_envs`）。**为什么要这一列**：认领与 guard-check 是两个请求、两个事务，中间隔着几分钟。重查库的话，这期间有人在运营台上改了那一格 → 插件切的是旧值、服务端比的是新值 → 这一单必然 `PAYMENT_METHOD_UNEXPECTED`，**而这个买家号在 Amazon 上的默认卡已经被我们真切成旧值了**，事件流里没有任何一条说得出这次失败的真正原因。比快照 = 「按我们当初告诉插件的那张卡验」，在途改配置只影响**下一次**认领。`NULL` = 认领那一刻这个买家号不校验也不切（与留空同义）。**只在认领时写**，重新认领会覆盖成新的快照 |
 | `claimed_by` | bigint FK | 在途：被哪个实例领走 |
 | `claimed_at` | timestamptz | 在途：领走时间，超时清扫依据 |
 | `amazon_order_no` | text | 回填的 Amazon 订单号 |

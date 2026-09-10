@@ -62,9 +62,11 @@ def claim(req: schemas.ClaimReq, conn=Depends(conn_ctx)) -> schemas.Envelope:
             # 从库里那一列来。此前这里不传,走的是 GuardsOut 里的 `= True` 默认值
             # —— 一道号称"可关"的闸恒为真,而插件侧 run.ts 读的就是它。
             require_fba=task["require_fba"],
-            # 认领 SQL 顺带从 buyer_envs 选出来的(services/task_queue.CLAIM_SQL)。
-            # null = 这个买家号不校验也不切,插件那一步一步都不做。
-            expected_card_last4=task["expected_card_last4"],
+            # 认领 SQL 在置 claimed 的**同一条 UPDATE** 里快照进 tasks 行的那一位
+            # (services/task_queue.CLAIM_SQL)。下发给插件的和 guard-check 比的
+            # 因此是同一个值 —— 认领之后有人改运营台那一格,不再让这一单必然被拦。
+            # null = 认领那一刻这个买家号不校验也不切,插件那一步一步都不做。
+            expected_card_last4=task["expected_card_last4_at_claim"],
         ),
         # 插件那边所有「等下去」的上界都要按它反推,别让 sweep 在插件还在等的时候
         # 把单收走(见 schemas.TaskOut.claim_timeout_min)。
@@ -113,12 +115,6 @@ def guard_check(task_id: int, req: schemas.GuardCheckReq,
     inst = require_instance(conn, req.instance_uid)
     task = require_task_owned(conn, task_id, inst)
 
-    # 这个买家号配了「该刷哪张卡」吗。留空 = 不校验(与 require_fba 同形态)。
-    env = conn.execute(
-        "SELECT expected_card_last4 FROM procure.buyer_envs WHERE id = %s",
-        (task["buyer_env_id"],),
-    ).fetchone()
-
     gift = req.gift_card
     verdict = price_guard.adjudicate(
         price_cap=task["price_cap"],
@@ -132,7 +128,13 @@ def guard_check(task_id: int, req: schemas.GuardCheckReq,
         is_fba=req.is_fba,
         gift_card_applied=bool(gift and gift.applied),
         gift_card_amount=gift.amount if gift else None,
-        expected_card_last4=env["expected_card_last4"] if env else None,
+        # **比的是认领那一刻的快照,不是此刻库里的值。** 重查 buyer_envs 的话,
+        # 认领到这里的这几分钟里有人在运营台上改了那一格,插件切的是旧值、
+        # 服务端比的是新值 —— 这一单必然 PAYMENT_METHOD_UNEXPECTED,而且这个
+        # 买家号在 Amazon 上的默认卡**已经被我们真切成旧值了**,事件流里没有
+        # 任何一条说得出真正的原因。快照 = 「按我们当初告诉插件的那张卡验」。
+        # 改配置只影响下一次认领(那一单会拿到新快照)。见 docs/01 §5.3。
+        expected_card_last4=task["expected_card_last4_at_claim"],
         payment_last4=req.payment_last4,
         payment_slots=req.payment_slots,
         line_items=[i.model_dump() for i in req.line_items],

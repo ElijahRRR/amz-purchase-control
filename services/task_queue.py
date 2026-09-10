@@ -32,18 +32,14 @@ WITH env AS (
     -- expected_card_last4 跟着一起选出来:所有者定稿「替买家号切换支付卡」之后,
     -- 插件在读完结算页、报护栏之前要按它把卡切过去,所以它得随认领一起下发。
     --
-    -- 与 daily_cap 同一个 CTE **只保证一件事**:这两位是同一瞬间从库里读到的,
-    -- 认领这一次不会读到半新半旧的一组配置。**它关不掉那条真正的窗口** ——
-    -- guard-check 是另一个请求、另一个事务,每次都重新查一遍 buyer_envs
-    -- (server/routes/tasks.py 的 guard_check),而那已经是几分钟之后的事了。
-    -- 所以「插件切的是旧值、服务端比的是新值」今天是**开着的**:认领之后
-    -- 有人在运营台上改了这一格,这一单必然被 PAYMENT_METHOD_UNEXPECTED 拦下,
-    -- 而且这一次买家号在 Amazon 上的默认支付卡已经被我们真改过了 —— 事件流里
-    -- 没有任何一条说得出「这次失败是因为期望卡在途中被改了」。
-    -- 关掉它要把期望卡快照进 tasks 行(走改表流程,guard-check 比快照而不是
-    -- 比当前库值),那跨了这条线的文件边界,留给合并那一轮定夺。
-    -- 有一条 pytest 把这条窗口钉着(test_expected_card_changed_mid_flight_...),
-    -- docs/01 §5.3 里也记了改这一格时在途的单会怎样。
+    -- **而且它在下面被快照进 tasks 行**(expected_card_last4_at_claim),
+    -- guard-check 比的是那份快照,不再重查 buyer_envs。这一步关掉的是一条真窗口:
+    -- 认领与 guard-check 是两个请求、两个事务,中间隔着几分钟。重查库的话,
+    -- 这期间有人在运营台上改了这一格 → 插件切的是旧值、服务端比的是新值 →
+    -- 这一单必然被 PAYMENT_METHOD_UNEXPECTED 拦下,**而且这个买家号在 Amazon 上的
+    -- 默认支付卡已经被我们真切成旧值了**,事件流里没有任何一条说得出真正的原因。
+    -- 比快照 = 「按我们当初告诉插件的那张卡验」,在途改配置只影响**下一次**认领。
+    -- 有 pytest 钉着(test_expected_card_changed_mid_flight_...),docs/01 §5.3 是文字版。
     SELECT daily_cap, expected_card_last4 FROM procure.buyer_envs WHERE id = %(env_id)s
 ),
 done_today AS (
@@ -76,10 +72,17 @@ UPDATE procure.tasks
    SET status = 'claimed',
        claimed_by = %(instance_id)s,
        claimed_at = now(),
+       -- 快照:与置 claimed 同一条 UPDATE,所以「领走了」和「按哪张卡验」
+       -- 之间没有任何窗口。空串归一成 NULL —— 界面上清空那一格存的是 ''、
+       -- 而语义与 NULL 完全一样,两种写法留在库里的话,读这一列的人要自己
+       -- 记得再 strip 一次(price_guard 那边确实记得,而这一列会被别处读)。
+       expected_card_last4_at_claim = NULLIF(btrim(env.expected_card_last4), ''),
        updated_at = now()
   FROM candidate, env
  WHERE procure.tasks.id = candidate.id
-RETURNING procure.tasks.*, env.expected_card_last4
+-- 快照在 procure.tasks.* 里(UPDATE 的 RETURNING 给的是**新值**),
+-- 不必也不该再从 env 里带一份出去 —— 两份同名的值只会让调用方挑错那一份。
+RETURNING procure.tasks.*
 """
 
 PRODUCTS_SQL = """
@@ -196,7 +199,7 @@ def account_blocks_claim(state: str | None) -> bool:
 
 def claim(conn, env_id: int, instance_id: int) -> dict[str, Any] | None:
     """输入:连接 + 买家环境 id + 插件实例 id → 输出:任务 dict(含 products
-    与买家号的 expected_card_last4),无可派时 None。
+    与 expected_card_last4_at_claim —— 认领这一刻的期望卡快照),无可派时 None。
 
     一条 SQL 完成「选中 + 置位」,不存在「选完还没置位」的窗口。
 

@@ -215,6 +215,10 @@ export interface InstanceRow {
   last_seen_age_seconds?: number;
   queue_depth: number;
   manual_count: number;
+  /** 此刻有几单在这个买家号上在途(`claimed`)。改期望卡那一格要它:
+   *  改这一格不会再把在途那单拦下(认领时下发的是快照),但那个买家号在
+   *  Amazon 上的默认卡此刻可能**已经被切成旧值**了 —— 库与账号在这一刻不一致。 */
+  in_flight: number;
   purchased_today: number;
   liveness: "never" | "online" | "stale" | "paused";
   /** 浏览器 profile 里那个 Amazon 账号此刻还在不在登录态。插件读导航栏判的

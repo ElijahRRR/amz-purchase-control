@@ -342,6 +342,14 @@ SELECT e.id            AS env_id,
          WHERE t.buyer_env_id = e.id AND t.status = 'ready')     AS queue_depth,
        (SELECT count(*) FROM procure.tasks t
          WHERE t.buyer_env_id = e.id AND t.status = 'manual')    AS manual_count,
+       -- 此刻有几单在途(claimed)。**给「改期望卡」那一格用的**:
+       -- 认领时下发的是那一刻的快照,所以改这一格不会再把在途那单拦下 ——
+       -- 但那个买家号在 Amazon 上的默认卡此刻**可能已经被切成旧值了**,
+       -- 库与账号在这一刻不一致。运营台那一格因此在有在途单时问一句
+       -- (web/src/pages/Instances.tsx 的 ExpectedCard),而不是 onBlur 就提交。
+       -- 见 docs/01 §5.3。
+       (SELECT count(*) FROM procure.tasks t
+         WHERE t.buyer_env_id = e.id AND t.status = 'claimed')   AS in_flight,
        -- 「今日已拍」与真正那道日限闸必须是同一个数:判据在
        -- task_queue.OURS_ONLY_SQL(外部下单不算 —— 那不是我们拍的)。
        -- 分叉一次的表现是界面上绿着的「可派」和实际派不出,daily_cap 已经栽过一次。

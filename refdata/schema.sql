@@ -123,6 +123,15 @@ CREATE TABLE IF NOT EXISTS procure.tasks (
     -- 在途
     claimed_by        bigint REFERENCES procure.plugin_instances(id),
     claimed_at        timestamptz,
+    expected_card_last4_at_claim text,
+                              -- **认领那一刻**这个买家号的 buyer_envs.expected_card_last4。
+                              -- 认领 SQL 在置 claimed 的同一条 UPDATE 里写进来,随认领下发
+                              -- 给插件,而 guard-check **比的就是它**(不再重查 buyer_envs)。
+                              -- 认领与 guard-check 是两个请求、两个事务,中间隔着几分钟:
+                              -- 重查库的话,这期间有人改了那一格 → 插件切的是旧值、服务端比的是
+                              -- 新值 → 这一单必然 PAYMENT_METHOD_UNEXPECTED,而这个买家号在
+                              -- Amazon 上的默认卡已经被我们真切成旧值了。比快照 = 「按我们当初
+                              -- 告诉插件的那张卡验」。NULL = 认领那一刻不校验也不切。
 
     -- 执行结果
     amazon_order_no   text,
@@ -168,6 +177,8 @@ ALTER TABLE procure.tasks ADD COLUMN IF NOT EXISTS gift_card_amount numeric(12,2
 ALTER TABLE procure.tasks
     ADD COLUMN IF NOT EXISTS purchase_source text NOT NULL DEFAULT 'plugin';
 ALTER TABLE procure.tasks ADD COLUMN IF NOT EXISTS goods_total numeric(12,2);
+ALTER TABLE procure.tasks
+    ADD COLUMN IF NOT EXISTS expected_card_last4_at_claim text;
 -- 认领扫描
 CREATE INDEX IF NOT EXISTS idx_tasks_ready
     ON procure.tasks (buyer_env_id, created_at) WHERE status = 'ready';
