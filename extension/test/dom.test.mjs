@@ -942,11 +942,14 @@ const PAYSELECT_URL = "https://www.amazon.com/gp/buy/payselect/handlers/display.
  *  `signOut`    途中把 URL 换成 /ap/signin —— 那就是「切到一半会话过期」的现场。
  *  `hideEntries` 把支付面板里那三个真入口一并隐掉(跑完原样放回)——
  *               第 ① 步「入口没找到」的现场。夹具是共享的,所以只隐不删。
+ *  `docDies`    20ms 之后 `doc()` 开始**抛**(结算 iframe 跨域 / 被销毁的真实形态,
+ *               见 frame 那一段)。**人没有被登出** —— urlState 照旧说得出话,
+ *               所以 guardLogin 判「还登着」、返回,随后落到 stop(...)。
  *
  *  返回 [LoginLost / 错误码 / "裸Error" / "没抛", 文案]。 */
 const cardSwitchDrill = ({ cards = [], onClickAdd = null, confirm = false,
                            startUrl = PAYSELECT_URL, afterUrl = "", signOut = false,
-                           hideEntries = false }) => `(async () => {
+                           hideEntries = false, docDies = false }) => `(async () => {
   // **这张夹具是共享的**:同一个页面跑完这一节所有断言。上一轮 append 进去的
   // 卡片和按钮不清掉的话,下一轮的「唯一命中」会被上一轮那张同尾号的卡打掉 ——
   // 断言仍然是绿的(码还是 PAYMENT_METHOD_UNEXPECTED),但停的地方悄悄换了一处,
@@ -991,8 +994,11 @@ const cardSwitchDrill = ({ cards = [], onClickAdd = null, confirm = false,
   const driver = new amzdom.AmazonDriver("https://www.amazon.com", { paymentSelect: 300 });
   // checkout 在 TS 里是私有的,这里**故意**从外面摆好(与 fillAddress 那一段
   // 同一个做法):要验的是这五步的分支,而走公开路径得先有一个真的结算 iframe。
-  driver.checkout = { el: null, doc: () => document, url: () => url,
+  let docOk = true;
+  driver.checkout = { el: null, doc: () => { if (!docOk) throw new Error("iframe 拿不到 document"); return document; },
+                      url: () => url,
                       urlState: () => ({ kind: "ok", url }), close() {} };
+  ${docDies ? `setTimeout(() => { docOk = false; }, 20);` : ""}
   ${signOut ? `setTimeout(() => { url = "https://www.amazon.com/ap/signin"; }, 20);` : ""}
 
   // 第 ① 步的现场:面板还在,里面三个真入口一个都不渲染。**只隐不删**,
@@ -1038,6 +1044,34 @@ await withFixture("checkout.html", async (run) => {
     eq(`切卡第${stage}步没被登出时照旧落 PAYMENT_METHOD_UNEXPECTED`,
        code, "PAYMENT_METHOD_UNEXPECTED");
     check(`切卡第${stage}步停在「${STOPS[stage]}」`, msg.includes(STOPS[stage]), msg);
+  }
+
+  // ── 途中结算 iframe 读不到了(**而人没有被登出**)────────────────────
+  //
+  // `doc()` 在结算 iframe 已跨域 / 已被销毁时是**抛**的。而五种停法的 detail
+  // 里全都还要再读一次 `doc()`(数一遍 radio、再读一次当前卡号、describeMiss
+  // 要一个 document)—— 抛出来的是一个**没有 ErrorCode 的裸 Error**,
+  // run.ts 只能把它兜成 PLUGIN_INTERNAL:那是**可重试**的一组,开了
+  // AMZ_AUTO_RETRY_MAX 的库会自动重拍这一单;而 PAYMENT_METHOD_UNEXPECTED
+  // 归 BUSINESS_BLOCKED,明确不该重。更要紧的是那句「切支付卡停在「xxx」」
+  // 整句消失 —— 它是运营台上唯一能把五种停法分开的东西,只剩
+  // 「插件内部异常 · iframe 拿不到 document」。
+  // 49cdda0 为「期望为空」那一档修的是同一个坑,五处 stop 当时没修。
+  for (const stage of [3, 4, 5]) {
+    const [code, msg] = await run(cardSwitchDrill({ ...STAGE[stage], docDies: true }));
+    eq(`切卡第${stage}步:途中 doc() 开始抛 → 码仍是 PAYMENT_METHOD_UNEXPECTED`,
+       code, "PAYMENT_METHOD_UNEXPECTED");
+    check(`切卡第${stage}步:doc() 抛了也说得出停在哪一步`,
+          msg.includes("切支付卡停在「"), msg);
+    check(`切卡第${stage}步:detail 里另说一句「iframe 已经读不到了」`,
+          msg.includes("已经读不到了"), msg);
+  }
+  {
+    const [code, msg] = await run(cardSwitchDrill({ hideEntries: true, docDies: true }));
+    eq("切卡第1步:途中 doc() 开始抛 → 码仍是 PAYMENT_METHOD_UNEXPECTED",
+       code, "PAYMENT_METHOD_UNEXPECTED");
+    check("切卡第1步:doc() 抛了也说得出停在「入口没找到」",
+          msg.includes("入口没找到") && msg.includes("已经读不到了"), msg);
   }
 
   // ── 第 ① 步:面板在、面板里一个渲染出来的入口都没有 ────────────────────

@@ -992,6 +992,28 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
                             `切支付卡停在「${stage}」:${detail}`);
     };
 
+    /** 拼 detail 时用的「读不到就算了」。**这一段的每一处取数都要走它。**
+     *
+     *  五种停法的 detail 里全都还要**再读一次 `doc()`**(数一遍 radio、
+     *  再读一次当前卡号、describeMiss 要一个 document),而 `doc()` 在结算 iframe
+     *  已经跨域 / 已被销毁时是**抛**的。抛出来的是一个没有 ErrorCode 的裸 Error,
+     *  run.ts 只能把它兜成 `PLUGIN_INTERNAL` —— 而那是**可重试**的一组,
+     *  开了 AMZ_AUTO_RETRY_MAX 的库会自动重拍这一单;`PAYMENT_METHOD_UNEXPECTED`
+     *  归 BUSINESS_BLOCKED,明确不该重。更要紧的是那句「切支付卡停在「xxx」」
+     *  整句消失 —— 而它是运营台上唯一能把五种停法分开的东西(docs/01 §5.3 与
+     *  driver.ts 的契约都这么写),运营台上只剩「插件内部异常 · iframe 拿不到 document」。
+     *
+     *  实测过两种现场(Playwright + payselect 夹具):一种 url() 还读得到、
+     *  `doc()` 已经抛;一种 urlState 真的 detached、兜底探测判定「还登着」——
+     *  两次都拿到裸 Error。49cdda0 为「期望为空」那一档修的是同一个坑,五处 stop 没修。 */
+    const safe = <T,>(f2: () => T, dflt: T): T => {
+      try { return f2(); } catch { return dflt; }
+    };
+    /** 帧此刻还读不读得到。读不到时 detail 里要多说一句 —— 否则「页面上真没有
+     *  这个按钮」与「页面已经读不到了」在运营台上长成同一句话。 */
+    const frameGone = () => { try { doc(); return false; } catch { return true; } };
+    const alsoGone = () => (frameGone() ? ";**而且此刻结算 iframe 已经读不到了**" : "");
+
     const now = () => readPaymentLast4(doc()) ?? null;
     const from = now();
     // 本来就是那张 —— 什么都不做。这是最常见的一条路(买家号平时就配着那张卡),
@@ -1014,7 +1036,8 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
       await this.guardLogin(f, "打开支付选择页");
       stop("入口没找到",
            `结算页当前选中的是 ${from ?? "读不出来"},要切到 ${want};` +
-           `支付面板里${describeMiss(panel(), SEL.checkout.payment.changeEntry)}`);
+           `支付面板里${safe(() => describeMiss(panel(), SEL.checkout.payment.changeEntry),
+                            "(页面已读不到,数不出来)")}` + alsoGone());
     }
     // **点之前先记一笔现场。** 下面那道「到没到选卡页」的判据要拿它做对照,
     // 理由见第 ② 步。记在 click 之前,不是之后。
@@ -1050,8 +1073,8 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
       await this.guardLogin(f, "跳到支付选择页");
       stop("选卡页没到",
            `点了更改支付方式,但既没跳到 payselect、也没**新**渲染出卡片单选钮` +
-           `(点之前页面上就有 ${radiosBefore} 个,现在有 ${radioCount()} 个);` +
-           `当前 ${describeUrl(f.urlState())}`);
+           `(点之前页面上就有 ${radiosBefore} 个,现在有 ${safe(radioCount, -1)} 个);` +
+           `当前 ${safe(() => describeUrl(f.urlState()), "URL 读不到")}` + alsoGone());
     }
 
     // ── ③ 唯一命中期望尾号的那张卡 ───────────────────────────────────
@@ -1069,11 +1092,12 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
       // 这一句要能分开三种现场:一张卡都没渲染出来(还在画/改版)、
       // 有卡但没有一张是那个尾号(钱包里没这张卡)、有两张都是那个尾号(不敢挑)。
       // 只写「没找到」的话,运营唯一能做的事是自己登录买家号去看一遍。
-      const radios = radioCount();
+      const radios = safe(radioCount, -1);
       stop("没有唯一命中的那张卡",
-           radios === 0
+           radios <= 0
              ? `支付选择页上一个渲染出来的卡片单选钮都没有:` +
-               `${describeMiss(doc(), [SEL.checkout.payselect.radio])}`
+               `${safe(() => describeMiss(doc(), [SEL.checkout.payselect.radio]),
+                       "(页面已读不到,数不出来)")}` + alsoGone()
              : `支付选择页上有 ${radios} 个卡片单选钮,但没有**恰好一个**的尾号是 ${want} ` +
                `——「一张都不是」和「有两张都是」都会走到这里,两种都不许点:` +
                `前者是这个买家号钱包里没有这张卡,后者是同尾号两张卡,挑错了就是刷了别人的账`);
@@ -1092,12 +1116,14 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
       await this.guardLogin(f, "确认支付方式");
       // 「页面上根本没有这个按钮」与「按钮在、但一直是 disabled」是两回事:
       // 前者是改版,后者是这张卡被拒了(过期、额度、地区),等多久都不会变。
-      const all = Array.from(doc().querySelectorAll(SEL.checkout.payselect.confirm));
+      const all = safe(() => Array.from(doc().querySelectorAll(SEL.checkout.payselect.confirm)),
+                       [] as Element[]);
       const rendered = all.filter((el) => isRendered(el));
       stop("确认按钮不可用",
            all.length === 0
              ? `勾中了尾号 ${want},但页面上找不到确认按钮:` +
-               `${describeMiss(doc(), [SEL.checkout.payselect.confirm])}`
+               `${safe(() => describeMiss(doc(), [SEL.checkout.payselect.confirm]),
+                       "(页面已读不到,数不出来)")}` + alsoGone()
              : `勾中了尾号 ${want},确认按钮有 ${all.length} 个(渲染出来的 ${rendered.length} 个),` +
                `但在 ${T.paymentSelect}ms 内没有一个是可点的 —— ` +
                `按钮一直 disabled 多半是这张卡被 Amazon 拒了(过期/额度/地区),等下去也不会变`);
@@ -1121,8 +1147,8 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
       await this.guardLogin(f, "切卡后回结算页");
       stop("切完读到的仍不是期望",
            `点完确认等了 ${T.paymentSelect}ms,结算页读到的仍是 ` +
-           `${now() ?? "读不出来"},不是 ${want}(切之前是 ${from ?? "读不出来"});` +
-           `当前 ${describeUrl(f.urlState())}`);
+           `${safe(now, null) ?? "读不出来"},不是 ${want}(切之前是 ${from ?? "读不出来"});` +
+           `当前 ${safe(() => describeUrl(f.urlState()), "URL 读不到")}` + alsoGone());
     }
 
     await hooks.onSwitched?.({ from, to: want, matched: hit.matchedText });
