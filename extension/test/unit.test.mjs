@@ -1075,7 +1075,10 @@ const statesOf = (c) => c.events2.map((e) => e.payload?.state).filter(Boolean);
     client, driver: confirmDriver({ placeOrder: async () => { throw new Error("不该点"); } }),
     log: silentLog, confirmBeforeOrder: true,
     confirmWaitMs: 10 * 60_000,
-    orderServerMarginMs: 60_000 - 400,        // 认领窗口 1 分钟 → 只剩 ~400ms
+    orderServerMarginMs: 60_000 - 600,        // 认领窗口 1 分钟 → 只剩 ~600ms
+    // 下单那块地板在这一格要给小的:给默认的 1 分钟的话,余地扣完就是 0,
+    // 走的会是下面那条「窗口根本开不了」,而这一格要验的是**钳过之后照样开**。
+    minOrderRoomMs: 100,
     askConfirm: () => new Promise(() => {}),
   }), "runTask(上界钳进认领窗口)");
   const took = Date.now() - t0;
@@ -1218,6 +1221,113 @@ const statesOf = (c) => c.events2.map((e) => e.payload?.state).filter(Boolean);
         JSON.stringify(errs));
 }
 
+{
+  // 10. **等人这一格不许把认领窗口吃光。** 扣掉「下单那一步至少要留」的地板之后
+  //     一点余地都不剩时,窗口**根本不开**:一个人都不问,清车退回队列。
+  //
+  //     硬着头皮开窗口的后果是实打实的:placeOrder 先点按钮、再算硬顶,
+  //     人在窗口末尾按下的那一下会拿到一个 ~0 的硬顶 → 第一轮轮询就到期 →
+  //     ORDER_CONFIRM_TIMEOUT → 置位 may_have_ordered → 待人工「可能已下单」。
+  //     一张原本还能安全退回队列的单,就这么换成了一张可能真花了钱的单。
+  //
+  //     **不写 awaiting_confirm**:窗口没开过,没有任何人被问过 ——
+  //     写了的话事件流里会出现一个没人见过的确认屏。
+  const client = confirmClient();
+  let asked = 0;
+  const phases = [];
+  const windows = [];
+  const out = await within(5_000, runTask({ ...fakeTask(1), claim_timeout_min: 1 }, {
+    client, driver: confirmDriver({ placeOrder: async () => { throw new Error("不该点"); } }),
+    log: silentLog, confirmBeforeOrder: true, confirmWaitMs: 5_000,
+    orderServerMarginMs: 60_000 - 500,        // 认领窗口里只剩 ~500ms
+    minOrderRoomMs: 2_000,                    // 而下单那一步至少要留 2 秒
+    askConfirm: async () => { asked += 1; return true; },
+    onPhase: (p) => phases.push(p),
+    onConfirmWindow: (ms) => windows.push(ms),
+  }), "runTask(认领窗口不够停下来等人)");
+  eq("余地不够 → 退回队列(一分钱没花,单子还在)", out.kind, "released");
+  eq("而且真的调了 /release", client.releases, 1);
+  eq("一个人都没被问过", asked, 0);
+  eq("窗口没开过,所以不写 awaiting_confirm", statesOf(client), ["confirm_no_room"]);
+  check("相位没进过 confirm", !phases.includes("confirm"), JSON.stringify(phases));
+  eq("面板上一条倒计时都不该出现", windows, []);
+  eq("一条 /fail 都不该有(这一刻还没花钱)", client.fails.length, 0);
+  check("下单按钮一次都没点",
+        !stepsOf(client).includes("点击下单按钮"), JSON.stringify(stepsOf(client)));
+  const noRoom = client.events2.find((e) => e.payload?.state === "confirm_no_room");
+  check("事件流里说得出差多少(只剩多少 / 至少要留多少)",
+        typeof noRoom?.payload?.order_room_ms === "number" &&
+        noRoom.payload.min_order_room_ms === 2_000, JSON.stringify(noRoom?.payload));
+  check("这一条不带 waited_ms —— 没有人等过", noRoom?.payload?.waited_ms === undefined);
+}
+
+{
+  // 11. **人按下之后再看一眼表。** 地板保证的是「窗口到点那一刻还剩 minOrderRoom」,
+  //     不是「人按下那一刻一定还剩」:上面那条 /events 的来回走在窗口里面。
+  //     这里把那条来回做慢(3 秒,窗口只有 2 秒),人按下时余地已经掉到地板以下 ——
+  //     那一下**批准了也不能点**:点下去是一张 may_have_ordered=true 的待人工单,
+  //     而现在退回队列一分钱没花。那个人没白按:waited_ms 与那句 step 留着。
+  const client = confirmClient();
+  const inner = client.events;
+  client.events = async (id, evs) => {
+    if (evs.some((e) => e.payload?.state === "awaiting_confirm")) {
+      await new Promise((r) => setTimeout(r, 3_000));
+    }
+    return inner(id, evs);
+  };
+  const out = await within(9_000, runTask({ ...fakeTask(1), claim_timeout_min: 1 }, {
+    client, driver: confirmDriver({ placeOrder: async () => { throw new Error("不该点"); } }),
+    log: silentLog, confirmBeforeOrder: true, confirmWaitMs: 5_000,
+    orderServerMarginMs: 60_000 - 4_000,      // 认领窗口里还剩 ~4 秒
+    minOrderRoomMs: 2_000,                    // 地板 2 秒 → 窗口 ~2 秒
+    askConfirm: async () => true,             // 人立刻按了「下单」
+  }), "runTask(按下时余地已经不够了)");
+  eq("余地不够 → 退回队列,不是硬着头皮下单", out.kind, "released");
+  eq("而且真的调了 /release", client.releases, 1);
+  eq("窗口开过、人也被问过,但结局是余地不够",
+     statesOf(client), ["awaiting_confirm", "confirm_no_room"]);
+  check("不许写「人按了下单,继续」—— 那一下没能变成一次下单",
+        !statesOf(client).includes("confirm_approved"), JSON.stringify(statesOf(client)));
+  check("**下单按钮一次都没点**(点了就是一张「可能已下单」的待人工单)",
+        !stepsOf(client).includes("点击下单按钮"), JSON.stringify(stepsOf(client)));
+  eq("一条 /fail 都不该有", client.fails.length, 0);
+  const noRoom = client.events2.find((e) => e.payload?.state === "confirm_no_room");
+  check("这一条带 waited_ms —— 那个人确实等过、也确实按了",
+        typeof noRoom?.payload?.waited_ms === "number", JSON.stringify(noRoom?.payload));
+}
+
+{
+  // 12. **面板那条倒计时归零的那一刻,就是真正到期的那一刻。**
+  //     deadlineMs 若在 awaiting_confirm 那条 /events **之前**算、而定时器在
+  //     它之后才起跑,两把钟就差一整个 HTTP 来回(最坏 requestTimeoutMs):
+  //     面板归零之后按钮还能按、按了照样下单,而屏幕上写着「到点退回队列」——
+  //     「已经过期」和「还来得及」渲染成同一屏。
+  //     这里把那条来回做慢 1 秒,量面板拿到的到期时刻与真正到期那一刻差多少。
+  const client = confirmClient();
+  const inner = client.events;
+  client.events = async (id, evs) => {
+    if (evs.some((e) => e.payload?.state === "awaiting_confirm")) {
+      await new Promise((r) => setTimeout(r, 1_000));
+    }
+    return inner(id, evs);
+  };
+  let panelDeadline = null;
+  let closedAt = null;
+  const out = await within(9_000, runTask(fakeTask(1), {
+    client, driver: confirmDriver({ placeOrder: async () => { throw new Error("不该点"); } }),
+    log: silentLog, confirmBeforeOrder: true, confirmWaitMs: 1_500,
+    askConfirm: () => new Promise(() => {}),   // 界面永不应答
+    // 收窗口那一下就在 race 落地的 finally 里,紧挨着真正到期那一刻。
+    onConfirmWindow: (ms) => { if (ms === null) closedAt ??= Date.now(); else panelDeadline = ms; },
+  }), "runTask(面板的钟与真正到期是同一把)");
+  eq("没人按 → 到点退回队列", out.kind, "released");
+  const skew = closedAt - panelDeadline;
+  check("面板归零那一刻就是真正到期那一刻(偏差不该是一整个 /events 来回)",
+        skew < 400,
+        `面板到期 ${panelDeadline},真正到期 ${closedAt},差 ${skew}ms —— ` +
+        `差出一个来回的话,归零之后那几秒里按钮还能按、按了照样下单`);
+}
+
 // ── 接线本身(只验得到源码这一层,说清楚) ──────────────────────────────
 //
 // content/runner.ts 与 background/service-worker.ts 里全是 chrome API,
@@ -1250,12 +1360,23 @@ const statesOf = (c) => c.events2.map((e) => e.payload?.state).filter(Boolean);
         /answerConfirm\(go: boolean\): void/.test(runnerSrc) &&
         !/setTimeout/.test(runnerSrc));
 
+  const runSrc = readFileSync(join(here, "..", "src", "flow", "run.ts"), "utf8");
+  // 行为那一格(12)量的是偏差;这一条钉的是**写法**:上界从 deadlineMs 倒推,
+  // 不是再数一遍 waitMs。再数一遍的话,那条 /events 的来回会整个落在窗口外面。
+  check("等人那道 race 的上界从 deadlineMs 倒推(与面板同一把钟)",
+        /boundedWait\(deps\.askConfirm\(task, preview\),\s*\n?\s*Math\.max\(0, deadlineMs - Date\.now\(\)\)\)/
+          .test(runSrc));
+
   const loopSrc = readFileSync(join(here, "..", "src", "background", "loop.ts"), "utf8");
   // 开关长在「构造 Loop 时传没传 askConfirm」上的话,面板改开关不重建 Loop,
   // 关掉之后机器照旧每一单都停下来等,而开关看起来已经关了。
   check("「下单前确认」这个开关从每一轮的配置读,不是构造时捕获的那一位",
         /confirmBeforeOrder: cfg\.confirmBeforeOrder === true/.test(loopSrc) &&
         !/confirmBeforeOrder: !!this\.deps\.askConfirm/.test(loopSrc));
+  // 地板不接上去的话,run.ts 那边永远只看得到默认值 —— 现场把它调大调小都不生效,
+  // 而它在同一张超时表里,长得跟别的可调项一模一样。
+  check("下单那块地板也从同一张超时表接过去",
+        /minOrderRoomMs: cfg\.timeouts\?\.minOrderRoom/.test(loopSrc));
 
   const panelSrc = readFileSync(join(here, "..", "src", "content", "panel.ts"), "utf8");
   // 面板上那个开关要与三档模式同一套存取方式:改配置 → SW 存 chrome.storage →

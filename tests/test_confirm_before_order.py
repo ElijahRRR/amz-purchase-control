@@ -7,7 +7,7 @@
   1. 认领响应里要有 `upstream_order_no` —— 确认屏上那个**给人看的号**。
      没有它,操作员在屏幕上看到的只有 task_id(我们库里的自增数),
      去上游系统里搜不到,这一屏就退化成一个写着「确定?」的按钮。
-  2. 三种结局写的那几个 `payload.state`,运营台要认得出来并且**渲染成三句
+  2. 四种结局写的那几个 `payload.state`,运营台要认得出来并且**渲染成四句
      不同的中文**。认不出来的键会原样铺开成 `state=confirm_timeout` ——
      一个英文枚举出现在一套只出中文的界面上;而取消与超时渲染成同一句话的话,
      一台没人守的机器会看起来像「一直有人在按取消」。
@@ -91,7 +91,7 @@ def test_the_upstream_order_no_exists_in_both_halves_of_the_contract():
 
 # ── 2. 三种结局在运营台上是三句不同的中文 ──────────────────────────────
 
-#: 「下单前确认」那一格的四个 `payload.state`。**这里只列状态名,不抄一份中文**
+#: 「下单前确认」那一格的五个 `payload.state`。**这里只列状态名,不抄一份中文**
 #: —— 抄一份的话,运营台上那几句话改了而这里没改,这个列表就是一份写下来就
 #: 不成立的注释(项目把这类注释列为「比不写更危险」)。中文长什么样由下面
 #: 那两条断言按规则判,不按字面量对。
@@ -100,6 +100,10 @@ CONFIRM_STATES = (
     "confirm_approved",
     "confirm_cancelled",
     "confirm_timeout",
+    # 第五个:认领窗口里剩下的余地已经不够走完「点下单 → 等确认页」那一段。
+    # 它与 confirm_timeout 是两件事 —— 一个是「没人来按」,一个是
+    # 「系统来不及了」,后者可能有人正坐在屏幕前而且真的按了。
+    "confirm_no_room",
 )
 
 
@@ -192,7 +196,7 @@ def test_every_machine_value_the_plugin_writes_gets_translated():
 # ── 3. 先写事件流,再 /release ─────────────────────────────────────────
 
 def test_the_confirm_steps_go_through_and_release_puts_it_back(client, seed):
-    """三条确认相关的 step 走得通 /events,release 之后这一单回到 ready。
+    """确认相关的 step 走得通 /events,release 之后这一单回到 ready。
 
     落到库里的顺序就是插件里写的那个顺序:先写留痕,再退回队列。
     """
@@ -214,6 +218,30 @@ def test_the_confirm_steps_go_through_and_release_puts_it_back(client, seed):
     assert "confirm_timeout" in states
     # 这一单**没有**越过下单点:那道闸不该被这条路点亮。
     assert detail["may_have_ordered"] is False
+
+
+def test_the_no_room_step_goes_through_and_does_not_arm_the_order_point(client, seed):
+    """「认领窗口不够下单了」那条 step 也走得通 /events,而且**不置位 may_have_ordered**。
+
+    这条路上人可能真的按过「下单」——但按钮一次都没点下去,所以它与
+    `confirm_timeout` 一样是「一分钱没花」的那一边:退回队列,不是转待人工。
+    置位了的话,四道「回队列之前先看一眼」的闸会把这一单挡在队列外面,
+    而它其实还能安全地再跑一次。
+    """
+    _register(client)
+    task = _claim(client)
+    tid = task["task_id"]
+    assert _step(client, tid, {"step": "人按了下单,但认领窗口只剩 41 秒,不够下单了,退回队列",
+                               "state": "confirm_no_room", "order_room_ms": 41_000,
+                               "min_order_room_ms": 60_000,
+                               "waited_ms": 12_000}).status_code == 200
+    r = client.post(f"/v1/tasks/{tid}/release", json={"instance_uid": UID})
+    assert r.status_code == 200, r.text
+
+    detail = client.get(f"/v1/admin/tasks/{tid}").json()["data"]
+    assert detail["status"] == "ready", "按钮一次都没点,这一单该回到队列里"
+    assert detail["may_have_ordered"] is False, (
+        "这条路上下单按钮一次都没点下去,置位了的话这一单会被四道闸挡在队列外面")
 
 
 def test_writing_the_step_after_release_is_too_late(client, seed):
