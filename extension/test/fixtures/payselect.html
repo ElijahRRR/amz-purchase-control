@@ -15,7 +15,7 @@
   `checkout.payselect` 那一节。核之前，这一段的每一次失败都应当先怀疑选择器。
 
   夹具存在的意义因此不是「验证判据对不对」，而是**验证 fail-closed 兜不兜得住**：
-  下面五个干扰项，每一个都对应一种「按厂商的写法会选错卡」的现场，
+  下面六个干扰项，每一个都对应一种「按厂商的写法会选错卡 / 点错地方」的现场，
   而选错卡的后果不是这一单失败，是**拿别人的卡付了钱**。
 ================================================================================
   页面        ：Select a payment method
@@ -61,6 +61,16 @@
       而真身 `#ppw-confirm` 一开始是 disabled：click() 打在 disabled 按钮上
       返回 true，浏览器却不派发事件，于是「点过了」和「没点动」长成同一个结果。
       → 断言「确认按钮先 disabled（null）后可用」
+
+   F. **页脚的「管理支付方式」**：`#footer-pay-entry`，href 与结算页里那个真入口
+      **完全同形**（`toPage=payselect`），而且这一页**没有** `payment.panel`。
+      它是给 `findPaymentChangeEntry`「拿不到支付面板就返回 null」那一句当判据的：
+      没有它，那条断言只证明「这一页上没有能命中三条判据的元素」——
+      把实现改成退回文档级（`visible(...) ?? doc`）照样全绿。
+      而退到文档级的后果不是少切一次卡：点中页脚那个链接会把结算 iframe
+      导去钱包页，从那里再也回不到结算页，而报出来的原因是
+      「切完读到的仍不是期望」—— 排查方向整个错了。
+      → 断言「这一页 findPaymentChangeEntry 是 null，而文档级 pickFirstRendered 命中得了它」
 ================================================================================
 -->
 <!doctype html>
@@ -155,6 +165,13 @@
 <div class="ppw-continue-block">
   <input type="submit" id="ppw-confirm" disabled
          name="ppw-widgetEvent:SetPaymentPlanSelectContinueEvent" value="Use this payment method">
+</div>
+
+<!-- 干扰项 F：页脚的「管理支付方式」。同 href、文档级命中得了、不在任何面板里。
+     真实 Amazon 的页脚与账户浮层里都有这么一份 —— 报告未记载，按站点常态摆的。 -->
+<div id="page-footer" class="a-section">
+  <a id="footer-pay-entry"
+     href="/gp/buy/payselect/handlers/display.html?toPage=payselect">Manage payment methods</a>
 </div>
 
 </body>
