@@ -197,6 +197,56 @@ def test_a_task_the_plugin_is_buying_right_now_is_left_alone(conn, seed):
     assert "purchased" not in _kinds(conn, task_id)
 
 
+def test_a_claim_landing_between_the_read_and_the_write_does_not_get_overwritten(
+        conn, seed):
+    """**读状态 → 改状态之间被认领走的单,不许照改不误。**
+
+    `_mark_external` 先 SELECT(不加锁)再 UPDATE。UPDATE 的 WHERE 原先只有 `id`,
+    于是认领恰好落在这两步之间的单会被从 `claimed` 改成「已拍单 · 外部下单」
+    并清掉 `claimed_by` —— 而插件此刻正拿着它在亚马逊上下单:它的 guard-check /
+    complete 会拿 409 `TASK_NOT_HELD`,**钱花了、货发了,而库里记的是上游那个号**
+    (§10.2 逐字描述的那个后果)。更糟的是摘要报的是 `migrated`(一次成功的同步),
+    没有任何人被告知去买家号订单页看一眼。
+
+    实测过的形态是两条连接交错(同步那条读完、插件那条提交认领、同步那条再写)。
+    这里在**同一条连接**上复刻同一个时序 —— 判据是同一个:UPDATE 的 WHERE 里
+    有没有那几条状态条件。没有的话这条断言当场变红。
+    """
+    task_id = _land(conn, "ready")
+    env_id, inst_id, _ = seed
+    # seed 那三张 ready 排在前面(认领按 created_at),先挪开 —— 不然认领领走的
+    # 是别人,这条测试会安静地什么也没验到(上面那句 `assert fired` 拦不住这种)。
+    conn.execute("UPDATE procure.tasks SET status='pending' WHERE id <> %s", (task_id,))
+
+    orig = conn.execute
+    fired = []
+
+    def hooked(sql, params=None, *a, **kw):
+        cur = orig(sql, params, *a, **kw) if params is not None else orig(sql, *a, **kw)
+        # 那条不加锁的 SELECT 刚回来 —— 就在这一瞬把它认领走。
+        if not fired and "FROM procure.tasks WHERE line_key" in str(sql):
+            fired.append(True)
+            task_queue.claim(conn, env_id, inst_id)
+        return cur
+
+    conn.execute = hooked
+    try:
+        got = task_intake.ingest(conn, [_row(amazon_order_no="111-2223334-5556667",
+                                             price_cap=None)])
+    finally:
+        conn.execute = orig
+
+    assert fired, "钩子没打中那条 SELECT —— 这条测试什么也没验到"
+    assert got["migrated"] == 0 and got["conflicted"] == 1
+    assert "插件正在拍这单" in got["details"][0]["reason"]
+    t = _task(conn)
+    assert t["status"] == "claimed"
+    assert t["claimed_by"] == inst_id          # 认领那一位不许被清掉
+    assert t["amazon_order_no"] is None
+    assert t["purchase_source"] == "plugin"
+    assert "purchased" not in _kinds(conn, task_id)
+
+
 def test_a_different_order_no_on_an_already_purchased_task_is_reported_not_applied(
         conn, seed):
     """已拍单、而上游填的是另一个号 → 一动不动并报出来。

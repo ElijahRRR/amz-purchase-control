@@ -277,7 +277,22 @@ def _mark_external(conn, *, line_key: str, amazon_order_no: str,
     if not _can_migrate(t):
         return "conflicted", _why_not_migrated(t, amazon_order_no)
 
-    conn.execute(
+    # **判据搬进 WHERE,而不是只在上面那个 if 里判过一次。**
+    #
+    # 上面那条 SELECT 不加锁,而 WHERE 原先只有 id:读到状态与真正改掉它之间
+    # 是一个敞开的窗口,认领恰好落在这两步之间的单会被从 claimed 改成
+    # 「已拍单 · 外部下单」并清掉 claimed_by —— 正是 §10.2 说 claimed 那一格
+    # 存在的全部理由。实测过(两条连接交错):唯一那张 ready 任务被 claim() 领走,
+    # 随后 _mark_external 照旧返回 migrated,库里 status=purchased、claimed_by=NULL,
+    # 而插件此刻正在亚马逊上跑这一单 —— 它的 guard-check / complete 会拿 409
+    # TASK_NOT_HELD,**钱花了、货发了,而库里记的是上游那个号**。
+    # 更糟的是摘要报的是一次成功的同步,没有任何人被告知去订单页看一眼。
+    #
+    # 把三条判据原样写进 WHERE:READ COMMITTED 下 UPDATE 拿到行锁之后会**重新**
+    # 用最新已提交的那一版求值这个 WHERE,所以认领先落地时这条 UPDATE 影响 0 行。
+    # (认领那条 SQL 用的是 FOR UPDATE ... SKIP LOCKED:我们先锁住时它跳过这一行,
+    #  也不会两边同时改。)
+    hit = conn.execute(
         """UPDATE procure.tasks
               SET status = 'purchased', purchase_source = 'external',
                   amazon_order_no = %(no)s,
@@ -286,9 +301,25 @@ def _mark_external(conn, *, line_key: str, amazon_order_no: str,
                   -- 留着的话运营台会一边写「已拍单」一边挂着一个红色错误码。
                   error_code = NULL, error_detail = NULL,
                   claimed_by = NULL, claimed_at = NULL, updated_at = now()
-            WHERE id = %(id)s""",
-        {"no": amazon_order_no, "at": purchased_at, "id": t["id"]},
-    )
+            WHERE id = %(id)s
+              AND status = %(seen_status)s
+              AND NOT may_have_ordered
+              AND (error_code IS NULL OR NOT (error_code = ANY(%(risky)s)))
+        RETURNING id""",
+        {"no": amazon_order_no, "at": purchased_at, "id": t["id"],
+         "seen_status": t["status"], "risky": sorted(error_codes.POSSIBLY_ORDERED)},
+    ).fetchone()
+    if hit is None:
+        # 这几微秒里有人动了它(认领是唯一现实的那一个)。**报 conflicted,
+        # 不报 migrated** —— 报成一次成功的同步的话,没有任何人被告知去看一眼。
+        # 重读一次再让 _why_not_migrated 措辞,人拿到的才是**此刻**的真相。
+        now_row = conn.execute(
+            "SELECT id, status, amazon_order_no, may_have_ordered, error_code"
+            "  FROM procure.tasks WHERE id = %s", (t["id"],),
+        ).fetchone()
+        if now_row is None:
+            return "duplicated", None          # 刚被删了,当作没这回事
+        return "conflicted", _why_not_migrated(now_row, amazon_order_no)
     # 事件流里必须留一条:这一单的状态是被**上游那张表**改掉的,不是插件拍成的。
     # 混成一条普通的「下单成功」的话,事后没人答得上「这单我们到底拍没拍过」。
     task_event.record(conn, t["id"], "purchased",
