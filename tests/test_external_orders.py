@@ -10,6 +10,7 @@
 所以「不适用」必须是单独一档,与「未核」也要分开(后者是「本该核、这次没核成」)。
 """
 
+import json
 from datetime import datetime, timezone
 from decimal import Decimal
 
@@ -388,6 +389,56 @@ def test_dry_run_writes_nothing(conn, seed):
     task_intake.dry_run(conn, [_row(amazon_order_no="111-2223334-5556667",
                                     price_cap=None)])
     assert _task(conn)["status"] == "ready"
+
+
+# ── 摘要:人看到的那一份必须与 details 说同一件事 ────────────────────────
+
+def test_the_file_entry_summary_says_what_actually_happened(conn, seed, tmp_path):
+    """`cli.py task_intake` 那条入口的摘要必须报出「转外部下单」与「没动」。
+
+    原先它只报新增/重复/拒收三个数、只逐条说 rejected:一轮把一张待拍单转成了
+    已拍单、又撞上一条插件正在拍的单,终端上打出来的是三个 0 和一片空白,
+    而其中那条要人立刻去买家号订单页看一眼的 conflicted 被过滤掉了。
+    ingest 承诺「每一行的去向都会出现在 details 里」—— details 里确实有,
+    人看的那份摘要里没有,那句承诺就只兑现了一半。
+    """
+    from workflows import task_intake as wf
+
+    _land(conn, "ready")                                   # 这张会被转成外部下单
+    task_intake.ingest(conn, [_row(upstream_order_no="UP-BUSY",
+                                   products=[{"asin": "B0FB3VS68K", "quantity": 1}])])
+    conn.execute("UPDATE procure.tasks SET status='claimed'"
+                 " WHERE upstream_order_no='UP-BUSY'")
+    conn.commit()
+
+    rows = [_row(amazon_order_no="111-2223334-5556667", price_cap=None),
+            _row(upstream_order_no="UP-BUSY", amazon_order_no="111-9998887-7776665",
+                 price_cap=None, products=[{"asin": "B0FB3VS68K", "quantity": 1}])]
+    f = tmp_path / "rows.json"
+    f.write_text(json.dumps(rows), encoding="utf-8")
+
+    preview = wf.run({"file": str(f), "dry_run": True})
+    assert "转外部下单 1" in preview and "外部单号对不上 1" in preview
+    # 「什么都不会变」和「会被改成已拍单」不许渲染成同一句话。
+    assert "将转成外部下单" in preview and "已在库中" not in preview
+
+    out = wf.run({"file": str(f)})
+    assert "转外部下单 1" in out and "外部单号对不上 1" in out
+    assert "插件正在拍这单" in out, "要人立刻去看的那一条必须出现在摘要里"
+
+
+def test_both_entries_share_one_summary(conn, seed):
+    """两条工作流的摘要拼装是**同一份**(services/task_intake.summarize)。
+
+    副本的下场刚发生过:加了两个计数之后只改了飞书那一边。这条断言盯的是
+    「同一批结果、两条入口报同样的数」,措辞里的量词不同不算分叉。
+    """
+    got = {"inserted": 1, "duplicated": 2, "rejected": 3, "migrated": 4,
+           "conflicted": 5, "details": []}
+    a = task_intake.summarize(got, total=15, unit="行", verb="落库完成")
+    b = task_intake.summarize(got, total=15, unit="张订单", verb="同步完成")
+    for n in ("新增 1", "重复 2", "拒收 3", "转外部下单 4", "外部单号对不上 5"):
+        assert n in a and n in b, n
 
 
 # ── 回写:外部单只写物流三列 ────────────────────────────────────────────

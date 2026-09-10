@@ -504,6 +504,71 @@ def _why_not_migrated(t: dict[str, Any], amazon_order_no: str) -> str:
     return f"{t['status']} 的单不接外部单号({amazon_order_no})—— 没动"
 
 
+# ── 给人看的那份摘要(两条工作流共用)────────────────────────────────────
+#
+# 原先是两份副本,于是加了 migrated/conflicted 两个计数之后只改了飞书那一边:
+# `cli.py task_intake` 那条文件入口的摘要三个数全是 0、一句话都没有,而其中
+# 那条要人立刻去看的 conflicted 被「只挑 rejected」的过滤悄悄滤掉了。
+# ingest 的 docstring 承诺「每一行的去向都会出现在 details 里」——
+# details 里确实有,而人看的那份摘要里没有,那句承诺就只兑现了一半。
+
+#: 空跑那份预览里,一行「会发生什么」的说法。**按 result 分别给话**:
+#: migrated 没有 reason,原先与 duplicated 共用 `d.get("reason") or "已在库中"`,
+#: 于是 30 条即将被改成「已拍单」的行印的是「已在库中」——
+#: 「什么都不会变」和「会被改成已拍单」渲染成同一句话。
+_PREVIEW_NOTE = {
+    "duplicated": "已在库中",
+    "migrated": "将转成外部下单(上游给了 AMZ 单号,不再由我们拍)",
+}
+
+
+def preview_note(d: dict[str, Any]) -> str:
+    """输入:details 里的一条 → 输出:空跑清单上那一行的说明。"""
+    return d.get("reason") or _PREVIEW_NOTE.get(d["result"], d["result"])
+
+
+def summarize(got: dict[str, Any], *, total: int, unit: str = "行",
+              verb: str = "落库完成", dry_run: bool = False, tail: str = "") -> str:
+    """输入:ingest/dry_run 的结果 + 这一批有多少行 → 输出:那份计数摘要。
+
+    **五个计数一个都不许少。** 少一个的表现不是「少一行字」:一轮把 30 张待拍单
+    转成了已拍单、还撞上一条插件正在拍的单,而终端上打出来的是「新增 0,重复 0,
+    拒收 0」——三个 0,没有任何东西告诉人刚才库里动了 31 行。
+    """
+    if dry_run:
+        return (f"dry-run:{total} {unit} → 将新增 {got['inserted']},"
+                f"重复 {got['duplicated']},拒收 {got['rejected']}"
+                f",转外部下单 {got['migrated']},外部单号对不上 {got['conflicted']}"
+                + tail)
+    out = (f"{verb}:新增 {got['inserted']},重复 {got['duplicated']},"
+           f"拒收 {got['rejected']}(共 {total} {unit})")
+    # 外部下单那两个数**单独说**,不并进「新增/重复」:
+    # 「上游后来给了单号,我们把已有的单转成了外部下单」和「新落了一张单」是两件事,
+    # 合在一起的话,一轮把 30 张待拍单全部转成已拍单会显示成「重复 30」——
+    # 一个每天都出现、谁也不会多看一眼的数字。
+    if got.get("migrated"):
+        out += f"\n  转外部下单 {got['migrated']} 条(上游给了 AMZ 单号,不再由我们拍)"
+    if got.get("conflicted"):
+        out += f"\n  ⚠ 外部单号对不上 {got['conflicted']} 条(都没动,逐条见下)"
+    return out + tail
+
+
+def explain_rows(got: dict[str, Any]) -> str:
+    """输入:ingest 的结果 → 输出:「拒收/未动明细」那一段(没有就空串)。
+
+    拒收的必须逐条说出来 —— 厂商那套导入回一句「导入成功」就完了,少了几行没人知道。
+    **conflicted 也在这一段里**:那几条同样是没落库的事实,而且其中两种
+    (插件正在拍这单、这一单越过过下单点)是要人立刻放下手里的事去看的。
+    """
+    bad = [d for d in got["details"] if d["result"] in ("rejected", "conflicted")]
+    if not bad:
+        return ""
+    out = "\n  拒收/未动明细:"
+    for d in bad:
+        out += f"\n    #{d['index']} {d['upstream_order_no']}: {d['reason']}"
+    return out
+
+
 def load_rows(path) -> list[dict[str, Any]]:
     """输入:JSON 文件路径 → 输出:采购行列表。
 
