@@ -221,11 +221,11 @@ def test_admin_instances_agrees_with_the_real_claim_gate(client, conn, seed):
                        json={"instance_uid": "inst-A"}).status_code == 409
 
 
-def test_never_reported_is_unknown_and_does_not_block(client, conn, seed):
-    """老插件从不报这一位,买家号那一列也可能一直是空的。
+def test_an_env_we_have_never_identified_does_not_block(client, conn, seed):
+    """**买家号那一列也还是空的** —— 没有任何东西可比,不拦。
 
-    拦住 `unknown` 的话,每一台还没报过账号的机器都领不到第一单 ——
-    与 login_state 的 unknown 是同一个道理。但界面上它必须与 ok 分得开。
+    拦住它的话,一个全新的买家号永远派不出第一单,而第一次心跳就会把这一列
+    写上。这是这道闸剩下的唯一一个窗口,写在 docs/01 §11.2 与 README 那张表里。
     """
     _beat(client)
     row = client.get("/v1/admin/instances").json()["data"]["items"][0]
@@ -234,6 +234,84 @@ def test_never_reported_is_unknown_and_does_not_block(client, conn, seed):
     assert row["dispatchable"] is True
     assert client.post("/v1/tasks/claim",
                        json={"instance_uid": "inst-A"}).status_code == 200
+
+
+def test_a_machine_that_has_not_said_who_it_is_yet_is_held(client, conn, seed):
+    """**买家号那一列已经有值、这台机器从没报过** → 拦,而且说得出名字。
+
+    这一格原先并进 unknown 一起放行,于是那道闸在最容易登错号的那一刻恰好是开的:
+    防关联机器重装 / 清了扩展存储 / 复制了一份 profile,插件生成新的 instance_uid
+    并注册,而这个浏览器里登的是隔壁那个号 —— 插件要等心跳回执说该探测、再读页面、
+    再等下一次心跳才把 customerId 送上来,这几十秒里它能真的领到并买下单子。
+    与 login_state 的 unknown 刻意不同:那种机器跑到 /ap/signin 会超时、退回队列、
+    **没花钱**;这种机器会花钱。
+    """
+    _beat(client, ID_A)                      # 先让这个买家号认出自己是谁
+    r = client.post("/v1/instances/register",
+                    json={"env_code": "env-172", "instance_uid": "inst-NEW",
+                          "plugin_version": "0.1.0"})
+    assert r.status_code == 200
+
+    r = client.post("/v1/tasks/claim", json={"instance_uid": "inst-NEW"})
+    assert r.status_code == 409
+    body = r.json()
+    assert body["error"]["code"] == "INSTANCE_ACCOUNT_UNVERIFIED"
+    # 与「登错号」必须是两句话:一句是「去换号」,一句是「等它自己报一次」。
+    assert body["error"]["code"] != "INSTANCE_ACCOUNT_MISMATCH"
+    assert ID_A in body["error"]["message"]
+    assert {t["status"] for t in conn.execute(
+        "SELECT status FROM procure.tasks").fetchall()} == {"ready"}
+
+
+def test_the_hold_lifts_the_moment_the_machine_reports(client, conn, seed):
+    """闸门不会永远关着:这台机器报一次对得上的号就开 —— 现算,不存一位布尔。"""
+    _beat(client, ID_A)
+    client.post("/v1/instances/register",
+                json={"env_code": "env-172", "instance_uid": "inst-NEW",
+                      "plugin_version": "0.1.0"})
+    assert client.post("/v1/tasks/claim",
+                       json={"instance_uid": "inst-NEW"}).status_code == 409
+    _beat(client, ID_A, uid="inst-NEW")
+    r = client.post("/v1/tasks/claim", json={"instance_uid": "inst-NEW"})
+    assert r.status_code == 200 and r.json()["data"] is not None
+
+
+def test_the_server_asks_an_unheard_machine_to_go_read_the_page(client, conn, seed):
+    """**必须主动要它去探一次**,否则这道闸就是个死锁。
+
+    customerId 是在登录探测那一步顺手读的。服务端不在回执里说「该读一次页面了」,
+    这台机器就永远报不上来,而它的认领一直被拒 —— 闸门永远关着,
+    界面上写着一个自己不会消失的理由。这正是 account_state「现算不存」那条注释
+    里说的那种下场,只是换了个地方发生。
+    """
+    _beat(client, ID_A)
+    client.post("/v1/instances/register",
+                json={"env_code": "env-172", "instance_uid": "inst-NEW",
+                      "plugin_version": "0.1.0"})
+    # 刚刚才「检查过」(这一拍带了 login_state),复检间隔远没到 ——
+    # 只看间隔的话这里是 False,而那样它就再也不会去读页面了。
+    first = _beat(client, uid="inst-NEW", login_state="ok").json()["data"]
+    assert first["account_state"] == "unverified"
+    assert first["login_check_due"] is True
+
+    # 报上来之后没有单再需要探测,回落到原来那条「按间隔」的规矩。
+    later = _beat(client, ID_A, uid="inst-NEW").json()["data"]
+    assert later["account_state"] == "ok"
+    assert later["login_check_due"] is False
+
+
+def test_admin_instances_shows_the_hold_the_same_way_the_claim_gate_does(client, conn, seed):
+    """运营台那一格与真闸调同一个函数 —— 拦着的时候界面不许写「可派」。"""
+    _beat(client, ID_A)
+    client.post("/v1/instances/register",
+                json={"env_code": "env-172", "instance_uid": "inst-NEW",
+                      "plugin_version": "0.1.0"})
+    _beat(client, uid="inst-NEW")
+    rows = client.get("/v1/admin/instances").json()["data"]["items"]
+    row = next(r for r in rows if r["instance_uid"] == "inst-NEW")
+    assert row["account_state"] == "unverified"
+    assert row["account_blocks_dispatch"] is True
+    assert row["dispatchable"] is False
 
 
 def test_login_state_and_account_state_are_two_axes(client, conn, seed):
@@ -258,9 +336,12 @@ def test_account_state_closed_set_has_exactly_one_meaning_everywhere(client):
     got = client.get("/v1/admin/meta").json()["data"]["account_state"]
     assert got["labels"] == vocab.ACCOUNT_STATE_LABELS
     assert got["tone"] == vocab.ACCOUNT_STATE_TONE
-    # ok 与 unknown 必须是两个词(「买家号对得上」 vs 「还没比对过」)——
-    # 渲染成同一个词就是这个项目反复栽的那种缺陷。
-    assert len(set(vocab.ACCOUNT_STATE_LABELS.values())) == 3
+    # 四档四个词。尤其是 unverified 与 unknown:一个拦着这个买家号的全部派单,
+    # 一个什么也没拦 —— 渲染成同一句话就是这个项目反复栽的那种缺陷。
+    assert len(set(vocab.ACCOUNT_STATE_LABELS.values())) == 4
+    # 拦单的那两档不许共用色调:一个要人去那台机器上换账号,一个等一轮就好。
+    assert (vocab.ACCOUNT_STATE_TONE["mismatch"]
+            != vocab.ACCOUNT_STATE_TONE["unverified"])
 
 
 def test_env_event_kinds_and_labels_do_not_drift(conn, seed):
@@ -282,4 +363,5 @@ def test_account_mismatch_is_deliberately_not_an_error_code():
     from services import error_codes
 
     assert "INSTANCE_ACCOUNT_MISMATCH" not in error_codes.ERROR_CODES
+    assert "INSTANCE_ACCOUNT_UNVERIFIED" not in error_codes.ERROR_CODES
     assert "INSTANCE_SIGNED_OUT" not in error_codes.ERROR_CODES

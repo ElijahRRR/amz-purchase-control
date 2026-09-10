@@ -112,7 +112,7 @@ def login_blocks_claim(login_state: str | None) -> bool:
 
 
 #: 这台机器登着的账号跟这个买家号对不对得上。标签在 services/vocab.ACCOUNT_STATE_LABELS。
-ACCOUNT_STATES = frozenset({"ok", "mismatch", "unknown"})
+ACCOUNT_STATES = frozenset({"ok", "mismatch", "unverified", "unknown"})
 
 
 def account_state(expected: str | None, reported: str | None) -> str:
@@ -128,26 +128,55 @@ def account_state(expected: str | None, reported: str | None) -> str:
     **闸门永远关着、这个买家号从此一单也派不出去**,而界面上写的还是
     「登录的不是这个买家号」—— 一个已经不成立的理由。
 
-    两边缺任何一边就是 `unknown`,**不是 ok**:
-      · 买家号那一列还没写过值 —— 第一次心跳就会写上,不必在这里替它猜
-      · 插件从没报过 customerId(老版本、或者页面上抠不到)
-    `unknown` **不拦**认领 —— 拦了的话每一台还没报过账号的机器都领不到第一单,
-    与 `login_state` 的 unknown 是同一个道理;但界面上它必须与 `ok` 分得开。
+    缺一边分两档,**这两档的代价完全不同,不能共用一个词**:
+
+      · `unverified` —— 买家号那一列**已经有值**(我们知道这个号该是谁),
+        而这台机器从没报过。**拦**。这一格原先并进 unknown 一起放行,于是
+        那道闸在最容易登错号的那一刻恰好是开的:防关联机器重装 / 清了扩展存储 /
+        复制了一份 profile,插件生成新的 instance_uid,而这个浏览器里登的是隔壁
+        那个号 —— 服务端两边一比「一边没有」,放行,这一到两次认领窗口里领到的
+        每一单都会在**另一个买家号**上真买下来。
+        与 `login_state` 的 unknown 刻意不同:那种机器跑到 /ap/signin 会超时、
+        退回队列、**没花钱**;这种机器会花钱。两个 unknown 的代价不对称,
+        所以处置也不该一样。
+        闸门不会永远关着:这台机器只要读一次页面把 customerId 报上来就开
+        (`instance._login_check_due` 在这一档会主动要求一次登录探测,
+        插件那边还有一层本地缓存兜着,不会每一拍都开页面)。
+      · `unknown` —— 买家号那一列**也还是空的**:我们从来不知道这个买家号
+        该登谁,没有任何东西可比。**不拦**(拦了的话全新的买家号永远派不出
+        第一单,而第一次心跳就会把这一列写上)。这是唯一剩下的窗口,
+        写在 docs/01 §11.2 与 README 那张「验到了什么」的表里。
+
+    界面上四档必须是四个词:`unverified` 是红的(它拦着单),
+    `unknown` 是灰的(它什么也没拦)。
     """
-    if not expected or not reported:
+    if not expected:
         return "unknown"
+    if not reported:
+        return "unverified"
     return "ok" if expected == reported else "mismatch"
 
 
+#: 拦得住派单的那两档。**这里是唯一定义处**:认领 SQL 前那道闸、运营台买家号页
+#: 那一列、「可派单」那一格,三处调的都是下面这个函数。
+_ACCOUNT_BLOCKING = frozenset({"mismatch", "unverified"})
+
+
 def account_blocks_claim(state: str | None) -> bool:
-    """输入:account_state → 输出:这道闸拦不拦它。只拦 `mismatch`。
+    """输入:account_state → 输出:这道闸拦不拦它。拦 `mismatch` 与 `unverified`。
 
     为什么这一条必须拦死:两台机器登错号是真会发生的事(防关联环境一多,
     人在哪个 profile 里登了哪个号是记不住的)。派给它一单,它会用**另一个买家号**
     在亚马逊上真买下来 —— 钱花了、货发了,而库里记的是这个买家号。
     在此之前这种机器在运营台上是满格绿色的「在线 · 可派」。
+
+    `unverified` 一起拦,是因为**「还没报过」不等于「没问题」**:这个买家号
+    该登谁我们已经知道了,而这台机器还没说过它登着谁。放行的话,那道闸恰好
+    在最容易登错号的那一刻(新装 / 新 profile / 换了机器)是开的。
+    这是「宁可卡住也不自动往前走」那条规矩在花钱这一步的又一次应用 ——
+    而且它不是死锁:插件读一次页面把号报上来就开。
     """
-    return state == "mismatch"
+    return state in _ACCOUNT_BLOCKING
 
 
 def claim(conn, env_id: int, instance_id: int) -> dict[str, Any] | None:
@@ -179,16 +208,28 @@ def claim(conn, env_id: int, instance_id: int) -> dict[str, Any] | None:
     # 一台心跳一秒不落、登录态 ok 的机器,浏览器里登的完全可能是隔壁那个号。
     # 拦法照 INSTANCE_SIGNED_OUT 那一条:抛一个**说得出名字**的拒绝,不是回
     # 「没有单」—— 后者会让插件每 10 秒安静地问一次,而运营台上那台机器写着「待命」。
-    if inst is not None and account_blocks_claim(
-            account_state(inst["expected_customer_id"], inst["reported_customer_id"])):
-        raise ClaimBlocked(
-            "INSTANCE_ACCOUNT_MISMATCH",
-            f"这台机器登着的 Amazon 账号是 {inst['reported_customer_id']},"
-            f"而这个买家号记的是 {inst['expected_customer_id']},不派单。"
-            "派给它就是拿另一个买家号去买这一单。"
-            "请在这个浏览器环境里换回正确的账号;"
-            "如果确实是买家号那一列记错了,去运营台的买家号页按「以这个为准」",
-        )
+    if inst is not None:
+        state = account_state(inst["expected_customer_id"], inst["reported_customer_id"])
+        if state == "mismatch":
+            raise ClaimBlocked(
+                "INSTANCE_ACCOUNT_MISMATCH",
+                f"这台机器登着的 Amazon 账号是 {inst['reported_customer_id']},"
+                f"而这个买家号记的是 {inst['expected_customer_id']},不派单。"
+                "派给它就是拿另一个买家号去买这一单。"
+                "请在这个浏览器环境里换回正确的账号;"
+                "如果确实是买家号那一列记错了,去运营台的买家号页按「以这个为准」",
+            )
+        if state == "unverified":
+            # **两句话必须分开**:一句是「登错了,去换号」,一句是「还没比过,
+            # 等它自己报一次」。共用一句的话,一台其实只是刚装好的机器会被当成
+            # 登错号去人工处置,而一台真登错号的机器会被当成「等一会儿就好」。
+            raise ClaimBlocked(
+                "INSTANCE_ACCOUNT_UNVERIFIED",
+                f"这个买家号记着的 Amazon 账号是 {inst['expected_customer_id']},"
+                "而这台机器还没报过它登着谁,先不派单。"
+                "插件下一轮登录探测会把它报上来,报上来对得上就自动恢复;"
+                "一直不恢复说明这台机器登的不是这个号,或者页面上没抠到账号 ID",
+            )
 
     row = conn.execute(
         CLAIM_SQL, {"env_id": env_id, "instance_id": instance_id}

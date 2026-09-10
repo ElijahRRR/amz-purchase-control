@@ -195,8 +195,12 @@ export interface InstanceRow {
   instance_customer_id: string | null;
   /** 两列一比的结论(服务端算的,与认领那道真闸同一个函数
    *  services/task_queue.account_state)。前端**不自己判**。 */
-  account_state: "ok" | "mismatch" | "unknown";
-  /** 登错号这一项拦不拦派单(= account_state 为 mismatch)。 */
+  account_state: "ok" | "mismatch" | "unverified" | "unknown";
+  /** 账号这一项拦不拦派单(= account_state 属于 mismatch / unverified)。
+   *  **两档拦法一样、处置不同**:mismatch 要人去那台机器上换回正确的账号;
+   *  unverified 是买家号那一列已经有值、这台机器还没报过它登着谁
+   *  (新装 / 新 profile / 换了机器 —— 最容易登错号的正是这一刻),
+   *  下一轮登录探测报上来就自己好。所以界面上不许把这一位渲染成一句话。 */
   account_blocks_dispatch: boolean;
   daily_cap: number;
   /** 这个买家号该刷哪张卡的后四位。null = 这一道不校验(闸是可关的)。

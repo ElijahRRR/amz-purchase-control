@@ -193,16 +193,19 @@ def heartbeat(
     ).fetchone()
     if row is None:
         return None
+    row["customer_id_rejected"] = rejected_customer_id
+    # **先结算账号,再算「该不该去读页面」** —— 后者要用前者的结论:
+    # 账号还没比对上的机器认领会被拒,而它自己没有别的办法知道该去读一次页面。
+    row.update(_settle_customer_id(conn, instance_id=row["id"],
+                                   buyer_env_id=row["buyer_env_id"],
+                                   reported=row["amazon_customer_id"]))
     row["login_check_due"] = _login_check_due(
         conn,
         buyer_env_id=row["buyer_env_id"],
         checked_at=row["login_checked_at"],
         recheck_minutes=recheck_minutes,
+        account_unverified=row["account_state"] == "unverified",
     )
-    row["customer_id_rejected"] = rejected_customer_id
-    row.update(_settle_customer_id(conn, instance_id=row["id"],
-                                   buyer_env_id=row["buyer_env_id"],
-                                   reported=row["amazon_customer_id"]))
     return row
 
 
@@ -273,13 +276,19 @@ def _settle_customer_id(conn, *, instance_id: int, buyer_env_id: int,
     return {"expected_customer_id": expected, "account_state": state}
 
 
-def _login_check_due(conn, *, buyer_env_id: int, checked_at, recheck_minutes: int) -> bool:
+def _login_check_due(conn, *, buyer_env_id: int, checked_at, recheck_minutes: int,
+                     account_unverified: bool = False) -> bool:
     """输入:连接 + 买家环境 id + 这个实例上次检查的时刻 + 复检间隔 → 输出:该不该去读页面。
 
     两个条件都要:
       · 这个买家号**真有单在等派** —— 队列空着的时候开一张 Amazon 页面读导航栏,
         读到的结论没人用得上,白白多一次页面加载
-      · 这个实例上次读页面已经过了复检间隔
+      · 这个实例上次读页面已经过了复检间隔,**或者**这台机器的账号还没比对过
+
+    第二个「或者」是那道账号闸的解锁路径:`unverified` 的机器认领会被服务端拒,
+    而 customerId 是在**登录探测那一步顺手读**的 —— 不主动要它去读一次页面,
+    这台机器就永远报不上来,闸门永远关着。有界:插件那边 `ensureLoginChecked`
+    还有一层本地缓存(LOGIN_CACHE_MS),不会每一拍都开一张页面。
 
     按**这个实例自己**的检查时刻算,不按整个买家号的最新值:认领那道闸看的是
     来认领的那一个实例,这里也就得看同一个,否则同一个环境上有两个实例时,
@@ -295,7 +304,7 @@ def _login_check_due(conn, *, buyer_env_id: int, checked_at, recheck_minutes: in
         """,
         {"env_id": buyer_env_id, "checked_at": checked_at, "mins": recheck_minutes},
     ).fetchone()
-    return bool(row["has_work"] and row["stale"])
+    return bool(row["has_work"] and (row["stale"] or account_unverified))
 
 
 def resolve(conn, instance_uid: str) -> dict[str, Any] | None:
@@ -420,14 +429,17 @@ def list_with_liveness(conn, *, stale_seconds: int) -> list[dict]:
         # 界面自己算一遍「可派单」,算法与真闸不一样,于是界面上绿着、实际派不出。
         signed_out = task_queue.login_blocks_claim(row["login_state"])
         row["login_blocks_dispatch"] = signed_out
-        # 登错号那道闸同样只有一处定义(task_queue.account_state /
+        # 账号那道闸同样只有一处定义(task_queue.account_state /
         # account_blocks_claim),认领 SQL 前那道闸调的是同一个函数。
+        # **它拦两档**:登错号(mismatch)与还没比对过(unverified)。
+        # 界面上这一格不许自己写死「登错号」三个字 —— 两档共用一句话的话,
+        # 一台刚装好的机器会被当成登错号去人工处置。
         row["account_state"] = task_queue.account_state(
             row["amazon_customer_id"], row["instance_customer_id"])
-        mismatched = task_queue.account_blocks_claim(row["account_state"])
-        row["account_blocks_dispatch"] = mismatched
+        blocked = task_queue.account_blocks_claim(row["account_state"])
+        row["account_blocks_dispatch"] = blocked
         row["dispatchable"] = (liveness == "online" and not capped
-                               and not signed_out and not mismatched)
+                               and not signed_out and not blocked)
         out.append(row)
     return out
 

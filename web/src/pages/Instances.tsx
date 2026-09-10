@@ -101,11 +101,15 @@ function ExpectedCard({ row, onSaved }: { row: InstanceRow; onSaved: () => void 
  *  一台登着隔壁号的机器在这里是满格绿色的「在线 · 可派」,而它领到的每一单
  *  都会用**另一个买家号**在亚马逊上真买下来。与登录态那一列当初的毛病一模一样。
  *
- *  三档三种说法(封闭集与标签都从 /v1/admin/meta 来,前端不存副本):
- *    ok        两个 ID 对得上
- *    mismatch  对不上 —— 服务端已经在拒绝派单了,这里要把两个 ID 都摆出来
- *    unknown   还没比对过(买家号那一列是空的,或者插件没报过)——
- *              **不是**「有问题」,别渲染成红的
+ *  四档四种说法(封闭集与标签都从 /v1/admin/meta 来,前端不存副本):
+ *    ok          两个 ID 对得上
+ *    mismatch    对不上 —— 服务端已经在拒绝派单了,这里要把两个 ID 都摆出来
+ *    unverified  买家号那一列有值、这台机器还没报过 —— **服务端同样在拒绝派单**
+ *                (最容易登错号的正是这一刻:新装 / 新 profile / 换了机器),
+ *                但它会自己好,所以是琥珀不是红,而且不给「以这个为准」——
+ *                手里根本没有第二个 ID 可以拿来为准
+ *    unknown     买家号那一列也还是空的 —— 没有任何东西可比,**不拦单**,
+ *                别渲染成红的
  *
  *  「以这个为准」只在 mismatch 时给:它把库里那一列改成插件报的,
  *  **等于把闸打开**,所以要过一次确认,而且服务端会写 procure.env_events
@@ -161,6 +165,14 @@ function CustomerId({ row, onSaved }: { row: InstanceRow; onSaved: () => void })
       <span className="id text-2xs text-zinc-400">
         {row.amazon_customer_id ?? row.instance_customer_id ?? "—"}
       </span>
+      {/* unverified 与 unknown 长得像,但一个拦着这个买家号的全部派单、
+          一个什么也没拦。不说出来的话,运营看到一台「在线」的机器一整天不动,
+          只能去猜是不是插件坏了 —— 而这一格手里就有答案。 */}
+      {row.account_state === "unverified" && (
+        <span className="text-2xs text-amber-700">
+          派单先停着,等这台机器报一次它登着谁
+        </span>
+      )}
     </span>
   );
 }
@@ -186,6 +198,10 @@ export default function InstancesPage() {
   // 登录态的中文标签走 /v1/admin/meta,前端不存副本 —— 这个项目已经因为
   // 「两份副本悄悄分叉」栽过两次。
   const loginLabel = useLabel("login_state");
+  // 「可派单」那一格里账号这一支的措辞**从 meta 来**,前端不写死:
+  // 这道闸拦两档(登错号 / 等账号报上来),写死一句话的话,一台刚装好的机器
+  // 会被当成登错号,人跑到机器前不知道该干什么。
+  const accountLabel = useLabel("account_state");
   const [rows, setRows] = useState<InstanceRow[] | null>(null);
   const [stale, setStale] = useState<number>(0);
   const [err, setErr] = useState<string | null>(null);
@@ -323,19 +339,24 @@ export default function InstancesPage() {
                       {r.dispatchable
                         ? <span className="text-emerald-700">可派</span>
                         : <span className={
-                            r.login_blocks_dispatch || r.account_blocks_dispatch ? "text-red-700"
-                            : r.at_daily_cap ? "text-amber-700" : "text-zinc-400"}>
+                            r.login_blocks_dispatch || r.account_state === "mismatch"
+                              ? "text-red-700"
+                            : r.account_blocks_dispatch || r.at_daily_cap ? "text-amber-700"
+                            : "text-zinc-400"}>
                             {/* 「被登出」排在「已暂停」后面、其余之前:
                                 暂停是人主动停的(去问为什么停),被登出是机器坏了
                                 (去那台机器上重新登录)。两句话指向不同的人,
                                 所以不能合并成一句「不可派」。 */}
                             {r.liveness === "paused" ? "已暂停"
                              : r.login_blocks_dispatch ? "已登出"
-                             /* 「登错号」排在「已登出」之后:两者都是红的、都要人去
-                                那台机器上处理,但处置不同 —— 一个是重新登录,
-                                一个是换回正确的账号(或者确认库里记错了)。
-                                合并成一句「不可派」的话,人到了机器前不知道该干什么。 */
-                             : r.account_blocks_dispatch ? "登错号"
+                             /* 账号这一支排在「已登出」之后。它**拦两档**,措辞取
+                                account_state 的标签(登错号 / 等账号报上来):
+                                「登错号」要人去那台机器上换回正确的账号,是红的;
+                                「等账号报上来」是刚装好还没报过号的机器,琥珀,
+                                通常什么都不用做 —— 下一轮登录探测就自己好了。
+                                两档合成一句话的话,人到了机器前不知道该干什么。 */
+                             : r.account_blocks_dispatch
+                               ? accountLabel(r.account_state).label
                              : r.at_daily_cap ? "已到日上限"
                              : r.liveness === "online" ? "在线但不可派" : "没有心跳"}
                           </span>}
