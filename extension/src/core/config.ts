@@ -24,6 +24,17 @@ export interface Timeouts {
   checkoutNav: number;
   addressForm: number;
   addressSave: number;
+  /** 替买家号切支付卡那一段的每一步预算(所有者定稿①)。
+   *
+   *  这一段有四个「等」:等更改支付入口出现、等支付选择页画出来、等确认按钮
+   *  从 disabled 变成可用、等切完回到结算页且尾号真的变成期望的那张。
+   *  四步共用一个预算,因为它们的性质一样 —— 都是「Amazon 的一次页面切换」,
+   *  和填地址那两步(addressForm / addressSave)是同一个量级。
+   *
+   *  **不给它一个"永远等下去"的选项**:这一步发生在下单之前,等过头的代价是
+   *  服务端 15 分钟后把这一单判成 CLAIM_TIMEOUT 转待人工,而这时钱一分没花、
+   *  单本可以退回队列让下一台机器接着做。 */
+  paymentSelect: number;
   /** 点了下单之后,页面还读得到时等确认页的预算。语义和以前一样。 */
   orderConfirm: number;
   orderCards: number;
@@ -99,6 +110,10 @@ export const DEFAULTS = {
     checkoutNav: 45_000,
     addressForm: 30_000,
     addressSave: 30_000,
+    // 30 秒:与填地址那两步同一个量级。厂商给这一段的是 30s/30s/10s/30s
+    // (v2.5.3 :2246、:2270、:2281、:2299),我们四步统一 30s ——
+    // 确认按钮那一格他们给了 10s,而那正是页面在算钱、最容易慢的一格。
+    paymentSelect: 30_000,
     orderConfirm: 60_000,
     orderCards: 20_000,
     // 6 分钟:够收一次短信验证码再输一遍。比 60 秒长一个量级,又落在

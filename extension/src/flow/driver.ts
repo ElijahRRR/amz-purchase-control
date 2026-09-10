@@ -90,6 +90,38 @@ export interface CheckoutReading {
   paymentSlots?: number;
 }
 
+// ── 替买家号切换支付卡(所有者定稿①,2026-09-09)────────────────────
+
+/** 切卡过程说给外面听的两个回调。
+ *
+ *  为什么是回调而不是让驱动自己发事件:与 PlaceOrderHooks 同一条理由 ——
+ *  驱动只管「怎么点 Amazon 的 DOM」,和服务端说话是 runTask 的事。
+ *  跨过这条线的话 SimulatedDriver 也得会发事件,离线自检就跑不动了。 */
+export interface PaymentCardHooks {
+  /** 已经确认「当前不是期望的那张卡」,**马上要动手切**。
+   *  `from` 是切之前结算页上选中的尾号,读不出来是 null —— 读不出来照样要切,
+   *  但这一位要如实报 null:编一个"未知"字符串会让事件流里那条
+   *  「4417 → 9021」和「读不出来 → 9021」长成同一个样子。 */
+  onSwitchStart?(info: { from: string | null; to: string }): void | Promise<void>;
+  /** 切完了,而且**重新读结算页确认过**尾号真的是期望的那张。
+   *
+   *  `matched` 是选卡时**比中的那一段文字**(比如 "Visa ending in 4417")。
+   *  它要进事件流:payselect 那一整套判据是全仓可信度最低的一档,
+   *  Amazon 改一版之后「比中了 4417」和「在有效期/账单邮编里比中了 4417」
+   *  会给出同一个结果,而排查时唯一能分开它们的就是这一段原文。
+   *  模拟驱动没有页面,给 null —— 「没有这个能力」与「比中的是空字符串」不是一回事。 */
+  onSwitched?(info: { from: string | null; to: string; matched: string | null }):
+    void | Promise<void>;
+}
+
+export interface PaymentCardResult {
+  /** 这一刻结算页上选中的卡尾号,读不出来是 null。 */
+  last4: string | null;
+  /** 有没有真的动过手。false = 本来就是那张,或者期望为空一步没做。
+   *  调用方拿它决定要不要**重新读一遍结算页** —— 切卡会让结算页整个重渲染。 */
+  switched: boolean;
+}
+
 /** 点下单之后那一段要用的东西:一个来自服务端的上界,两个说给外面听的回调。
  *
  *  为什么回调而不是让驱动自己去发事件:驱动只管「怎么点 Amazon 的 DOM」,
@@ -137,6 +169,32 @@ export interface PageDriver {
   proceedToCheckout(): Promise<void>;
   fillAddress(shipping: Shipping): Promise<void>;
   readCheckout(): Promise<CheckoutReading>;
+  /** 按买家号配的期望尾号把支付卡切过去(所有者定稿①)。
+   *
+   *  **`expected` 为空(null/undefined/空串)时一步都不做** —— 不点入口、
+   *  不开支付选择页、**不读任何东西**,直接回 `{ last4: null, switched: false }`。
+   *  这一位来自服务端 `guards.expected_card_last4`,留空的语义是
+   *  「这个买家号不校验也不切」,与 require_fba 同形态的可关闸。
+   *  「不读任何东西」不是修辞:真驱动这一档连 `doc()` 都不碰 —— 结算 iframe
+   *  已跨域/已销毁时 `doc()` 会抛,而一个根本没配期望卡的买家号不该因为
+   *  一个按定义什么都不做的步骤失败。`switched === false` 时 `last4` 没有人读。
+   *
+   *  **fail-closed**:任何一步判据不满足就不点确认,抛
+   *  `DriverError("PAYMENT_METHOD_UNEXPECTED")`,detail 里写清停在哪一步、
+   *  读到了什么。五种停法必须分得开(入口没找到 / 选卡页没到 /
+   *  没有唯一命中的那张卡 / 确认按钮不可用 / 切完读到的仍不是期望)——
+   *  它们的处置完全不同:前两种是选择器改版要改代码,第三种是这个买家号
+   *  钱包里根本没那张卡(去配置或去买家号里加卡),后两种要人去看一眼页面。
+   *
+   *  **但「被登出」要先于这五种说出来。** 五步里每一处「等满了预算」的失败
+   *  在会话过期时长得一模一样,而 PAYMENT_METHOD_UNEXPECTED 是不可自动重试的
+   *  业务码、也不会让实例报 signed_out。所以真驱动在每个超时分支之前先探一次
+   *  登录态,是的话抛 `LoginLostError` —— 这一单退回队列、这台机器停止派单。
+   *
+   *  **切换是插件的动作,校验仍在服务端。** 这里返回成功不代表这一单能过 ——
+   *  服务端 guard-check 会拿插件重新读的那一遍尾号自己判。 */
+  ensurePaymentCard(expected: string | null | undefined,
+                    hooks?: PaymentCardHooks): Promise<PaymentCardResult>;
   /** 真花钱的一步。调用之前上层会先把「可能已下单」置位,并上报一条 step 事件。
    *
    *  实现必须是**有界**的:三段分开计时(等确认页 / 等人做发卡行验证 / 验证之后),

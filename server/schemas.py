@@ -74,6 +74,16 @@ class GuardsOut(BaseModel):
     #: 于是一道号称"可关"的闸恒为真 —— 照文档去配置它的人会发现改哪儿都不生效。
     require_fba: bool = True
 
+    #: 这个买家号该刷哪张卡的后四位,来自 `procure.buyer_envs.expected_card_last4`。
+    #: **null = 不校验,也不切** —— 一步都不做,与 `require_fba` 同形态的可关闸。
+    #:
+    #: 为什么要下发给插件(此前只在服务端 guard-check 那一侧用):所有者定稿
+    #: 「替买家号切换支付卡」之后,插件在读完结算页、报护栏之前要按它把卡切过去。
+    #: 切换是**插件的动作**,校验仍然只在服务端 —— price_guard 那道
+    #: PAYMENT_METHOD_UNEXPECTED 一个字没改:插件说切成了不算数,服务端自己
+    #: 再从结算页读一遍才算。把校验也挪到插件里就是把闸门交给被管的一方。
+    expected_card_last4: str | None = None
+
 
 class TaskOut(BaseModel):
     task_id: int

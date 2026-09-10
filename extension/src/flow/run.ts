@@ -173,7 +173,7 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     await driver.fillAddress(task.shipping);
     await step("收货地址已填写");
 
-    const reading = await driver.readCheckout();
+    let reading = await driver.readCheckout();
     await step("读到结算页", {
       actual_total: reading.actualTotal,
       // 实付与货款分开报:礼品卡全额抵扣时前者是 0.00,后者才是这一单花的钱。
@@ -182,6 +182,43 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
       goods_total: reading.goodsTotal ?? null,
       delivery_texts: reading.deliveryTexts,
     });
+
+    // ── 替买家号切换支付卡(所有者定稿①)────────────────────────────
+    //
+    // **先切后验,验在服务端。** 切是插件的动作(这一行),验仍然只在
+    // guard-check 那一侧 —— 服务端拿下面重读的那一份尾号自己判,
+    // price_guard 的 PAYMENT_METHOD_UNEXPECTED 一个字没改。
+    //
+    // guards.expected_card_last4 为空(旧服务端 / 这个买家号不校验)时
+    // ensurePaymentCard 一步都不做,这一行等于不存在。
+    const cardSwitch = await driver.ensurePaymentCard(task.guards.expected_card_last4, {
+      onSwitchStart: async ({ from, to }) => {
+        await step("切换支付卡", { from, to });
+      },
+      onSwitched: async ({ from, to, matched }) => {
+        // matched 是选卡时比中的那一段原文。留在事件流里是为了让
+        // 「比中了 4417」与「在有效期里比中了 4417」将来分得开 ——
+        // payselect 的判据没有任何真实页面担保,出事时这一段是唯一的现场。
+        await step("支付卡已切换", { from, to, matched });
+      },
+    });
+
+    if (cardSwitch.switched) {
+      // **切完必须重读结算页。** 切卡会让 Amazon 把结算页整个重渲染:
+      // 这张卡要扣多少变了(礼品卡抵扣的槽位跟着变)、有的卡会带来不同的
+      // 促销与税、支付槽位数也可能从 1 变 2。拿切之前那份读数去报 guard-check,
+      // 等于让服务端对着一张**已经不存在的页面**裁决 —— 而它放行之后我们真的
+      // 会照着新页面下单。这不是保险起见,是切卡这个动作本身的定义。
+      reading = await driver.readCheckout();
+      await step("切卡后重读结算页", {
+        actual_total: reading.actualTotal,
+        gift_card_amount: reading.giftCard?.applied ? (reading.giftCard.amount ?? null) : null,
+        goods_total: reading.goodsTotal ?? null,
+        payment_last4: reading.paymentLast4 ?? null,
+        payment_slots: reading.paymentSlots ?? null,
+        note: "切支付卡会让结算页重渲染,下面报给护栏的是这一份重读的数",
+      });
+    }
 
     // 结算页有商品、却一个单价都没读到 —— 那是选择器坏了,不是「这单没单价」。
     // 不拦下单(限价护栏比的是 actual_total,走另一个选择器,仍然有效),

@@ -22,10 +22,13 @@ import type { InstanceRow } from "@/types";
  *  形状校验在服务端(services/instance.set_expected_card)。这里也拦一道,
  *  但这一道是**便利**不是保证 —— 接口是公开的,curl 一下就绕过去了。
  *
- *  **清空这一格 = 把 PAYMENT_METHOD_UNEXPECTED 这道下单前的闸整个关掉**,
- *  所以它单独过一次确认。原先是「按了退格再点别处」就生效:没有二次确认、
- *  没有成功提示,而按 set_expected_card 自己的自述也没有任何审计记录 ——
- *  这个买家号从此每一单都不再校验支付卡,界面只是把输入框变成灰色的「不校验」。
+ *  **清空这一格 = 两道一起关**:服务端那道 PAYMENT_METHOD_UNEXPECTED 不再校验,
+ *  插件也不再替这个买家号切卡(所有者定稿①之后,填上这一格等于授权插件在下单前
+ *  去改这个买家号在 Amazon 上选中的支付卡)。所以它单独过一次确认,
+ *  而那句话必须**两道都说到** —— 只说「不再核对支付卡」的话,人会理解成
+ *  「少一道校验、单子照跑」,而实际是此后每一单都用账号里当时选中的那张卡下单,
+ *  没有人切、也没有人验。原先是「按了退格再点别处」就生效:没有二次确认、
+ *  没有成功提示,而按 set_expected_card 自己的自述也没有任何审计记录。
  *  对照:同一套界面里危险性小得多的「强制回填单号」必须过一个红色预览步。
  *  **填一个新值不需要确认**(填错了的表现是每一单都被拦下,吵而安全);
  *  只有「关掉」这个方向要。 */
@@ -79,7 +82,8 @@ function ExpectedCard({ row, onSaved }: { row: InstanceRow; onSaved: () => void 
       {err && <span className="text-2xs text-red-600">{err}</span>}
       {confirmOff && (
         <span className="inline-flex items-center gap-1.5 text-2xs text-red-700">
-          关掉之后这个买家号的每一单都不再核对支付卡,确定?
+          关掉之后这个买家号的每一单都不再核对支付卡,插件也不再替它切卡
+          (用账号里当时选中的那张下单),确定?
           <button className="px-1.5 py-0.5 rounded border border-red-300 bg-white text-red-700"
                   disabled={busy}
                   onClick={() => void commit("")}>关掉</button>
@@ -158,7 +162,7 @@ export default function InstancesPage() {
         <Card className="overflow-hidden">
           <CardHead right={<span className="text-xs text-zinc-400">
             派单只会派给「在线、未暂停、没到日上限、且还登着 Amazon」的买家号 ·
-            支付卡尾号留空表示不校验
+            支付卡尾号留空 = 不校验也不切卡;填上之后插件会在下单前替这个买家号切到这张卡
           </span>}>买家号 · 实例</CardHead>
 
           <table className="w-full">
@@ -204,8 +208,13 @@ export default function InstancesPage() {
                       {r.daily_cap === 0 ? "不限" : r.daily_cap}
                     </td>
                     <td className="px-3">
-                      {/* 留空 = 不校验。这一格与 daily_cap 的 0 是同一种表达:
-                          「不设限」得写出来,别让人对着一个空格去猜。 */}
+                      {/* 留空 = 不校验也不切。这一格与 daily_cap 的 0 是同一种表达:
+                          「不设限」得写出来,别让人对着一个空格去猜。
+
+                          所有者定稿①之后这一格**有了副作用**:填上之后插件会在
+                          下单前点开 Amazon 的支付选择页,替这个买家号把卡换成它。
+                          界面上得说出来 —— 一个看起来只是"校验用"的输入框,
+                          实际会去改别人 Amazon 账号的配置,那是不该让人事后才发现的事。 */}
                       <ExpectedCard row={r} onSaved={() => void refresh()} />
                     </td>
                     <td className="px-3"><Tag tone={L.tone}>{L.label}</Tag></td>

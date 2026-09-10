@@ -207,8 +207,9 @@ def instances(conn=Depends(conn_ctx)) -> schemas.Envelope:
 def expected_card(env_id: int, req: schemas.ExpectedCardReq, conn=Depends(conn_ctx)):
     """配「这个买家号该刷哪张卡」。留空 = 关掉这道闸。
 
-    只校验、不替买家号切卡:改支付配置是人在 Amazon 后台做的动作,
-    拍单流程只负责发现不一致并停下来。
+    **这一格有副作用。** 先切后验(所有者定稿①):填上之后,插件会在下单前
+    替这个买家号把 Amazon 结算页上选中的支付卡切成这一张;校验仍然只在服务端,
+    插件切没切成不算数。留空 = 既不校验也不切,用账号里当时选中的那张卡下单。
     """
     try:
         got = instance.set_expected_card(conn, env_id, req.last4)

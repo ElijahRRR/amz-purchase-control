@@ -264,6 +264,8 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
     fillAddress: async () => {},
     readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
                                  unitPrices: [] }),
+    // 这一单没配期望卡(guards.expected_card_last4 缺省)—— 一步都不做。
+    ensurePaymentCard: async () => ({ last4: null, switched: false }),
     placeOrder: async () => {},
     readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
     dispose: async () => {},
@@ -306,6 +308,8 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
     fillAddress: async () => {},
     readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
                                  unitPrices: [] }),
+    // 这一单没配期望卡(guards.expected_card_last4 缺省)—— 一步都不做。
+    ensurePaymentCard: async () => ({ last4: null, switched: false }),
     placeOrder: async () => {},
     readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
     dispose: async () => {},
@@ -347,6 +351,8 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
     fillAddress: async () => {},
     readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
                                  unitPrices: [] }),
+    // 这一单没配期望卡(guards.expected_card_last4 缺省)—— 一步都不做。
+    ensurePaymentCard: async () => ({ last4: null, switched: false }),
     placeOrder: async () => {},
     readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
     dispose: async () => {},
@@ -378,6 +384,8 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
     fillAddress: async () => {},
     readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
                                  unitPrices: [] }),
+    // 这一单没配期望卡(guards.expected_card_last4 缺省)—— 一步都不做。
+    ensurePaymentCard: async () => ({ last4: null, switched: false }),
     placeOrder: async () => {
       throw new DriverError("PAYMENT_VERIFICATION_TIMEOUT", "等了 360 秒仍未完成");
     },
@@ -415,6 +423,8 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
     fillAddress: async () => {},
     readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
                                  unitPrices: [] }),
+    // 这一单没配期望卡(guards.expected_card_last4 缺省)—— 一步都不做。
+    ensurePaymentCard: async () => ({ last4: null, switched: false }),
     placeOrder: async () => {},
     readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
     dispose: async () => { disposed += 1; },
@@ -464,6 +474,8 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
     fillAddress: async () => {},
     readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
                                  unitPrices: [] }),
+    // 这一单没配期望卡(guards.expected_card_last4 缺省)—— 一步都不做。
+    ensurePaymentCard: async () => ({ last4: null, switched: false }),
     placeOrder: async () => {},
     readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
     dispose: async () => {},
@@ -650,6 +662,8 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
     fillAddress: async () => {},
     readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
                                  unitPrices: [] }),
+    // 这一单没配期望卡(guards.expected_card_last4 缺省)—— 一步都不做。
+    ensurePaymentCard: async () => ({ last4: null, switched: false }),
     placeOrder: async (hooks) => { seen = hooks ?? {}; elapsedAtOrder = Date.now() - t0; },
     readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
     dispose: async () => {},
@@ -691,6 +705,8 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
     fillAddress: async () => {},
     readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
                                  unitPrices: [] }),
+    // 这一单没配期望卡(guards.expected_card_last4 缺省)—— 一步都不做。
+    ensurePaymentCard: async () => ({ last4: null, switched: false }),
     placeOrder: async () => {},
     readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
     dispose: async () => {},
@@ -753,6 +769,8 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
     fillAddress: async () => {},
     readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
                                  unitPrices: [] }),
+    // 这一单没配期望卡(guards.expected_card_last4 缺省)—— 一步都不做。
+    ensurePaymentCard: async () => ({ last4: null, switched: false }),
     placeOrder: async () => {},
     readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
     dispose: async () => {},
@@ -820,6 +838,8 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
     fillAddress: async () => {},
     readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
                                  unitPrices: [] }),
+    // 这一单没配期望卡(guards.expected_card_last4 缺省)—— 一步都不做。
+    ensurePaymentCard: async () => ({ last4: null, switched: false }),
     placeOrder: async () => { placed += 1; },
     readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
     dispose: async () => {},
@@ -847,6 +867,8 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
     fillAddress: async () => {},
     readCheckout: async () => ({ actualTotal: "1.00", deliveryTexts: [], isFba: true,
                                  unitPrices: [] }),
+    // 这一单没配期望卡(guards.expected_card_last4 缺省)—— 一步都不做。
+    ensurePaymentCard: async () => ({ last4: null, switched: false }),
     placeOrder: async () => { placed += 1; },
     readOrderCard: async () => ({ amazonOrderNo: "X1", observedAsins: [] }),
     dispose: async () => {},
@@ -889,6 +911,128 @@ const silentLog = { info() {}, warn() {}, err() {}, ok() {}, dim() {} };
   check("标签页关闭时释放租约也走同一道闸",
         (swSrc.match(/leaseGate\.run\(/g) ?? []).length === 2);
 }
+
+// ── 替买家号切支付卡:切完必须重读结算页(所有者定稿①)──────────────
+//
+// 这一节盯的是 run.ts 里最容易被"优化"掉的那一行:切卡之后**重新 readCheckout**。
+// 切卡会让 Amazon 把结算页整个重渲染(这张卡要扣多少变了、礼品卡槽位跟着变、
+// 有的卡带来不同的促销与税)。省掉重读的话,服务端拿到的是**切之前那张页面**
+// 的数,而它放行之后我们照着**切之后那张页面**下单 —— 护栏比过的数和真正付出去
+// 的钱不是同一笔,而事件流、库里、运营台上全都显示"已核过"。
+{
+  const guardBodies = [];
+  const events = [];
+  const client = fakeClient(1);
+  client.guardCheck = async (_id, body) => {
+    guardBodies.push(body);
+    return { ok: true, data: { allow: true, error_code: null, detail: null,
+                               delivery_date: null, delivery_raw_used: null } };
+  };
+  client.events = async (_id, evs) => {
+    for (const e of evs) events.push(e.payload.step);
+    return { ok: true, data: { recorded: evs.length } };
+  };
+
+  // 期望卡 4417,当前 9021 —— 与 SimulatedDriver 的 card_switch 场景同一组数。
+  const task = fakeTask(1);
+  task.guards.expected_card_last4 = "4417";
+
+  let card = "9021";
+  const seenExpected = [];
+  const driver = {
+    name: "fake", ready: true,
+    readLoginState: async () => "unknown",
+    clearCart: async () => {},
+    addProduct: async () => ({ shipperIsAmazon: null }),
+    verifyCart: async () => true,
+    proceedToCheckout: async () => {},
+    fillAddress: async () => {},
+    // 切卡前后金额不同 —— 真实页面上就会这样(不同卡不同促销/税)。
+    // 两个数不一样才验得出服务端拿到的是哪一份。
+    readCheckout: async () => ({
+      actualTotal: card === "4417" ? "12.34" : "1.00",
+      deliveryTexts: [], isFba: true, unitPrices: [], paymentLast4: card,
+    }),
+    ensurePaymentCard: async (expected, hooks = {}) => {
+      seenExpected.push(expected ?? null);
+      const want = (expected ?? "").trim();
+      if (!want || want === card) return { last4: card, switched: false };
+      const from = card;
+      await hooks.onSwitchStart?.({ from, to: want });
+      card = want;
+      await hooks.onSwitched?.({ from, to: want });
+      return { last4: want, switched: true };
+    },
+    placeOrder: async () => {},
+    readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
+    dispose: async () => {},
+  };
+
+  const out = await runTask(task, { client, driver, log: silentLog });
+  eq("切卡这一单正常跑完", out.kind, "purchased");
+  eq("期望卡尾号是从服务端下发的 guards 里取的,不是插件自己编的",
+     seenExpected, ["4417"]);
+  eq("报给护栏的是**切完之后**重读的那一份(不是切之前那张页面)",
+     guardBodies.map((b) => [b.actual_total, b.payment_last4]), [["12.34", "4417"]]);
+  check("切换过程在事件流里留了痕(切换支付卡 → 支付卡已切换 → 切卡后重读结算页)",
+        events.includes("切换支付卡") && events.includes("支付卡已切换")
+        && events.includes("切卡后重读结算页"),
+        JSON.stringify(events));
+}
+
+// 期望为空(这个买家号不校验也不切,或者旧服务端没下发这一位):
+// **一步都不做**,而且绝不多读一遍结算页 —— 多读一遍不只是浪费,
+// 它会让「切了」和「没切」在事件流里长得一样,下次查起来分不开。
+{
+  const guardBodies = [];
+  const events = [];
+  const client = fakeClient(1);
+  client.guardCheck = async (_id, body) => {
+    guardBodies.push(body);
+    return { ok: true, data: { allow: true, error_code: null, detail: null,
+                               delivery_date: null, delivery_raw_used: null } };
+  };
+  client.events = async (_id, evs) => {
+    for (const e of evs) events.push(e.payload.step);
+    return { ok: true, data: { recorded: evs.length } };
+  };
+
+  let reads = 0;
+  const driver = {
+    name: "fake", ready: true,
+    readLoginState: async () => "unknown",
+    clearCart: async () => {},
+    addProduct: async () => ({ shipperIsAmazon: null }),
+    verifyCart: async () => true,
+    proceedToCheckout: async () => {},
+    fillAddress: async () => {},
+    readCheckout: async () => {
+      reads += 1;
+      return { actualTotal: "1.00", deliveryTexts: [], isFba: true,
+               unitPrices: [], paymentLast4: "9021" };
+    },
+    // 真驱动在这一档一步都不做,这里照抄那个语义:期望为空就原样回报。
+    ensurePaymentCard: async (expected) => {
+      check("期望为空时 run.ts 传下来的确实是空",
+            expected === undefined || expected === null || expected === "",
+            JSON.stringify(expected));
+      return { last4: "9021", switched: false };
+    },
+    placeOrder: async () => {},
+    readOrderCard: async () => ({ amazonOrderNo: "1", observedAsins: [] }),
+    dispose: async () => {},
+  };
+
+  // fakeTask 的 guards 里没有 expected_card_last4 —— 就是"这个买家号不校验"。
+  const out = await runTask(fakeTask(1), { client, driver, log: silentLog });
+  eq("没配期望卡的单照常跑完", out.kind, "purchased");
+  eq("没切卡就不重读结算页(只读了一遍)", reads, 1);
+  eq("报给护栏的还是那一份原始读数",
+     guardBodies.map((b) => b.payment_last4), ["9021"]);
+  check("没切卡就不该有任何切卡事件", !events.some((e) => e.includes("支付卡")),
+        JSON.stringify(events));
+}
+
 
 console.log(`\n  通过 ${pass} 条`);
 if (failures.length) {

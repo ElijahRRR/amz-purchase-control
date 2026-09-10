@@ -143,6 +143,12 @@ node tools/smoke.mjs --scenario login_lost      # 跑到一半被登出:退回�
 node tools/smoke.mjs --scenario manual_verify   # 转到发卡行验证页,人做完了 → 照常回填
 node tools/smoke.mjs --scenario manual_verify_timeout   # 人没做完 → 发卡行验证超时,转待人工
 
+# 替买家号切支付卡(所有者定稿①)。这两个场景**要先给买家号配上期望卡**,
+# 否则服务端下发 null、插件一步都不做,这一轮是空跑 —— smoke 会直接判失败并说清怎么配。
+#   psql <库> -c "UPDATE procure.buyer_envs SET expected_card_last4='4417' WHERE code='env-172'"
+node tools/smoke.mjs --scenario card_switch      # 当前 9021 → 切成 4417 → 重读结算页 → 照常拍单
+node tools/smoke.mjs --scenario card_switch_fail # 切不动 → 不下单、不转人工、清车
+
 # 物流同步是独立一条流,加 --ship 顺带跑一轮
 node tools/smoke.mjs --scenario happy --ship in_transit
 node tools/smoke.mjs --scenario happy --ship delivered
@@ -168,6 +174,8 @@ node tools/smoke.mjs --scenario happy --ship delivered
 | login_lost | `ready`(**退回队列**) | — （单子没毛病，是这台机器被登出了；事件流里有一条「登录态失效，退回队列」） |
 | manual_verify | `purchased` | — （事件流里有「等待人工完成支付验证」「人工支付验证已完成」两条） |
 | manual_verify_timeout | `manual` | `PAYMENT_VERIFICATION_TIMEOUT`（**可能已下单**，重置前要有人去买家号里看一眼） |
+| card_switch | `purchased` | — （事件流里有「切换支付卡」「支付卡已切换」「切卡后重读结算页」三条；护栏比的是**重读那一份**） |
+| card_switch_fail | `exception` | `PAYMENT_METHOD_UNEXPECTED`（**没到下单点**，钱一分没花；不转人工、已清车） |
 
 ## 写在代码里的几条规矩
 
@@ -306,6 +314,7 @@ Amazon 改了购物车页的结构 —— 而 `tickOnce` 每 10 秒来一次,一
 | `timeouts.addToCart` | `30000` | 加购后等跳转到购物车 |
 | `timeouts.checkoutNav` | `45000` | 等结算页(含中间页) |
 | `timeouts.addressForm` / `addressSave` | `30000` | 地址表单 / 保存后等地址栏 |
+| `timeouts.paymentSelect` | `30000` | 替买家号切支付卡那五步(所有者定稿①)**每一步**的预算:等更改入口 / 等选卡页 / 等目标卡 / 等确认按钮 / 等切完回结算页。只在买家号配了期望卡时才走,没配一步都不做。**这一格是乘以五进那本认领超时的账的** —— 最坏情况给整单加上 5×它,见下面那段 |
 | `timeouts.orderConfirm` | `60000` | 点了下单之后等确认页(页面还读得到的那一段) |
 | `timeouts.manualVerify` | `360000` | **留给操作员完成发卡行验证的时间**。按买家号/发卡行现场调:短信到达速度差异很大 |
 | `timeouts.postVerify` | `60000` | 验证结束之后等确认页。独立且短 |
@@ -321,9 +330,12 @@ Amazon 改了购物车页的结构 —— 而 `tickOnce` 每 10 秒来一次,一
 `manualVerify` 与 `orderHardCap` 调大之前先看服务端的 `AMZ_CLAIM_TIMEOUT_MIN`:
 真正的钳制来自认领响应里的 `claim_timeout_min`,插件只会取两者更紧的那个。
 把插件这边调到 20 分钟而服务端还是 15 分钟的话,实际生效的仍是 12 分钟。
-**而且这本账从认领那一刻起算**:清车/加购/填地址已经花掉的时间要从里面扣,
+**而且这本账从认领那一刻起算**:清车/加购/填地址/切支付卡已经花掉的时间要从里面扣,
 `taskHardCapMs` 同样被钳进这个窗口 —— 它比认领超时还长的话,看门狗触发时
 任务在服务端早就不是「拍单中」了,它那条留痕会被拒掉。
+**切卡开着的时候这本账要再减 5×`paymentSelect`(默认 150 秒)**:那五步各有各的预算,
+而它们全都发生在点下单之前、全都记在服务端的 `claimed_at` 上。
+调大 `paymentSelect` 之前先把这笔加法算一遍(docs/01 §8.3 那段列的就是这本账)。
 
 ## 目录
 

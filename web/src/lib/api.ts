@@ -116,7 +116,8 @@ export const api = {
   instances: () => call<{ stale_seconds: number; items: InstanceRow[] }>("/v1/admin/instances"),
 
   /** 配「这个买家号该刷哪张卡」。传空串 = 关掉这道闸。
-   *  只校验、不替买家号切卡 —— 改支付配置是人在 Amazon 后台做的动作。 */
+   *  **有副作用**:填上之后插件会在下单前替这个买家号把卡切成这一张(先切后验,
+   *  校验仍在服务端);传空串 = 既不校验也不切,用账号里当时选中的那张卡下单。 */
   setExpectedCard: (envId: number, last4: string) =>
     act<{ id: number; code: string; expected_card_last4: string | null }>(
       `/v1/admin/envs/${envId}/expected-card`, { last4 }),

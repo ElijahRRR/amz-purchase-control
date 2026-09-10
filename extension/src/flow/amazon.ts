@@ -20,6 +20,8 @@ import {
   cartMatches, describeMiss, findAddNewAddressEntry, findAddToCartButton,
   findAddressChangeEntry, findAddressFormNameField, findAddressSection,
   findInterstitialButton, findQuantityOption, findSubmitOrderButton, findTrackingLink,
+  findCardRadioByLast4, findPaymentChangeEntry, findPaymentConfirmButton,
+  isRendered,
   readAddressSaveOutcome, readAppliedAddressText,
   pickFirstRendered, pickQuantitySelect, readCarrier, readCartLines, readCartState,
   readCheckoutPanels,
@@ -33,7 +35,7 @@ import {
   type AddressSaveOutcome, type CartLine, type LoginState, type OrderState,
 } from "./dom/parse.js";
 import type { ShipmentReader, TrackingRead } from "./shipment.js";
-import { DriverError, LoginLostError, type AddResult, type CartReadReporter, type CheckoutReading, type OrderCard, type PageDriver, type PlaceOrderHooks } from "./driver.js";
+import { DriverError, LoginLostError, type AddResult, type CartReadReporter, type CheckoutReading, type OrderCard, type PageDriver, type PaymentCardHooks, type PaymentCardResult, type PlaceOrderHooks } from "./driver.js";
 import { DEFAULTS, type Timeouts } from "../core/config.js";
 import type { Shipping } from "../core/types.js";
 
@@ -881,6 +883,210 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
       // 但要让它在事件流里留下痕迹。
       unitPriceSelectorBroken: panels.length > 0 && priced.length < panels.length,
     };
+  }
+
+  // ── 替买家号切换支付卡(所有者定稿①,2026-09-09)──────────────────
+  //
+  // **先切后验,验在服务端。** 这一段只做「切」:读结算页之后、报护栏之前,
+  // 按服务端下发的 guards.expected_card_last4 把卡换过去。切没切成不由这里
+  // 说了算 —— run.ts 切完会重新 readCheckout,服务端 guard-check 拿那一遍
+  // 重新读到的尾号自己判(price_guard 那道 PAYMENT_METHOD_UNEXPECTED 一个字没改)。
+  //
+  // 判据全部来自 SEL.checkout.payselect,那是**厂商按截图推的**(他们自己承认
+  // 支付选择页没有 DOM 样本),可信度是全仓最低的一档。所以这一段的形状是
+  // **五步、每步有界、每步 fail-closed、每步说得出自己停在哪**:
+  //
+  //   ① 入口没找到          ② 选卡页没到      ③ 没有唯一命中的那张卡
+  //   ④ 确认按钮不可用       ⑤ 切完读到的仍不是期望
+  //
+  // 五种停法在 detail 里必须分得开:①② 是改版要改代码,③ 是这个买家号钱包里
+  // 没那张卡(或者有两张同尾号的),④⑤ 要人去看一眼页面。今天它们共用一个
+  // 错误码(PAYMENT_METHOD_UNEXPECTED,归 BUSINESS_BLOCKED、不自动重试),
+  // 那一句「切支付卡停在「xxx」」就是运营台上唯一能把它们分开的东西。
+  //
+  // **五步的每一处「等满了预算」之前都先问一句 guardLogin。** 切卡途中会话过期
+  // (Amazon 把 iframe 导去 /ap/signin)在这里的表现全都是「等不到」,而这一段
+  // 抛的 PAYMENT_METHOD_UNEXPECTED 是 BUSINESS_BLOCKED、不可自动重试、也不上报
+  // signed_out —— 那会让一台已经登出的机器把整队单子刷成「支付卡不符」。
+  // 「点不动」那两支不问:元素找着了、也渲染出来了,页面就是我们这一张,
+  // 不是登录页;为它多读一遍页面只会把一个说得清的失败拖慢。
+  //
+  // 为什么整段都用 PAYMENT_METHOD_UNEXPECTED 而不新开一个码:错误码是封闭集
+  // (docs/01 §4 ↔ services/error_codes.py ↔ core/codes.ts,有测试盯着),
+  // 而这五种停法的处置与「结算页那张卡不是期望的那张」完全一致 ——
+  // 不自动重试、不转人工、去改配置或去买家号里把卡准备好。多开一个码要跨三处
+  // 改封闭集,换来的区分度已经在 detail 里了。
+  async ensurePaymentCard(
+    expected: string | null | undefined,
+    hooks: PaymentCardHooks = {},
+  ): Promise<PaymentCardResult> {
+    const f = this.need();
+    const doc = () => f.doc();
+
+    // **期望为空 = 一步都不做。** 连结算页都不多读一遍:这个买家号的语义是
+    // 「不校验也不切」,任何多余的动作都是在没被授权的情况下动别人的支付配置。
+    //
+    // last4 直接给 null,**不是** readPaymentLast4(doc()):`doc()` 在结算 iframe
+    // 已经跨域/已被销毁时是**抛错**的(frame.ts:129),而这一档抛出来的是一个裸
+    // Error,run.ts 只能把它兜成 PLUGIN_INTERNAL —— 一个**根本没配期望卡**的
+    // 买家号,因为一个按定义什么都不做的步骤而失败。这一位调用方也不用:
+    // run.ts 只看 switched,switched=false 时那一份读数没有任何人读。
+    // 契约(driver.ts)写着这一档「不读任何东西」,那句话得是真的。
+    const want = (expected ?? "").trim();
+    if (!want) return { last4: null, switched: false };
+
+    // 配成了别的形状(填了 "**** 4417"、"4417 Visa"、四位以外的数字)。
+    // **不猜、也不当成"不校验"**:当成不校验的话,一格填错的配置会让这个
+    // 买家号从此每一单都不再过支付闸,而运营台上那一格看起来是配好了的
+    // ——「配了但无效」与「故意留空」渲染成同一个结果,正是这套系统最不许有的事。
+    if (!/^\d{4}$/.test(want)) {
+      throw new DriverError("PAYMENT_METHOD_UNEXPECTED",
+                            `买家号配的期望卡尾号「${want}」不是四位数字,不敢照着切 —— ` +
+                            "请在运营台买家号那一页把它改成四位数字,或者清空(清空 = 不校验也不切)");
+    }
+
+    // 类型写在变量上(而不是只写在箭头函数的返回值上)是必要的:TypeScript
+    // 只有这样才把 stop(...) 之后的代码当成不可达,下面 `hit` 才不用再判一次 null。
+    const stop: (stage: string, detail: string) => never = (stage, detail) => {
+      throw new DriverError("PAYMENT_METHOD_UNEXPECTED",
+                            `切支付卡停在「${stage}」:${detail}`);
+    };
+
+    const now = () => readPaymentLast4(doc()) ?? null;
+    const from = now();
+    // 本来就是那张 —— 什么都不做。这是最常见的一条路(买家号平时就配着那张卡),
+    // 它必须比"切一遍再说"便宜:多点一次入口就多一次点错链接的机会。
+    if (from === want) return { last4: from, switched: false };
+
+    await hooks.onSwitchStart?.({ from, to: want });
+
+    /** 此刻页面上渲染出来的卡片单选钮有几个。判「到没到选卡页」与写失败 detail 都要它。 */
+    const radioCount = () => Array.from(doc().querySelectorAll(SEL.checkout.payselect.radio))
+      .filter((el) => isRendered(el)).length;
+
+    // ── ① 结算页支付面板里的「更改支付方式」入口 ─────────────────────
+    const panel = () => pickFirstRendered(doc(), [SEL.checkout.payment.panel]) ?? doc();
+    const entry = await waitFor("更改支付方式入口", () => findPaymentChangeEntry(doc()),
+                                { timeoutMs: T.paymentSelect }).catch(() => null);
+    if (!entry) {
+      // 与填地址那一步同一条规矩:先问一句是不是被登出了。被登出的话这一单
+      // 该退回队列(还没花钱),而不是记成一次「支付卡不符」的拍单异常。
+      await this.guardLogin(f, "打开支付选择页");
+      stop("入口没找到",
+           `结算页当前选中的是 ${from ?? "读不出来"},要切到 ${want};` +
+           `支付面板里${describeMiss(panel(), SEL.checkout.payment.changeEntry)}`);
+    }
+    // **点之前先记一笔现场。** 下面那道「到没到选卡页」的判据要拿它做对照,
+    // 理由见第 ② 步。记在 click 之前,不是之后。
+    const radiosBefore = radioCount();
+    if (!click(entry)) {
+      stop("入口没找到", "更改支付方式入口点不动(元素在、也渲染出来了,但 click 没生效)");
+    }
+
+    // ── ② 等支付选择页 ──────────────────────────────────────────────
+    //
+    // 这一步防的是填地址那一步踩过的那个坑:**判据被我们还没离开的那张页面
+    // 立刻满足**。waitFor 的第一次探测是同步的,连一个周期都不等 ——
+    // 那次的表现是「在还没跳走的结算页上点折叠容器里的按钮」,此后等一个
+    // 永远不会出现的表单,净效果是每一单都超时。
+    //
+    // 所以判据是两条,而且第二条带对照:
+    //   · URL 里出现 payselect —— 整页跳,最硬,不需要解析任何 DOM;
+    //   · 卡片单选钮**从无到有** —— 就地换内容(模态框)那种形态。
+    //     「从无到有」而不是「有」:结算页上本来就可能渲染着一份支付列表
+    //     (折叠的、或者 Amazon 把选卡直接嵌在结算页上),那时单看「有没有 radio」
+    //     在点之前就已经为真了。
+    //
+    // 代价是:页面本来就有 radio、而且点完 URL 也不变的那种形态会走到失败分支。
+    // 那是**故意选的那一侧** —— 这一整节的判据是全仓可信度最低的一档
+    // (厂商自己承认没有 DOM 样本),分不清的时候宁可停下来让人看一眼,
+    // 也不要在一张我们并不确定是什么的页面上点单选钮和确认按钮。
+    // 失败 detail 里会写清「点之前就有 N 个」,看的人一眼知道是这一格判的。
+    const arrived = await waitFor("支付选择页", () => {
+      if (f.url().includes(SEL.checkout.payselect.urlHint)) return "url" as const;
+      return radiosBefore === 0 && radioCount() > 0 ? "radios" as const : null;
+    }, { timeoutMs: T.paymentSelect, everyMs: 300 }).catch(() => null);
+    if (!arrived) {
+      await this.guardLogin(f, "跳到支付选择页");
+      stop("选卡页没到",
+           `点了更改支付方式,但既没跳到 payselect、也没**新**渲染出卡片单选钮` +
+           `(点之前页面上就有 ${radiosBefore} 个,现在有 ${radioCount()} 个);` +
+           `当前 ${describeUrl(f.urlState())}`);
+    }
+
+    // ── ③ 唯一命中期望尾号的那张卡 ───────────────────────────────────
+    const hit = await waitFor("目标支付卡", () => findCardRadioByLast4(doc(), want),
+                              { timeoutMs: T.paymentSelect }).catch(() => null);
+    if (!hit) {
+      // ①② 同一条规矩,而这三步(③④⑤)比前两步更要紧:切卡的失败落的是
+      // PAYMENT_METHOD_UNEXPECTED —— 归 BUSINESS_BLOCKED,**不在 RETRYABLE 里**,
+      // 而且不上报 signed_out。少了这一句,一个在切卡途中被登出的买家号会:
+      // 这一单落成「支付卡不符」的拍单异常 → login_state 仍是 ok → 下一轮照常
+      // 认领 → 照样死在同一步。一台机器就这样把整队单子刷成「支付卡不符」,
+      // 而运营看到这个码只会去查买家号钱包里的卡,查不出任何问题。
+      // (地址那条链的同类分支落的是 ADDRESS_FORM_TIMEOUT,可重试,轻一档。)
+      await this.guardLogin(f, "选支付卡");
+      // 这一句要能分开三种现场:一张卡都没渲染出来(还在画/改版)、
+      // 有卡但没有一张是那个尾号(钱包里没这张卡)、有两张都是那个尾号(不敢挑)。
+      // 只写「没找到」的话,运营唯一能做的事是自己登录买家号去看一遍。
+      const radios = radioCount();
+      stop("没有唯一命中的那张卡",
+           radios === 0
+             ? `支付选择页上一个渲染出来的卡片单选钮都没有:` +
+               `${describeMiss(doc(), [SEL.checkout.payselect.radio])}`
+             : `支付选择页上有 ${radios} 个卡片单选钮,但没有**恰好一个**的尾号是 ${want} ` +
+               `——「一张都不是」和「有两张都是」都会走到这里,两种都不许点:` +
+               `前者是这个买家号钱包里没有这张卡,后者是同尾号两张卡,挑错了就是刷了别人的账`);
+    }
+    if (!click(hit.radio)) {
+      stop("没有唯一命中的那张卡",
+           `命中了尾号 ${want} 的那张卡(比中的是「${hit.matchedText}」),但 radio 点不动`);
+    }
+
+    // ── ④ 确认按钮 ──────────────────────────────────────────────────
+    const confirm = await waitFor("支付方式确认按钮", () => findPaymentConfirmButton(doc()),
+                                  { timeoutMs: T.paymentSelect }).catch(() => null);
+    if (!confirm) {
+      // 同 ③:等满一个预算才走到这里,而「等不到」最常见的成因之一就是页面
+      // 已经被导去 /ap/signin 了。先问一句,理由见上面那一段。
+      await this.guardLogin(f, "确认支付方式");
+      // 「页面上根本没有这个按钮」与「按钮在、但一直是 disabled」是两回事:
+      // 前者是改版,后者是这张卡被拒了(过期、额度、地区),等多久都不会变。
+      const all = Array.from(doc().querySelectorAll(SEL.checkout.payselect.confirm));
+      const rendered = all.filter((el) => isRendered(el));
+      stop("确认按钮不可用",
+           all.length === 0
+             ? `勾中了尾号 ${want},但页面上找不到确认按钮:` +
+               `${describeMiss(doc(), [SEL.checkout.payselect.confirm])}`
+             : `勾中了尾号 ${want},确认按钮有 ${all.length} 个(渲染出来的 ${rendered.length} 个),` +
+               `但在 ${T.paymentSelect}ms 内没有一个是可点的 —— ` +
+               `按钮一直 disabled 多半是这张卡被 Amazon 拒了(过期/额度/地区),等下去也不会变`);
+    }
+    if (!click(confirm)) {
+      stop("确认按钮不可用", "确认按钮点不动(元素在、也不 disabled,但 click 没生效)");
+    }
+
+    // ── ⑤ 回到结算页,**重新读一遍**必须等于期望 ──────────────────────
+    //
+    // 这一步不是旁白,是这整段唯一的验收:前面四步全都只证明「我们点了什么」,
+    // 只有这一步证明「Amazon 认了」。少了它,一次点空的确认会让事件流里
+    // 写着「支付卡已切换」,而结算页上还是原来那张卡 ——
+    // 界面上写一句系统没做到的事,比这一单失败更坏。
+    const got = await waitFor("结算页重新选中的卡",
+                              () => { const v = now(); return v === want ? v : null; },
+                              { timeoutMs: T.paymentSelect, everyMs: 300 }).catch(() => null);
+    if (!got) {
+      // 同 ③④。这一步等的是「回到结算页、而且卡换过来了」——被登出时页面根本
+      // 不会回到结算页,等满预算之后报一句「切完读到的仍不是期望」是**错的原因**。
+      await this.guardLogin(f, "切卡后回结算页");
+      stop("切完读到的仍不是期望",
+           `点完确认等了 ${T.paymentSelect}ms,结算页读到的仍是 ` +
+           `${now() ?? "读不出来"},不是 ${want}(切之前是 ${from ?? "读不出来"});` +
+           `当前 ${describeUrl(f.urlState())}`);
+    }
+
+    await hooks.onSwitched?.({ from, to: want, matched: hit.matchedText });
+    return { last4: got, switched: true };
   }
 
   // ── 下单 ─────────────────────────────────────────────────────────

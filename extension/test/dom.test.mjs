@@ -674,6 +674,49 @@ await withFixture("checkout.html", async (run) => {
      await run("amzdom.findSubmitOrderButton(document)?.type"), "submit");
   eq("checkout 下单按钮不带 name=anti-csrftoken-a2z",
      await run("amzdom.findSubmitOrderButton(document)?.getAttribute('name')"), null);
+
+  // ── 「更改支付方式」入口(所有者定稿①:替买家号切卡)────────────────
+  //
+  // 三条判据按序试,逐条摘掉看后备接不接得住。一条失效时静默落空的表现是
+  // 「入口没找到」等满一个预算,而真实原因是"还有两条备胎没被试到"。
+  eq("checkout 更改支付入口三形态按序命中、全摘掉才落空",
+     await run(`(() => {
+        const ids = ["pay-entry-a", "pay-entry-b", "pay-entry-c"];
+        const saved = ids.map((id) => {
+          const el = document.getElementById(id);
+          return { el, parent: el.parentElement, next: el.nextSibling };
+        });
+        const got = [];
+        got.push(amzdom.findPaymentChangeEntry(document)?.id ?? null);
+        for (const s of saved) {
+          s.el.remove();
+          got.push(amzdom.findPaymentChangeEntry(document)?.id ?? null);
+        }
+        // 原样放回,不影响后面的断言
+        for (const s of saved) s.parent.insertBefore(s.el, s.next);
+        return got;
+     })()`), ["pay-entry-a", "pay-entry-b", "pay-entry-c", null]);
+
+  // 最后那个 null 说的就是这件事:面板**外面**那个一模一样的 href 不算数。
+  // 它把 iframe 导到钱包页,从那里回不到结算页 —— 而失败原因会显示成
+  // 「切完读到的仍不是期望」,和"点错了链接"完全不是一回事。
+  eq("checkout 面板外的同 href 入口确实存在(干扰项确实存在)",
+     await run(`(() => {
+        const out = document.querySelector("#pay-entry-outside");
+        const panel = document.querySelector("#checkout-payment-option-panel");
+        return [!!out, panel.contains(out),
+                out.matches('a[href*="/pay?"][href*="redirectReason=ChangePaymentMethod"]')];
+     })()`), [true, false, true]);
+
+  // 隐藏的模板入口排在三个真身**前面**,而且它命中的是第二条判据。
+  // 裸 querySelector 会取到它,click() 打在隐藏 a 上不报错也不跳转。
+  eq("checkout 隐藏的模板入口没被选中(干扰项确实存在)",
+     await run(`(() => {
+        const ghost = document.querySelector("#pay-entry-ghost");
+        const all = [...document.querySelectorAll('a[href*="toPage=payselect"]')];
+        return [all[0].id, ghost.closest("[style*='display:none']") !== null,
+                amzdom.findPaymentChangeEntry(document).id];
+     })()`), ["pay-entry-ghost", true, "pay-entry-a"]);
 });
 
 // 礼品卡抵扣的几个边界:用 DOMParser 现造,不值得为它们各建一张夹具。
@@ -706,6 +749,349 @@ await withFixture("checkout.html", async (run) => {
 
   eq("礼品卡 没有标记 → applied=false",
      await gift("<table><tr><td>Order total: $10.00</td></tr></table>"), { applied: false });
+});
+
+// ── 支付选择页 payselect · 替买家号切卡(所有者定稿①)────────────────
+//
+// ⚠️⚠️ **这一节的通过不构成证据。** 夹具 payselect.html 是照厂商 v2.5.3
+// :2081-2144 那 17 条判据造的,而厂商自己承认那一页他们**只有截图、没有 DOM
+// 样本**。跑通只说明我们按自己写的语义在读,不说明真实页面长这样。
+//
+// 这一节验的是另一件事:**fail-closed 兜不兜得住**。下面每一条对应一种
+// 「按厂商的写法会选错卡」的现场,而选错卡的后果不是这一单失败,
+// 是拿别人的卡付了钱 —— 所以判据不满足时必须返回 null(调用方据此不点确认)。
+await withFixture("payselect.html", async (run) => {
+  const hit = (last4, prop = "radio.id") =>
+    run(`amzdom.findCardRadioByLast4(document, ${JSON.stringify(last4)})?.${prop} ?? null`);
+
+  // ① 唯一命中。这张卡自己没有 .pmts-instrument-box,走的是「向上爬找最小块」
+  //    那条路 —— 它的 closest(容器候选) 命中的是整个列表(四个 radio)。
+  eq("payselect 唯一命中尾号 4417", await hit("4417"), "radio-4417");
+  eq("payselect 命中的块是最小块、不是整个列表(向上爬那一段真的走了)",
+     await run(`(() => {
+        // 可选链是必要的:这一条转红时该报「期望 X 实际 null」,
+        // 而不是抛一个 TypeError 把后面几十条断言一起带走 ——
+        // 崩掉的测试和红掉的测试,看的人得到的信息不是一回事。
+        const h = amzdom.findCardRadioByLast4(document, "4417");
+        return [h?.block?.tagName ?? null,
+                h?.block?.contains(document.querySelector("#radio-9021-mc")) ?? null];
+     })()`), ["LABEL", false]);
+  eq("payselect 命中的是细节元素里那一段文字(不是整块)",
+     await hit("4417", "matchedText"), "Visa ending in 4417");
+  eq("payselect 卡 4417 的 closest(容器候选) 确实是四个 radio 的大壳(干扰项确实存在)",
+     await run(`(() => {
+        const r = document.querySelector("#radio-4417");
+        const box = r.closest('.pmts-instrument-box, [data-pmts-instrument-id],'
+                            + ' [data-pmts-component-id*="instrument"], [class*="instrument-row"]');
+        return [box.id, box.querySelectorAll('input[type="radio"]').length];
+     })()`), ["instrument-list", 4]);
+
+  // ② 容器候选那条路:这张卡有 .pmts-instrument-box,不必往上爬。
+  eq("payselect 唯一命中尾号 3005(块里没有细节元素,退回整块比)",
+     await hit("3005"), "radio-3005");
+
+  // ③ 年份诱饵。卡 4417 那一块里写着 "Expires 08/2029",卡 3005 那一块里
+  //    写着 "Expires 09/2030"。不抹有效期的话这两个年份都会被当成尾号 ——
+  //    服务端那道闸事后拦得住,但事件流里会留下「支付卡已切换 → 2029」这句假话。
+  //    两条路径(细节元素 / 退回整块)都要抹,所以两个年份都要验。
+  eq("payselect 年份诱饵:2029 不能当尾号(细节元素那条路)", await hit("2029"), null);
+  eq("payselect 年份诱饵:2030 不能当尾号(退回整块那条路)", await hit("2030"), null);
+  eq("payselect 两个年份确实在页面上(干扰项确实存在)",
+     await run(`(() => {
+        const t = document.querySelector("#instrument-list").textContent;
+        return [/Expires 08\\/2029/.test(t), /Expires 09\\/2030/.test(t)];
+     })()`), [true, true]);
+  // 抹掉的只是"月/年"那一段,不是所有四位数 —— 4417 自己还在。
+  eq("payselect 抹有效期没有把真尾号一起抹掉", await hit("4417"), "radio-4417");
+
+  // ④ 同尾号两张卡 → **一张都不点**。厂商在第一个命中处就 return,
+  //    而两张卡是两个账、两笔额度、甚至两个持卡人。
+  eq("payselect 两张卡都是 9021 时返回 null(不敢挑)", await hit("9021"), null);
+  eq("payselect 确实有两张 9021(干扰项确实存在)",
+     await run(`[...document.querySelectorAll('[data-testid="method-details-number"]')]
+                  .filter((e) => /9021/.test(e.textContent)).length`), 2);
+
+  // ⑤ 隐藏模板里那张 4417 不算数。算的话 4417 就成了"两张命中"→ null,
+  //    这个买家号从此一单也切不了卡;点中它的话,click() 打在隐藏 radio 上
+  //    不报错也不生效,然后等满预算报一句"切完读到的仍不是期望"。
+  eq("payselect 隐藏模板里的 4417 不算数(干扰项确实存在)",
+     await run(`(() => {
+        const t = document.querySelector("#radio-template");
+        return [!!t, t.closest("[style*='display:none']") !== null,
+                [...document.querySelectorAll('input[name="ppw-instrumentRowSelection"]')].length];
+     })()`), [true, true, 5]);
+
+  // ⑥ 期望尾号本身不是四位数字 → 一律 null,不猜。这一列是人在运营台上手填的。
+  eq("payselect 期望值不是四位数字时不猜:'**** 4417'", await hit("**** 4417"), null);
+  eq("payselect 期望值不是四位数字时不猜:'441'", await hit("441"), null);
+  eq("payselect 期望值为空时不猜", await hit(""), null);
+
+  // ⑦ 确认按钮:先 disabled(不可点)后可用。两种状态必须给出两种结果 ——
+  //    click() 打在 disabled 按钮上返回 true 而浏览器不派发事件,
+  //    「点过了」和「没点动」长成同一个结果正是这条断言要防的。
+  eq("payselect 确认按钮 disabled 时是 null",
+     await run("amzdom.findPaymentConfirmButton(document)?.id ?? null"), null);
+  eq("payselect 摘掉 disabled 之后拿得到、而且不是隐藏那个",
+     await run(`(() => {
+        const real = document.querySelector("#ppw-confirm");
+        real.removeAttribute("disabled");
+        const got = amzdom.findPaymentConfirmButton(document)?.id ?? null;
+        real.setAttribute("disabled", "");          // 原样放回
+        return got;
+     })()`), "ppw-confirm");
+  eq("payselect 隐藏的确认按钮副本没 disabled、且排在真身前面(干扰项确实存在)",
+     await run(`(() => {
+        const all = [...document.querySelectorAll(
+          '[name="ppw-widgetEvent:SetPaymentPlanSelectContinueEvent"]')];
+        return [all.length, all[0].id, all[0].disabled,
+                all[0].closest("[style*='display:none']") !== null];
+     })()`), [2, "ppw-confirm-ghost", false, true]);
+
+  // ⑧ 支付选择页上没有结算页的支付面板 —— findPaymentChangeEntry 在这里必须是
+  //    null,不许退到文档级去乱找一个 a。
+  //    干扰项 F 就是为这一条摆的:页脚有一个**文档级命中得了**的同 href 入口。
+  //    没有它的话,这条断言只说明"这一页上没有能命中三条判据的元素",
+  //    「拿不到面板就 null」那一句退化成文档级也照样绿 —— 而那一支的后果是
+  //    把 iframe 导去钱包页,再也回不到结算页。
+  eq("payselect 这一页没有结算页支付面板 → 更改入口是 null",
+     await run("amzdom.findPaymentChangeEntry(document)"), null);
+  eq("payselect 页脚那个文档级能命中的入口确实存在(干扰项确实存在)",
+     await run(`(() => {
+        const out = document.querySelector("#footer-pay-entry");
+        return [!!out, !!document.querySelector(amzdom.SEL.checkout.payment.panel),
+                amzdom.pickFirstRendered(document, amzdom.SEL.checkout.payment.changeEntry)?.id ?? null];
+     })()`), [true, false, "footer-pay-entry"]);
+});
+
+// ── 切卡这五步:分支与取法,不只是判据 ────────────────────────────────
+//
+// 上面那一节验的是纯函数。这一节验的是 amazon.ts **怎么用**它们 ——
+// 与清车那一节同一个理由:判据的内容有断言盯着,取法与分支一条都没有。
+// 这一整段(五步、五种停法、guardLogin、radiosBefore 对照、期望非四位数字抛错)
+// 之前**一条断言都没有**:单测用的是假驱动,smoke 用的是模拟驱动,
+// DOM 断言只覆盖三个纯函数 —— 「五步有界、五种停法分得开」是提交说明里的一句话,
+// 不是被验过的事。
+//
+// 为什么这几条值得单写:切卡的失败落的是 PAYMENT_METHOD_UNEXPECTED,归
+// BUSINESS_BLOCKED、不在 RETRYABLE 里、也不上报 signed_out。切卡途中会话过期
+// 的表现在这五步里全是「等不到」,少了那句 guardLogin,一台已经被登出的机器
+// 会照样认领下一单、照样死在同一步,把整队单子刷成「支付卡不符」,
+// 而运营看到这个码只会去查买家号钱包里的卡 —— 查不出任何问题。
+
+const CHECKOUT_URL = "https://www.amazon.com/gp/buy/spc/handlers/display.html";
+const PAYSELECT_URL = "https://www.amazon.com/gp/buy/payselect/handlers/display.html?toPage=payselect";
+
+/** 让真驱动在结算页夹具上走一遍切卡。
+ *
+ *  `cards`      点入口**之前**页面上就摆着的卡(尾号数组)。
+ *  `onClickAdd` 第一次点击(那一次点的就是「更改支付方式」入口)时**再**添一张卡 ——
+ *               专门给「radiosBefore 记在 click 之前还是之后」当判据。
+ *  `confirm`    摆不摆一个可点的确认按钮。
+ *  `startUrl` / `afterUrl`  入口点下去之前/之后的 URL(afterUrl 为空 = 点完不变)。
+ *  `signOut`    途中把 URL 换成 /ap/signin —— 那就是「切到一半会话过期」的现场。
+ *  `hideEntries` 把支付面板里那三个真入口一并隐掉(跑完原样放回)——
+ *               第 ① 步「入口没找到」的现场。夹具是共享的,所以只隐不删。
+ *
+ *  返回 [LoginLost / 错误码 / "裸Error" / "没抛", 文案]。 */
+const cardSwitchDrill = ({ cards = [], onClickAdd = null, confirm = false,
+                           startUrl = PAYSELECT_URL, afterUrl = "", signOut = false,
+                           hideEntries = false }) => `(async () => {
+  // **这张夹具是共享的**:同一个页面跑完这一节所有断言。上一轮 append 进去的
+  // 卡片和按钮不清掉的话,下一轮的「唯一命中」会被上一轮那张同尾号的卡打掉 ——
+  // 断言仍然是绿的(码还是 PAYMENT_METHOD_UNEXPECTED),但停的地方悄悄换了一处,
+  // 验的东西就变成了另一件事。带记号 append,开头一律先删干净。
+  for (const el of [...document.querySelectorAll("[data-drill]")]) el.remove();
+
+  const mkCard = (last4) => {
+    const box = document.createElement("div");
+    box.className = "pmts-instrument-box";
+    box.setAttribute("data-drill", "1");
+    box.innerHTML = '<label><input type="radio" name="ppw-instrumentRowSelection">'
+                  + '<span class="pmts-instrument-number-tail">ending in ' + last4 + '</span></label>';
+    document.body.appendChild(box);
+  };
+  ${JSON.stringify(cards)}.forEach(mkCard);
+  if (${confirm}) {
+    const btn = document.createElement("input");
+    btn.type = "submit";
+    btn.setAttribute("data-drill", "1");
+    btn.name = "ppw-widgetEvent:SetPaymentPlanSelectContinueEvent";
+    document.body.appendChild(btn);
+  }
+
+  let url = ${JSON.stringify(startUrl)};
+  let clicks = 0;
+  // 夹具里那三个入口都是真 <a href>。这一段验的是驱动的分支,不是浏览器的导航,
+  // 所以一律拦下默认动作 —— 让这一页真跳走的话什么都验不成。
+  // 上一轮的监听器要摘掉:留着的话页面上会堆一串闭包,谁在改 url 就看不清了。
+  if (window.__drillClick) document.removeEventListener("click", window.__drillClick, true);
+  window.__drillClick = (e) => {
+    e.preventDefault();
+    clicks += 1;
+    if (clicks !== 1) return;          // 第一次点的必然是「更改支付方式」入口
+    if (${JSON.stringify(afterUrl)}) url = ${JSON.stringify(afterUrl)};
+    if (${JSON.stringify(onClickAdd)}) mkCard(${JSON.stringify(onClickAdd)});
+  };
+  document.addEventListener("click", window.__drillClick, true);
+
+  // 期望切到 9021。checkout.html 当前选中的是 4417(下面第一条断言),
+  // 两个数不一样,这一段才会真的往下走而不是在「本来就是那张」处早退。
+  // 300ms:这五步共用的预算调到测试量级,否则一条断言要等 30 秒。
+  const driver = new amzdom.AmazonDriver("https://www.amazon.com", { paymentSelect: 300 });
+  // checkout 在 TS 里是私有的,这里**故意**从外面摆好(与 fillAddress 那一段
+  // 同一个做法):要验的是这五步的分支,而走公开路径得先有一个真的结算 iframe。
+  driver.checkout = { el: null, doc: () => document, url: () => url,
+                      urlState: () => ({ kind: "ok", url }), close() {} };
+  ${signOut ? `setTimeout(() => { url = "https://www.amazon.com/ap/signin"; }, 20);` : ""}
+
+  // 第 ① 步的现场:面板还在,里面三个真入口一个都不渲染。**只隐不删**,
+  // 跑完原样放回 —— 这张夹具后面还有别的断言在用。
+  const hidden = ${hideEntries}
+    ? [...document.querySelectorAll("#pay-entry-a, #pay-entry-b, #pay-entry-c")] : [];
+  hidden.forEach((e) => { e.style.display = "none"; });
+
+  try { await driver.ensurePaymentCard("9021"); return ["没抛", ""]; }
+  catch (e) {
+    return [e instanceof amzdom.LoginLostError ? "LoginLost" : (e.code ?? "裸Error"),
+            String(e.message ?? "")];
+  }
+  finally { hidden.forEach((e) => { e.style.display = ""; }); }
+})()`;
+
+/** 三步各自的现场:③ 一张卡都没有 ④ 有唯一那张、没有确认按钮 ⑤ 两样都有、但切不过去。 */
+const STAGE = {
+  3: { cards: [] },
+  4: { cards: ["9021"] },
+  5: { cards: ["9021"], confirm: true },
+};
+const STOPS = { 3: "没有唯一命中的那张卡", 4: "确认按钮不可用", 5: "切完读到的仍不是期望" };
+
+await withFixture("checkout.html", async (run) => {
+  // 前提:这张夹具当前选中的不是 9021 —— 否则下面几条走的是「本来就是那张」的早退,
+  // 一步都不会执行,而断言照样绿。
+  eq("切卡演练的前提:结算页当前选中的是 4417,不是 9021",
+     await run("amzdom.readPaymentLast4(document)"), "4417");
+
+  // ③④⑤ 三步:会话在切卡途中过期 → 必须是 LoginLostError(这一单退回队列、
+  // 这台机器停止派单),不是 PAYMENT_METHOD_UNEXPECTED(不可重试的拍单异常)。
+  for (const stage of [3, 4, 5]) {
+    const [code] = await run(cardSwitchDrill({ ...STAGE[stage], signOut: true }));
+    eq(`切卡第${stage}步等不到时先问一句登录态(被登出 → LoginLost,不是支付卡不符)`,
+       code, "LoginLost");
+  }
+
+  // 对照:同样三步,没被登出时必须仍然是那三种停法 —— guardLogin 只是加一道问,
+  // 不许把正常的失败也吞成「被登出」。两种不同的情况要渲染出两个结果。
+  for (const stage of [3, 4, 5]) {
+    const [code, msg] = await run(cardSwitchDrill({ ...STAGE[stage] }));
+    eq(`切卡第${stage}步没被登出时照旧落 PAYMENT_METHOD_UNEXPECTED`,
+       code, "PAYMENT_METHOD_UNEXPECTED");
+    check(`切卡第${stage}步停在「${STOPS[stage]}」`, msg.includes(STOPS[stage]), msg);
+  }
+
+  // ── 第 ① 步:面板在、面板里一个渲染出来的入口都没有 ────────────────────
+  //
+  // 这一支同样是「等满一个预算」,所以同样先问登录态。而它与第 ② 步必须分得开:
+  // 「入口没找到」是结算页那一侧改版(要改 payment.changeEntry),
+  // 「选卡页没到」是点了但没跳走 —— 两件事的处置完全不同,
+  // 而它们今天共用一个错误码,detail 里那句话是运营台上唯一能把它们分开的东西。
+  {
+    const [code, msg] = await run(cardSwitchDrill({ hideEntries: true }));
+    eq("切卡第1步:面板里三个入口都不渲染 → 停在「入口没找到」",
+       [code, msg.includes("入口没找到")], ["PAYMENT_METHOD_UNEXPECTED", true]);
+    const [lost] = await run(cardSwitchDrill({ hideEntries: true, signOut: true }));
+    eq("切卡第1步等不到时先问一句登录态(被登出 → LoginLost)", lost, "LoginLost");
+    // 隐掉的那三个必须原样放回 —— 不放回的话,后面每一条断言验的都是另一张页面。
+    eq("切卡第1步演练之后,三个入口原样放回",
+       await run(`amzdom.findPaymentChangeEntry(document)?.id ?? null`), "pay-entry-a");
+  }
+
+  // ── 第 ② 步那条对照判据:「从无到有」,不是「有」 ────────────────────
+  //
+  // 这是这五步里最微妙的一条,也是**故意选了会误伤的那一侧**的一条:
+  // 结算页上本来就渲染着一份支付列表(折叠的、或者 Amazon 把选卡直接嵌在结算页上)
+  // 时,只问「有没有 radio」在点之前就已经为真 —— 判据被我们还没离开的那张页面
+  // 立刻满足,于是在一张不确定是什么的页面上点单选钮和确认按钮。填地址那一步
+  // 踩过同一个坑(在还没跳走的结算页上点折叠容器里的按钮)。
+  //
+  // 代价是「本来就有 radio 且点完 URL 不变」会走失败分支。那一侧是选出来的,
+  // 得有断言把它钉住 —— 改成只看 radioCount() > 0 的话,下面这一条会从
+  // 「选卡页没到」变成「切完读到的仍不是期望」。
+  {
+    const [code, msg] = await run(cardSwitchDrill({
+      cards: ["9021"], onClickAdd: "3333", confirm: true,
+      startUrl: CHECKOUT_URL, afterUrl: "",      // 点完 URL 不变
+    }));
+    eq("切卡第2步:点之前就有 radio、点完 URL 不变 → 停在「选卡页没到」",
+       [code, msg.includes("选卡页没到")], ["PAYMENT_METHOD_UNEXPECTED", true]);
+    // radiosBefore 记在 click **之前**。记在之后的话这一句会变成「就有 2 个」——
+    // 判据本身照样落空(失败分支不变),但看的人再也分不出「本来就有」还是
+    // 「点完才有」,而这两件事一个是误伤、一个是真没跳走。
+    check("切卡第2步 detail 里的对照数是点击**之前**那一笔(1 → 2)",
+          msg.includes("点之前页面上就有 1 个,现在有 2 个"), msg);
+  }
+  {
+    // 对照:一模一样的现场,只多一样 —— 点完 URL 跳到 payselect。
+    // 这一条证明上面那次失败是「没跳走」判的,不是「页面上有两张卡」之类的别的原因。
+    const [code, msg] = await run(cardSwitchDrill({
+      cards: ["9021"], onClickAdd: "3333", confirm: true,
+      startUrl: CHECKOUT_URL, afterUrl: PAYSELECT_URL,
+    }));
+    eq("切卡第2步:同一现场、点完 URL 跳到 payselect → 越过第2步,走到第5步",
+       [code, msg.includes("切完读到的仍不是期望")], ["PAYMENT_METHOD_UNEXPECTED", true]);
+  }
+  {
+    // ② 那道超时同样要先问登录态(与 ③④⑤ 同一条规矩)。
+    const [code] = await run(cardSwitchDrill({
+      cards: ["9021"], startUrl: CHECKOUT_URL, afterUrl: "", signOut: true,
+    }));
+    eq("切卡第2步等不到时先问一句登录态(被登出 → LoginLost)", code, "LoginLost");
+  }
+
+  // ── 期望值配成了别的形状 → **抛错**,不是静默不切 ───────────────────
+  //
+  // 「配了但无效」与「故意留空」渲染成同一个结果,是这套系统最不许有的那件事:
+  // 一格填错的配置会让这个买家号从此每一单都不再过支付闸,而运营台上那一格
+  // 看起来是配好了的。所以这一档必须抛,而且要在**碰页面之前**就抛。
+  eq("期望值不是四位数字时抛错(不是静默退化成「不校验」),且一次 doc() 都没读",
+     await run(`(async () => {
+        const out = [];
+        for (const v of ["441", "**** 4417", "44170", "4a17", "0"]) {
+          const driver = new amzdom.AmazonDriver("https://www.amazon.com");
+          let reads = 0;
+          driver.checkout = { el: null,
+                              doc: () => { reads += 1; throw new Error("iframe 拿不到 document"); },
+                              url: () => "", urlState: () => ({ kind: "detached" }), close() {} };
+          try { await driver.ensurePaymentCard(v); out.push(["没抛", reads]); }
+          catch (e) { out.push([e.code ?? "裸Error",
+                                reads, String(e.message ?? "").includes("不是四位数字")]); }
+        }
+        return out;
+     })()`),
+     [["PAYMENT_METHOD_UNEXPECTED", 0, true], ["PAYMENT_METHOD_UNEXPECTED", 0, true],
+      ["PAYMENT_METHOD_UNEXPECTED", 0, true], ["PAYMENT_METHOD_UNEXPECTED", 0, true],
+      ["PAYMENT_METHOD_UNEXPECTED", 0, true]]);
+
+  // 期望为空 = 一步都不做,**连 doc() 都不碰**。
+  // 结算 iframe 已跨域/已销毁时 doc() 是抛错的(frame.ts),而一个根本没配
+  // 期望卡的买家号不该因为一个按定义什么都不做的步骤失败 —— 那会被 run.ts
+  // 兜成 PLUGIN_INTERNAL,一个与支付毫无关系的买家号栽在支付这一步上。
+  eq("期望为空:四种写法都是 {last4:null,switched:false},且一次 doc() 都没读",
+     await run(`(async () => {
+        const out = [];
+        for (const v of [null, undefined, "", "   "]) {
+          const driver = new amzdom.AmazonDriver("https://www.amazon.com");
+          let reads = 0;
+          driver.checkout = { el: null,
+                              doc: () => { reads += 1; throw new Error("iframe 拿不到 document"); },
+                              url: () => "", urlState: () => ({ kind: "detached" }), close() {} };
+          try { out.push([JSON.stringify(await driver.ensurePaymentCard(v)), reads]); }
+          catch (e) { out.push(["抛了:" + String(e.message).slice(0, 30), reads]); }
+        }
+        return out;
+     })()`),
+     [['{"last4":null,"switched":false}', 0], ['{"last4":null,"switched":false}', 0],
+      ['{"last4":null,"switched":false}', 0], ['{"last4":null,"switched":false}', 0]]);
 });
 
 // ── 结算页 · 礼品卡抵扣 ──────────────────────────────────────────────

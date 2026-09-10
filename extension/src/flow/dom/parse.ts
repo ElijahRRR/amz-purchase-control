@@ -967,3 +967,151 @@ export function readPaymentSlots(doc: Document): number | undefined {
   return Array.from(panel.querySelectorAll(SEL.checkout.payment.selectedSlots))
     .filter((el) => !isHidden(el)).length;
 }
+
+// ── 支付卡切换:结算页入口 → 支付选择页 → 确认 ────────────────────────
+//
+// 所有者定稿①(2026-09-09):替买家号切换支付卡。**先切后验,验在服务端** ——
+// 这一段只回答「页面上该点哪个」,切没切成由服务端 guard-check 说了算。
+//
+// ⚠️⚠️ 这三个函数吃的判据是 SEL.checkout.payselect,那是**厂商按截图推的**
+// (他们自己承认支付选择页没有 DOM 样本),可信度是全仓最低的一档。
+// 所以三个函数一律**宁可返回 null**:调用方(amazon.ensurePaymentCard)收到 null
+// 就停下、抛 PAYMENT_METHOD_UNEXPECTED,绝不"差不多就是它了"往下点。
+// 这一步点错的后果不是这一单失败,是拿**别人的卡**付了钱。
+
+/** 输入:结算页文档 → 输出:支付面板里那个「更改支付方式」入口,没有就是 null。
+ *
+ *  **限定在 payment.panel 里面**,拿不到面板就直接 null(不退到文档级):
+ *  同样的 href 在页脚「管理支付方式」和账户浮层里各有一份,文档级取到那一个
+ *  会把 iframe 导到钱包页,再也回不来。这和 readPaymentLast4 收窄作用域是同一条理由,
+ *  只是后果更重:那边读错一个数,这边点错一个链接。 */
+export function findPaymentChangeEntry(doc: Document): HTMLElement | null {
+  const panel = visible(doc, SEL.checkout.payment.panel);
+  if (!panel) return null;
+  return pickFirstRendered<HTMLElement>(panel, SEL.checkout.payment.changeEntry);
+}
+
+/** 输入:支付选择页文档 → 输出:确认按钮,**不可用时是 null**。
+ *
+ *  两道过滤缺一不可:
+ *   · 渲染出来的那一个 —— Amazon 把整套 ppw 组件的模板塞在隐藏壳里,
+ *     隐藏副本上的 disabled 常常是没置的,裸取会取到一个"可用"的假按钮;
+ *   · 没有 disabled —— click() 打在 disabled 按钮上**返回 true**(元素在),
+ *     浏览器却根本不派发事件。于是「点过了」和「没点动」长成同一个结果,
+ *     然后等满一个预算才报错,而报出来的原因还是错的。
+ *     (同一个坑在商品页加购按钮上踩过一次,见 findAddToCartButton。) */
+export function findPaymentConfirmButton(doc: Document): HTMLElement | null {
+  for (const el of Array.from(doc.querySelectorAll<HTMLElement>(SEL.checkout.payselect.confirm))) {
+    if (!isRendered(el)) continue;
+    if ((el as HTMLButtonElement).disabled) continue;
+    if (el.getAttribute("aria-disabled") === "true") continue;
+    return el;
+  }
+  return null;
+}
+
+export interface CardRadioHit {
+  /** 要点的那个单选钮。 */
+  radio: HTMLInputElement;
+  /** 它所属的那张卡的最小块 —— 尾号就是在这个块里比中的。 */
+  block: Element;
+  /** **比中的是哪一段文字**。写进事件流与失败 detail:选择器改版时,
+   *  「比中了 4417」和「在有效期里比中了 4417」得能分开看。 */
+  matchedText: string;
+}
+
+/** 页面上此刻**渲染出来的**卡片单选钮。隐藏模板里的那些一概不算 ——
+ *  它们既不该被点中,也不该在「这个块里有几个 radio」那道计数里占位。
+ *
+ *  厂商数的是全部(含隐藏),那会让一张自带隐藏模板的卡永远判不出唯一命中;
+ *  我们数渲染出来的,同时把二次比对也限定在渲染出来的细节元素上 ——
+ *  隐藏副本里预填的那张卡号就够不着了。 */
+function renderedRadios(root: Document | Element): HTMLInputElement[] {
+  return Array.from(root.querySelectorAll<HTMLInputElement>(SEL.checkout.payselect.radio))
+    .filter((el) => isRendered(el));
+}
+
+/** 把文本里「像有效期的那一段」抹掉,再拿去比尾号。
+ *
+ *  **这是这一整段最要紧的一条。** 卡片块里必然写着有效期:
+ *      Visa ending in 4417 · Expires 08/2029
+ *  而尾号判据是「四位连续数字」。不抹的话,一个买家号被配成期望卡 `2029`
+ *  时,这张 4417 的卡会被判成命中 —— 然后我们替他刷了一张根本不是他要的卡。
+ *  服务端那道 PAYMENT_METHOD_UNEXPECTED 事后会拦住这一单(它读的是结算页
+ *  真正选中的尾号 4417 ≠ 2029),所以钱不会花错;但事件流里会写着
+ *  「支付卡已切换 → 2029」,而实际切成了 4417 —— 一句假话比一次失败更难查。
+ *
+ *  抹的是 `数字/数字` 与 `数字-数字` 这种月/年写法(08/2029、8-29、08/29),
+ *  不管前面有没有 "Expires":换个站点语言那个词就变了,而斜杠不变。 */
+function stripExpiry(t: string): string {
+  return t.replace(/\b\d{1,2}\s*[/-]\s*\d{2,4}\b/g, " ");
+}
+
+/** 输入:支付选择页文档 + 期望尾号 → 输出:**唯一**命中的那张卡,否则 null。
+ *
+ *  与厂商 v2.5.3 :2081-2144 同一套判据,但有三处刻意的不同,三处都是同一个立场:
+ *  **宁可不切,不可切错。**
+ *
+ *   1. **唯一才算数。** 厂商 `return radio` 在第一个命中处就返回。一个买家号
+ *      钱包里有两张尾号相同的卡(换卡不换号、虚拟卡、同号的借记/信用)不是奇事,
+ *      那时厂商点的是排在前面的那一张 —— 而两张卡是两个账、两笔额度、
+ *      甚至两个持卡人。我们数完全部命中,不是恰好一个就返回 null,
+ *      让这一单转人工由人去看。
+ *   2. **隐藏的不算。** radio 的计数与细节元素的二次比对都只看渲染出来的,
+ *      理由见 renderedRadios。
+ *   3. **有效期年份不能当尾号。** 见 stripExpiry。
+ *
+ *  期望尾号不是四位数字时直接 null:这一列是人在运营台上手填的,
+ *  填了个 "**** 4417" 或者 "4417 (Visa)" 的话,与其用一条模糊匹配去猜他的意思,
+ *  不如什么都不做 —— 猜错的代价是刷错卡。 */
+export function findCardRadioByLast4(doc: Document, last4: string): CardRadioHit | null {
+  const want = (last4 ?? "").trim();
+  if (!/^\d{4}$/.test(want)) return null;
+
+  const S = SEL.checkout.payselect;
+  const pattern = new RegExp(`(^|\\D)${want}(\\D|$)`);
+  const hits: CardRadioHit[] = [];
+
+  for (const radio of renderedRadios(doc)) {
+    // ① 先按容器候选找块,并要求块内**恰好一个**渲染出来的 radio。
+    //    多于一个说明这个候选圈大了(整个列表都挂着 instrument-row 之类的 class),
+    //    那时块里的文本是所有卡的文本拼在一起,拿它比尾号必然比中。
+    let block: Element | null = radio.closest(S.blocks.join(", "));
+    if (block && renderedRadios(block).length !== 1) block = null;
+
+    // ② 圈大了就往上爬,最多 8 层,找「只含这一个 radio 且文本里有目标尾号」
+    //    的**最小**块。爬到某一层出现两个 radio 就停 —— 再往上只会更大。
+    let cur: Element | null = radio.parentElement;
+    for (let depth = 0; !block && cur && depth < 8; depth += 1) {
+      const n = renderedRadios(cur).length;
+      if (n === 1 && pattern.test(stripExpiry(text(cur)))) { block = cur; break; }
+      if (n > 1) break;
+      cur = cur.parentElement;
+    }
+    if (!block) continue;
+
+    // ③ 在**细节元素**上二次比对。块里还有有效期、账单邮编、积分数,
+    //    拿整块文本比等于把这些都当成候选尾号。细节元素一个都没有时
+    //    才退回整块(厂商也是这么退的)—— 那一档更容易误判,所以 stripExpiry
+    //    在两条路上都要走。
+    const details = Array.from(block.querySelectorAll<HTMLElement>(S.details.join(", ")))
+      .filter((el) => isRendered(el));
+    const candidates: Element[] = details.length > 0 ? details : [block];
+
+    const values: string[] = [];
+    for (const el of candidates) {
+      values.push(text(el));
+      for (const attr of ["aria-label", "placeholder", "value", "data-last-four", "data-tail"]) {
+        const v = el.getAttribute(attr);
+        if (v) values.push(v.replace(/\s+/g, " ").trim());
+      }
+    }
+
+    const matched = values.find((v) => pattern.test(stripExpiry(v)));
+    if (matched !== undefined) {
+      hits.push({ radio, block, matchedText: matched.slice(0, 120) });
+    }
+  }
+
+  return hits.length === 1 ? hits[0] : null;
+}
