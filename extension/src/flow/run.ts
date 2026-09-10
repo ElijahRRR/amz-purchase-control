@@ -115,6 +115,14 @@ export interface RunDeps {
   /** 留给服务端的余量(毫秒)。来自 `core/config.timeouts.orderServerMargin` ——
    *  与 placeOrder 的硬顶**同一把尺子**,不另配一个。 */
   orderServerMarginMs?: number;
+  /** 留给「点下单 → 等确认页」那一步的地板(毫秒)。来自
+   *  `core/config.timeouts.minOrderRoom`,不传用默认值。
+   *
+   *  等人这一格**不许把认领窗口吃光**:`placeOrder` 先点按钮、再算硬顶,
+   *  算出来接近 0 时按钮已经点下去了 —— 一张刚被人批准的单当场
+   *  ORDER_CONFIRM_TIMEOUT、置位 may_have_ordered、转待人工「可能已下单」。
+   *  在点下去之前发现余地不够,代价只是退回队列。 */
+  minOrderRoomMs?: number;
   /** 进入/离开「等人确认下单」。面板拿 deadlineMs 跑倒计时,离开时传 null。
    *  与 onPhase 分开的理由和 onVerifyWindow 一样:相位是给标签用的,这个是给
    *  那个数字用的。**离开时一定要传 null** —— 一条还在走的倒计时配着一句
@@ -329,8 +337,11 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     // 转待人工,那之后我们连 /release 都发不出去(TASK_NOT_HELD)——
     // 一张一分钱没花的单会以「待人工 · CLAIM_TIMEOUT」收场,而它其实只是
     // 没人按那一下。所以上界取
-    //     min(confirmWait, 认领时刻 + claim_timeout_min×60s − orderServerMargin − 此刻)
-    // 与 placeOrder 的硬顶**同一把尺子**(flow/amazon.orderHardCapMs)。
+    //     min(confirmWait,
+    //         认领时刻 + claim_timeout_min×60s − orderServerMargin − minOrderRoom − 此刻)
+    // 与 placeOrder 的硬顶**同一把尺子**(flow/amazon.orderHardCapMs),再扣掉
+    // 留给下单那一步的地板(minOrderRoom)—— 等人这一格不许把认领窗口吃光,
+    // 否则人在窗口末尾按下的那一下会当场撞上 ORDER_CONFIRM_TIMEOUT。
     //
     // **确认窗口算进单笔硬顶,不豁免。** background/loop 的看门狗按
     // min(taskHardCapMs, 认领窗口 − 余量) 掐单,这段等待就在它里面 ——
@@ -361,13 +372,79 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     if (deps.confirmBeforeOrder === true && deps.askConfirm) {
       const budgetMs = posOr(deps.confirmWaitMs, DEFAULTS.timeouts.confirmWait);
       const marginMs = posOr(deps.orderServerMarginMs, DEFAULTS.timeouts.orderServerMargin);
-      // 老服务端不下发 claim_timeout_min:那时没有窗口可钳,只能用配置里那个数。
+      const minOrderRoomMs = posOr(deps.minOrderRoomMs, DEFAULTS.timeouts.minOrderRoom);
+
+      /** 认领窗口里此刻还剩多少余地给「点下单 → 等确认页」那一段。
+       *  与 `flow/amazon.orderHardCapMs` 里那一项同式(认领到期 − 余量 − 此刻),
+       *  少了 orderHardCap 那一项 —— 这里问的是「认领窗口够不够」,
+       *  不是「这一步最多跑多久」。老服务端不下发 claim_timeout_min 时没有窗口
+       *  可言,给 Infinity(那时本来也没有什么可钳的)。 */
+      const orderRoomLeft = () =>
+        claimDeadlineMs === null ? Infinity : claimDeadlineMs - marginMs - Date.now();
+
+      /** 余地不够,这一单不下了:先写事件流,再清车,再 /release。
+       *  **这一刻一分钱没花**,退回队列是安全的那一边 —— 单子还在,
+       *  下一次认领会带一个全新的窗口。顺序同取消/超时那两条(release 之后
+       *  /events 会被 TASK_NOT_HELD 拒掉)。 */
+      const giveBackNoRoom = async (
+        stepText: string, roomLeftMs: number, extra: Record<string, unknown> = {},
+      ): Promise<Outcome> => {
+        await client.events(task.task_id, [{
+          kind: "step",
+          payload: { step: stepText, state: "confirm_no_room",
+                     order_room_ms: Math.max(0, Math.round(roomLeftMs)),
+                     min_order_room_ms: minOrderRoomMs, ...extra },
+        }]);
+        // 清车那条留痕里的 `where` 用一句**定长**的话:它会原样进
+        // 「清车失败」那条事件的 where 字段,那一格是给运营按来源归类的,
+        // 塞一句带秒数的模板串进去,同一种失败会散成很多个不同的 where。
+        const cleared = await tryClear("认领窗口不够下单");
+        const rel = await client.release(task.task_id);
+        return rel.ok
+          ? { kind: "released", cartCleared: cleared }
+          : { kind: "unreported", message: rel.message, cartCleared: cleared };
+      };
+
+      // ── 停下来之前先看一眼表 ──
+      //
+      // 可以拿来等人的,是认领窗口里剩下的余地**再扣掉下单那块地板**
+      // (minOrderRoom)。不扣的话,等人这一格会把窗口吃光:人在窗口末尾按下
+      // 「下单」时 placeOrder 的硬顶只剩 ~0 —— 而 placeOrder 是**先点按钮
+      // 再算硬顶**,于是一张刚被人批准的单当场 ORDER_CONFIRM_TIMEOUT、
+      // 置位 may_have_ordered、转待人工「可能已下单,去买家号里看一眼」。
+      // 运营把 confirmWait 调大(想给人更多时间)只会让这一格更容易踩中。
+      //
+      // 扣完 ≤ 0 的意思是「这一单已经跑得太久,再停下来等人就是拿一张还能安全
+      // 退回队列的单去换一张可能已下单的单」。另外两条路都不能走:
+      //   · 硬着头皮开窗口 → 人按了也白按(见下面「按下之后再看一眼表」)
+      //   · 悄悄跳过确认直接下单 → 开关开着却一步没停,正是本项目最忌的假象
+      // 所以退回队列。**这一条不写 awaiting_confirm** —— 窗口根本没开过,
+      // 没有任何人被问过;写了的话事件流里会出现一个没人见过的确认屏。
+      //
+      // 代价说在明处:前面几步真的稳定要跑掉整个认领窗口时,这一单会在
+      // 「认领 → 跑到这里 → 退回队列」之间来回,事件流里堆出一串同样的
+      // confirm_no_room。那串留痕就是它的报警器 —— 要调的是服务端的认领超时,
+      // 或者干脆关掉「下单前确认」。
       const roomMs = claimDeadlineMs === null
         ? budgetMs
-        : Math.max(0, claimDeadlineMs - marginMs - Date.now());
+        : Math.max(0, orderRoomLeft() - minOrderRoomMs);
+      if (roomMs <= 0) {
+        const leftS = Math.max(0, Math.round(orderRoomLeft() / 1000));
+        log.warn(`「下单前确认」开着,但认领窗口只剩 ${leftS} 秒 —— 不够停下来等人了。` +
+                 `这一单一步不点、清车退回队列(一分钱没花,它还在队列里)。` +
+                 `要调的是服务端的认领超时,或者把前面几步的预算调紧`);
+        return await giveBackNoRoom("认领窗口不够停下来等人了,退回队列",
+                                    orderRoomLeft());
+      }
       const waitMs = Math.min(budgetMs, roomMs);
       const cappedBy = roomMs < budgetMs ? "claim_window" : "confirm_wait";
-      const deadlineMs = Date.now() + waitMs;
+      // **窗口从这一刻起算,包含下面那条 /events 的来回。** 交给面板的
+      // deadlineMs 与这边那把钟必须是同一个时刻:先算 deadline、再数一遍
+      // waitMs 的话,真正到期会比面板上那条倒计时晚整整一个 HTTP 来回
+      // (最坏 requestTimeoutMs)—— 面板归零之后按钮还能按、按了照样下单,
+      // 而屏幕上写着「到点退回队列」,「已经过期」和「还来得及」长成一个样子。
+      const openedAt = Date.now();
+      const deadlineMs = openedAt + waitMs;
 
       deps.onPhase?.("confirm");
       deps.onConfirmWindow?.(deadlineMs);
@@ -400,7 +477,10 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
       // 到点由**这边的钟**说了算。界面自己也跑一条倒计时(它要显示 M:SS),
       // 但那条只负责显示 —— 上界交给界面的话,一个渲染卡住的面板就等于没有上界,
       // 而它长得跟「人还在看」一模一样。
-      const gate = boundedWait(deps.askConfirm(task, preview), waitMs);
+      // 从 deadlineMs **倒推**,不是再数一遍 waitMs:上面那条 /events 的来回
+      // 已经花在这个窗口里了(见 openedAt 那一段)。
+      const gate = boundedWait(deps.askConfirm(task, preview),
+                               Math.max(0, deadlineMs - Date.now()));
       let answer: boolean | typeof CONFIRM_TIMEOUT;
       try {
         answer = await gate.race;
@@ -467,10 +547,29 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
           : { kind: "unreported", message: rel.message, cartCleared: cleared };
       }
 
+      // **人按下之后再看一眼表。** 上面那块地板保证的是「窗口到点那一刻还剩
+      // minOrderRoom」,不是「人按下那一刻一定还剩」:那条 /events 的来回、
+      // 面板应答的那一跳、事件循环里排在前面的活,都走在这个窗口里面。
+      // 此刻余地已经掉到地板以下的话,**批准了也不能点** —— placeOrder 先点
+      // 按钮再算硬顶,点下去就是一张 may_have_ordered=true 的待人工单;
+      // 而这一刻还没花钱,退回队列是安全的那一边。
+      // 那个人没白按:他按过这件事留在事件流里(waited_ms 与那句 step 文案)。
+      const leftForOrder = orderRoomLeft();
+      if (leftForOrder < minOrderRoomMs) {
+        const leftS = Math.max(0, Math.round(leftForOrder / 1000));
+        log.warn(`人按了下单,但认领窗口只剩 ${leftS} 秒 —— 不够走完「点下单 → 等确认页」。` +
+                 `这一单不点,清车退回队列:点下去多半是一张「可能已下单」的待人工单,` +
+                 `而现在它一分钱没花。要调的是服务端的认领超时,或者把 confirmWait 调小`);
+        return await giveBackNoRoom(
+          `人按了下单,但认领窗口只剩 ${leftS} 秒,不够下单了,退回队列`,
+          leftForOrder, { waited_ms: Date.now() - openedAt });
+      }
+
       // 放行也要留痕:事后追「这一单是谁点的头」时,「机器直接下的」与
       // 「某个人在 xx:xx 按了下单」必须分得开。
+      // waited_ms 从 openedAt 起算 —— 与面板上那条倒计时同一把钟。
       await step("人按了下单,继续", {
-        state: "confirm_approved", waited_ms: Math.max(0, waitMs - (deadlineMs - Date.now())),
+        state: "confirm_approved", waited_ms: Date.now() - openedAt,
       });
     }
 

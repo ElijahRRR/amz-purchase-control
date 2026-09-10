@@ -322,9 +322,12 @@ export class Loop {
         // 开关从**这一轮的配置**读。面板上改它不重建 Loop(runner.setConfig 只在
         // 服务端地址/身份变了才重建),读构造时捕获的那一位会让开关改完不生效。
         confirmBeforeOrder: cfg.confirmBeforeOrder === true,
-        // 两个预算都从同一张超时表来,不在这里编译成常量。
+        // 三个预算都从同一张超时表来,不在这里编译成常量。
         confirmWaitMs: cfg.timeouts?.confirmWait,
         orderServerMarginMs: cfg.timeouts?.orderServerMargin,
+        // 等人这一格不许把认领窗口吃光:下单那一步要留着这块地板,
+        // 否则人在窗口末尾按下的那一下会当场撞上 ORDER_CONFIRM_TIMEOUT。
+        minOrderRoomMs: cfg.timeouts?.minOrderRoom,
         isAbandoned: () => abandoned.yes,
         onLoginLost: () => this.markSignedOut(),
         // 相位由 runTask 说了算的那两格(等人做发卡行验证 / 验证做完了)。
