@@ -727,6 +727,32 @@ def test_export_carries_the_source_column(conn, seed, client):
     assert task_query.CAP_NOT_APPLICABLE in body
 
 
+def test_export_does_not_print_the_placeholder_cap_as_a_number(conn, seed, client):
+    """**「整单限价」这一列也不许原样铺那个占位 0。**
+
+    CLAUDE.md 业务前提④ 说的是「界面**与导出**对它一律写「外部下单,不适用」,
+    不许渲染成「限价 0.00,未超」」。运营导一份 CSV 去对账,按「整单限价」排序或求和
+    的人拿到的是一个**系统从没有过的限价**:这批单看起来是「限价 0 的单」,
+    而真相是「这一单根本没有限价这回事」。同一行的「是否超限价」写着「不适用」,
+    但隔着六七列,不在同一眼里。
+
+    这一列此前**一条断言都没有** —— 改坏了没有任何地方会红。
+    """
+    task_intake.ingest(conn, [
+        _row(upstream_order_no="UP-EXT", price_cap=None,
+             amazon_order_no="111-2223334-5556667"),
+        _row(upstream_order_no="UP-PLUGIN", price_cap="120.00"),
+    ])
+    conn.commit()
+    body = client.post("/v1/admin/tasks/export", json={}).content.decode("utf-8-sig")
+    head = body.splitlines()[0].split(",")
+    cap_i = head.index("整单限价")
+    rows = {r.split(",")[0]: r.split(",") for r in body.splitlines()[1:] if r.strip()}
+    assert rows["UP-EXT"][cap_i] == task_query.CAP_NOT_APPLICABLE
+    # 而插件拍的单照旧是那个数 —— 这一支不许把它一起吃掉。
+    assert rows["UP-PLUGIN"][cap_i] == "120.00"
+
+
 def test_search_can_filter_by_source(conn, seed, client):
     task_intake.ingest(conn, [
         _row(upstream_order_no="UP-EXT", price_cap=None,

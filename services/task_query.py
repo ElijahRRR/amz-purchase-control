@@ -489,6 +489,20 @@ def error_stats(conn, *, date_from: date, date_to: date) -> dict[str, Any]:
 CAP_NOT_APPLICABLE = "不适用"
 
 
+def cap_applies(task) -> bool:
+    """输入:任务行 → 输出:这一单有没有「限价」这回事。**判据的唯一定义处(服务端这半)。**
+
+    外部下单没有:那一单不经本系统采购(所有者定稿 ④),`price_cap` 是库里那一列
+    NOT NULL 逼出来的占位 `0`。护栏从没读过它。
+
+    抽成一个函数是因为这一条现在有**两个**消费者(`over_cap` 与 `export_rows`),
+    而 CLAUDE.md 业务前提④ 说的是「界面**与导出**对它一律写「外部下单,不适用」」。
+    第三份 `== "external"` 一旦写下来,迟早有一处跟不上。
+    (前端那半在 `web/src/lib/utils.capVerdict` —— 那是另一个运行时,两处并列。)
+    """
+    return task.get("purchase_source") != "external"
+
+
 def cap_basis(task) -> Any:
     """输入:任务行 → 输出:该拿哪个数去跟 price_cap 比;比不了返回 None。
 
@@ -521,7 +535,7 @@ def over_cap(task) -> str:
     """
     # 外部下单先判:那一单没走过我们的结算页,price_cap 是个占位的 0,
     # 拿它去比会得出「0 ≥ 0,没超」这种从没发生过的护栏结论。
-    if task.get("purchase_source") == "external":
+    if not cap_applies(task):
         return CAP_NOT_APPLICABLE
     basis = cap_basis(task)
     cap = task.get("price_cap")
@@ -605,7 +619,7 @@ def export_rows(conn, *, page_size: int, **filters) -> Any:
                 yield {
                     **{k: t.get(k) for k in (
                         "upstream_order_no", "marketplace", "status", "error_code",
-                        "error_detail", "price_cap", "actual_shipping", "actual_tax",
+                        "error_detail", "actual_shipping", "actual_tax",
                         "actual_total", "gift_card_amount", "goods_total",
                         "amazon_order_no", "env_code",
                         "amazon_customer_id", "payment_last4", "ship_name", "ship_phone",
@@ -621,6 +635,14 @@ def export_rows(conn, *, page_size: int, **filters) -> Any:
                     "asin": p.get("asin"),
                     "quantity": p.get("quantity"),
                     "actual_unit_price": p.get("actual_unit_price"),
+                    # **「整单限价」这一列不许原样铺 price_cap。** 外部单那一格是
+                    # 库里 NOT NULL 逼出来的占位 0:导出来是 `0.00`,而同一行的
+                    # 「是否超限价」写着「不适用」—— 同一行两句相反的话,
+                    # 而且隔着六七列,不在同一眼里。在 Excel 里按这一列排序或求和的人
+                    # 拿到的是一个**系统从没有过的限价**:这批单看起来是「限价 0 的单」,
+                    # 而真相是「这一单根本没有限价这回事」。
+                    # 判据接的是 over_cap 用的那一条(cap_applies),不新写第三份。
+                    "price_cap": t.get("price_cap") if cap_applies(t) else CAP_NOT_APPLICABLE,
                     "over_cap": over_cap(t),
                     "purchase_source_label": vocab.PURCHASE_SOURCE_LABELS.get(
                         t.get("purchase_source"), t.get("purchase_source")),

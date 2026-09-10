@@ -13,6 +13,11 @@ import { useLabel } from "@/lib/meta";
 import { cn, shortTime } from "@/lib/utils";
 import type { InstanceRow } from "@/types";
 
+/** 与任务页顶栏那一句同源(web/src/pages/Tasks.tsx 的同名常量)。
+ *  两处「今日已拍」接的是同一条服务端判据,说明也只该有一种说法。 */
+const OURS_ONLY_NOTE = "今天**我们自己**拍成的单;上游在别处买的「外部下单」不算 —— 它不占日限,也没过任何一道护栏。判据只有一处(services/task_queue.OURS_ONLY_SQL),认领 SQL 的日限用的是同一条。";
+
+
 /** 「该刷哪张卡」这一格。留空 = 这个买家号不校验支付方式。
  *
  *  做成可改的而不是只读的:配错一位数的后果是这个买家号从此每一单都被
@@ -314,7 +319,11 @@ export default function InstancesPage() {
                     <td className={cn("px-3 num", r.manual_count > 0 && "text-violet-700 font-medium")}>
                       {r.manual_count}
                     </td>
-                    <td className="px-3 num">{r.purchased_today}</td>
+                    {/* 与旁边那一列「日上限」接的是同一条判据
+                        (task_queue.OURS_ONLY_SQL:外部下单不算)——
+                        所以这一格更该写明白:一个买家号今天同步进来 40 张
+                        外部单,这里仍然是 0,而它确实还能派单。 */}
+                    <td className="px-3 num" title={OURS_ONLY_NOTE}>{r.purchased_today}</td>
                     <td className="px-3 num text-zinc-500">
                       {/* 0 是「不限」,不是「一单都不许拍」。这两个意思差得远,
                           界面上写清楚,别让人去猜一个裸 0。 */}
@@ -374,7 +383,15 @@ export default function InstancesPage() {
                       {r.dispatchable
                         ? <span className="text-emerald-700">可派</span>
                         : <span className={
-                            r.login_blocks_dispatch || r.account_state === "mismatch"
+                            /* 颜色跟着上面那条阶梯走:机器不在线时先说活性,
+                               那一档是灰的(要人去装/重启,但不是「闸拦着」);
+                               在线之后才轮到登出 / 登错号(红)与
+                               等账号报上来 / 已到日上限(琥珀)。
+                               颜色与措辞分叉的话,一行会写着灰色的「没有心跳」
+                               却染成红的「登错号」那一档。 */
+                            r.liveness !== "online" && r.liveness !== "paused"
+                              ? "text-zinc-400"
+                            : r.login_blocks_dispatch || r.account_state === "mismatch"
                               ? "text-red-700"
                             : r.account_blocks_dispatch || r.at_daily_cap ? "text-amber-700"
                             : "text-zinc-400"}>
@@ -383,6 +400,18 @@ export default function InstancesPage() {
                                 (去那台机器上重新登录)。两句话指向不同的人,
                                 所以不能合并成一句「不可派」。 */}
                             {r.liveness === "paused" ? "已暂停"
+                             /* **活性排在账号与登录态之前。** 服务端的 dispatchable
+                                本来就是 `liveness==="online" && …`,这条阶梯该跟它同序。
+                                原先账号那一支排在前面,于是一个**从来没有插件连过**
+                                (或已失联)、但库里配了 amazon_customer_id 的买家号
+                                显示的是琥珀的「等账号报上来」—— 而那一档的注释自己
+                                写着「通常什么都不用做,下一轮登录探测就自己好」,
+                                可那台机器根本不存在,永远不会有下一轮。
+                                对照组:同样从未连过、但没填账号 ID 的买家号显示
+                                「没有心跳」—— 两个处境完全一样的行给出两种指向
+                                不同的结论。真正该做的是去装 / 重启那台机器。 */
+                             : r.liveness !== "online"
+                               ? (r.liveness === "never" ? "未连过" : "没有心跳")
                              : r.login_blocks_dispatch ? "已登出"
                              /* 账号这一支排在「已登出」之后。它**拦两档**,措辞取
                                 account_state 的标签(登错号 / 等账号报上来):
@@ -393,7 +422,7 @@ export default function InstancesPage() {
                              : r.account_blocks_dispatch
                                ? accountLabel(r.account_state).label
                              : r.at_daily_cap ? "已到日上限"
-                             : r.liveness === "online" ? "在线但不可派" : "没有心跳"}
+                             : "在线但不可派"}
                           </span>}
                     </td>
                   </tr>

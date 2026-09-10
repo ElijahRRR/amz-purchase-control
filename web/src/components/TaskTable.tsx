@@ -276,7 +276,9 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
           // 跟旁边一张限价真的很低的单排在一起,人读到的是一个数,不是一个占位。
           // 详细档与 CSV 早就写「不适用」了 —— 而扫桶用的正是紧凑档,
           // 它反而是唯一一处还在渲染那个 0 的地方。
-          if (r.purchase_source === "external") {
+          // 判据接 capVerdict(前端这半的唯一定义处),不在这里再写一个
+          // === "external" —— 这一格的第三份判据一旦写下来,迟早有一处跟不上。
+          if (capVerdict(r).state === "not_applicable") {
             return <span className="text-2xs text-zinc-400"
                          title={capVerdict(r).text}>不适用</span>;
           }
@@ -438,11 +440,27 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
             <div className="flex-1 min-w-0 flex flex-col gap-0.5">
               <CopyText value={p?.asin} className="id text-sm- text-zinc-900" />
               {/* 「整单限价」不是「单价限价」—— 名字里带上「整单」两个字,
-                  是因为它就摆在数量旁边,不写清楚一定会被当成单价读。 */}
-              <DL k="整单限价">
-                <span className="id text-xs+ text-zinc-900">{money(r.price_cap)}</span>
-                <span className="text-zinc-400">{p ? `×${p.quantity}` : ""}</span>
-              </DL>
+                  是因为它就摆在数量旁边,不写清楚一定会被当成单价读。
+
+                  外部下单那一格**不许铺 money(price_cap)**:库里那个 0 是
+                  NOT NULL 逼出来的占位,渲染成「整单限价 0.00」就是在说一个
+                  系统从没有过的限价 —— 而同一行右边的「费用信息」格写着
+                  「不经本系统采购,没有费用与限价」,同一行两句相反的话。
+                  紧凑档早就改了(那一格判的是同一件事),而**扫桶之外默认用的
+                  正是这一档**。判据接 capVerdict,不新写一个 === "external"。 */}
+              {capVerdict(r).state === "not_applicable" ? (
+                <DL k="整单限价">
+                  <span className="text-2xs text-zinc-400" title={capVerdict(r).text}>
+                    不适用
+                  </span>
+                  <span className="text-zinc-400">{p ? `×${p.quantity}` : ""}</span>
+                </DL>
+              ) : (
+                <DL k="整单限价">
+                  <span className="id text-xs+ text-zinc-900">{money(r.price_cap)}</span>
+                  <span className="text-zinc-400">{p ? `×${p.quantity}` : ""}</span>
+                </DL>
+              )}
               <DL k="实付单价">
                 <span className="id text-xs+ text-zinc-800">{money(p?.actual_unit_price)}</span>
               </DL>

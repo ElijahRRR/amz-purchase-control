@@ -19,6 +19,12 @@ import type {
   BatchResetOut, InstanceRow, SearchOut, SearchReq, Summary, TaskStatus,
 } from "@/types";
 
+
+/** 「今日已拍」这两个字在这套界面上出现两次(这一页顶栏 + 买家号页那一列),
+ *  两处接的是同一条判据。这句话也只写一份 —— 写两份迟早分叉,
+ *  而这一格恰恰是这套系统反复强调「数字对不上就得说清楚」的地方。 */
+const OURS_ONLY_NOTE = "今天**我们自己**拍成的单;上游在别处买的「外部下单」不算 —— 它不占日限,也没过任何一道护栏。判据只有一处(services/task_queue.OURS_ONLY_SQL),认领 SQL 的日限用的是同一条。";
+
 type Range = "today" | "7d" | "30d" | "all";
 
 const RANGES: { key: Range; label: string }[] = [
@@ -192,7 +198,14 @@ export default function TasksPage({ summary, onMutate, onSummary }: {
     <>
       <div className="h-12 shrink-0 bg-white border-b border-zinc-100 flex items-center gap-3 px-4">
         <span className="text-[13px] font-medium">任务队列</span>
-        <span className="text-xs text-zinc-500">
+        {/* **这个数与同一屏状态桶上的「已拍单」对不上,而且是对的。**
+            它按 task_queue.OURS_ONLY_SQL 排除了外部下单,状态桶不排除:
+            一个问「今天有多少单变成已拍」,一个问「今天我们自己拍成了几单」。
+            上游一轮同步灌进 40 张历史外部单(purchased_at=今天)之后,
+            状态桶写「已拍单 40」而这里写「0」—— 两个数都对,但界面上没有
+            任何地方说这件事,运营只会得出「有一个数字是坏的」。
+            照侧栏「待人工」那个先例挂一句 title。 */}
+        <span className="text-xs text-zinc-500" title={OURS_ONLY_NOTE}>
           今日已拍单 <span className="num text-zinc-900">{summary?.purchased_today ?? "—"}</span>
         </span>
         <span className="text-xs text-zinc-500">

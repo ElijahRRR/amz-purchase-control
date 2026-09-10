@@ -421,11 +421,34 @@ export function TaskDetailModal({ taskId, onClose, onMutate }: {
                 {productsOpen ? "收起" : `另 ${t.products!.length - 3} 项商品`}
               </button>
             )}
-            <KV k="整单限价">
-              <span className="id text-zinc-900">{money(t.price_cap)}</span>
-              <span className="ml-1.5 text-xs+ text-zinc-400">上游算好下发</span>
-            </KV>
-            <KV k="最迟送达">{t.max_delivery_days} 天内</KV>
+            {/* 外部下单:这两行**都是落库时补的占位**,不是上游给的。
+                「上游算好下发」那句注脚对它是**假的** —— task_intake 用的是
+                `Decimal(str(row.get("price_cap") or 0))`,上游一个字都没给;
+                「最迟送达 7 天内」同理(`int(row.get("max_delivery_days") or 7)`),
+                而本系统对这一单根本不做交期护栏。
+                原样渲染的话,同一个弹窗右边两格的「费用信息」写着「限价这一条也不适用
+                (库里那个 0.00 是占位,不是真限价)」—— 两句话互相矛盾,
+                而先被读到的那句还给这个 0 编了一个来源。 */}
+            {capVerdict(t).state === "not_applicable" ? (
+              <>
+                <KV k="整单限价">
+                  <span className="text-zinc-500" title={capVerdict(t).text}>不适用</span>
+                  <span className="ml-1.5 text-xs+ text-zinc-400">外部下单没有限价</span>
+                </KV>
+                <KV k="最迟送达">
+                  <span className="text-zinc-500">不适用</span>
+                  <span className="ml-1.5 text-xs+ text-zinc-400">不经我们的交期护栏</span>
+                </KV>
+              </>
+            ) : (
+              <>
+                <KV k="整单限价">
+                  <span className="id text-zinc-900">{money(t.price_cap)}</span>
+                  <span className="ml-1.5 text-xs+ text-zinc-400">上游算好下发</span>
+                </KV>
+                <KV k="最迟送达">{t.max_delivery_days} 天内</KV>
+              </>
+            )}
           </Group>
 
           <Group title="订单信息" last>
