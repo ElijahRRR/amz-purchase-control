@@ -39,7 +39,7 @@
 | `amazon_customer_id` | text | 插件从页面提取，**仅作对账**，不作身份判定 |
 | `status` | text | `active` / `paused` / `blocked` / `retired`（封闭集） |
 | `daily_cap` | integer | 日单量上限，`0` = 不限 |
-| `expected_card_last4` | text | **这个买家号该刷哪张卡**的后四位。留空 = 这一道不校验（与 `tasks.require_fba` 同一形态：闸门可关，但关不关是库里的数据说了算，不是代码里的默认值）。填了之后，结算页读到的卡尾号与它不符即 `PAYMENT_METHOD_UNEXPECTED`，**在下单之前拦下**。只校验、不替买家号切卡——改支付配置是人的动作，不是拍单流程的动作。**改这一列不留痕**：`task_events` 挂在 `task_id` 上，这张表套不进去，而 `buyer_envs` 眼下整张表都没有审计流（`daily_cap`、`status` 同样没有），所以「谁在什么时候关掉了这个买家号的支付校验」目前答不出来 |
+| `expected_card_last4` | text | **这个买家号该刷哪张卡**的后四位。留空 = 这一道不校验（与 `tasks.require_fba` 同一形态：闸门可关，但关不关是库里的数据说了算，不是代码里的默认值）。填了之后，结算页读到的卡尾号与它不符即 `PAYMENT_METHOD_UNEXPECTED`，**在下单之前拦下**。**先切后验，验在服务端**（所有者定稿①，2026-09-09）：填上之后，插件会在下单前替这个买家号把 Amazon 结算页上选中的支付卡**切成这一张**（`extension/src/flow/amazon.ensurePaymentCard`，切完重读结算页再报护栏）；校验仍然只在服务端 `price_guard` 这一处，插件说「我切成了」不算数。**所以这一格不是一个无副作用的配置**——往里填一个尾号，等于授权本系统去改这个买家号在 Amazon 上的默认支付方式；留空 = 既不校验也不切。改这一格时这个买家号在途的单（`claimed`）会被拦下，见 docs/01 §5.3。**改这一列不留痕**：`task_events` 挂在 `task_id` 上，这张表套不进去，而 `buyer_envs` 眼下整张表都没有审计流（`daily_cap`、`status` 同样没有），所以「谁在什么时候关掉了这个买家号的支付校验」目前答不出来 |
 | `note` | text | |
 | `created_at` / `updated_at` | timestamptz | |
 

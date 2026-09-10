@@ -330,7 +330,7 @@ python cli.py task_retry
 | `POST /v1/admin/tasks/import` `/search` `/export` · `GET /{id}` | 落库、查询、导出 CSV(整个筛选结果,不只当前页) |
 | `POST /v1/admin/tasks/{id}/release` `/reset` `/force-backfill` `/address` `/asin` | 五个人工动作 |
 | `POST /v1/admin/tasks/batch-reset` | 批量重置。**不接受 acknowledged** —— 可能已下单的原样报回来,让人逐条去看 |
-| `POST /v1/admin/envs/{id}/expected-card` | 就地改这个买家号该刷哪张卡的后四位(留空 = 关掉这道闸;只校验、不替买家号切卡) |
+| `POST /v1/admin/envs/{id}/expected-card` | 就地改这个买家号该刷哪张卡的后四位。**有副作用**:填上之后插件会在下单前替这个买家号把 Amazon 上选中的支付卡切成这一张(先切后验,校验仍在服务端);留空 = 既不校验也不切 |
 
 | `GET /v1/admin/instances` | 买家号与判活 |
 | `GET /v1/admin/meta` | 封闭集连中文标签下发,外加 `auto_retry: {enabled, max, backoff_min, max_age_min, batch}`。**前端不存副本** |

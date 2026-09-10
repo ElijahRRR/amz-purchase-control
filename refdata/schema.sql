@@ -22,7 +22,9 @@ CREATE TABLE IF NOT EXISTS procure.buyer_envs (
                                   -- 这个买家号该刷哪张卡的后四位。
                                   -- 留空 = 这一道不校验(与 tasks.require_fba 同一形态)。
                                   -- 填了之后结算页读到的尾号与它不符 → PAYMENT_METHOD_UNEXPECTED,
-                                  -- 在下单之前拦下。只校验、不替买家号切卡。
+                                  -- 在下单之前拦下。**先切后验,验在服务端**(所有者定稿①):
+                                  -- 填上之后插件会在下单前替这个买家号把卡切成这一张,
+                                  -- 校验仍然只在 price_guard。这一格有副作用,不是纯配置。
     note               text,
     created_at         timestamptz NOT NULL DEFAULT now(),
     updated_at         timestamptz NOT NULL DEFAULT now()

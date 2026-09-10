@@ -22,10 +22,13 @@ import type { InstanceRow } from "@/types";
  *  形状校验在服务端(services/instance.set_expected_card)。这里也拦一道,
  *  但这一道是**便利**不是保证 —— 接口是公开的,curl 一下就绕过去了。
  *
- *  **清空这一格 = 把 PAYMENT_METHOD_UNEXPECTED 这道下单前的闸整个关掉**,
- *  所以它单独过一次确认。原先是「按了退格再点别处」就生效:没有二次确认、
- *  没有成功提示,而按 set_expected_card 自己的自述也没有任何审计记录 ——
- *  这个买家号从此每一单都不再校验支付卡,界面只是把输入框变成灰色的「不校验」。
+ *  **清空这一格 = 两道一起关**:服务端那道 PAYMENT_METHOD_UNEXPECTED 不再校验,
+ *  插件也不再替这个买家号切卡(所有者定稿①之后,填上这一格等于授权插件在下单前
+ *  去改这个买家号在 Amazon 上选中的支付卡)。所以它单独过一次确认,
+ *  而那句话必须**两道都说到** —— 只说「不再核对支付卡」的话,人会理解成
+ *  「少一道校验、单子照跑」,而实际是此后每一单都用账号里当时选中的那张卡下单,
+ *  没有人切、也没有人验。原先是「按了退格再点别处」就生效:没有二次确认、
+ *  没有成功提示,而按 set_expected_card 自己的自述也没有任何审计记录。
  *  对照:同一套界面里危险性小得多的「强制回填单号」必须过一个红色预览步。
  *  **填一个新值不需要确认**(填错了的表现是每一单都被拦下,吵而安全);
  *  只有「关掉」这个方向要。 */
@@ -79,7 +82,8 @@ function ExpectedCard({ row, onSaved }: { row: InstanceRow; onSaved: () => void 
       {err && <span className="text-2xs text-red-600">{err}</span>}
       {confirmOff && (
         <span className="inline-flex items-center gap-1.5 text-2xs text-red-700">
-          关掉之后这个买家号的每一单都不再核对支付卡,确定?
+          关掉之后这个买家号的每一单都不再核对支付卡,插件也不再替它切卡
+          (用账号里当时选中的那张下单),确定?
           <button className="px-1.5 py-0.5 rounded border border-red-300 bg-white text-red-700"
                   disabled={busy}
                   onClick={() => void commit("")}>关掉</button>
