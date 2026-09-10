@@ -157,6 +157,11 @@ def force_backfill(conn, task_id: int, amazon_order_no: str, *,
     conn.execute(
         """UPDATE procure.tasks
               SET status='purchased', amazon_order_no=%s,
+                  -- 这一单不是插件拍出来的,是人按着某个依据写进去的。
+                  -- 与「外部下单」也不是一回事(那是上游在别处买的)——
+                  -- 三种来源的处置不同,库里必须分得开:强制回填是**断言被跳过**的
+                  -- 那一批,它们才是回头查「有没有挂错单号」时要先看的。
+                  purchase_source='manual_backfill',
                   error_code=NULL, error_detail=NULL,
                   purchased_at=COALESCE(purchased_at, now()),
                   claimed_by=NULL, claimed_at=NULL, updated_at=now()

@@ -26,6 +26,12 @@ const REQUIRED: Record<string, string[]> = {
   shipment_status: ["labels", "tone"],
   event_kind: ["labels", "tone"],
   login_state: ["labels", "tone"],
+  // 「登着的是不是这个号」。少了它,买家号页那一格会渲染成一个裸的英文
+  // mismatch —— 而这一格恰恰是要人立刻去处理的那一格。
+  account_state: ["labels", "tone"],
+  // 这一单是谁买的。少了它,列表与详情会把 external 渲染成裸英文,
+  // 而「外部下单」那一档的费用几格全是空的,不写清来源的人会以为是同步掉了。
+  purchase_source: ["labels", "tone"],
   error_code: ["labels", "retryable", "to_manual", "business_blocked", "possibly_ordered"],
   // 自动重试的现状。少了它,「这一桶该谁管」那句话就没了依据 ——
   // 而那句话写错任何一个方向都会让人做错事(见 types.ts 的 Meta.auto_retry)。
@@ -64,7 +70,10 @@ export function useMeta(): Meta {
 /** 状态 / 物流状态 → 标签 + 色调。查不到的键**原样显示**,不吞。
  *  服务端加了新状态而前端还没发版时,界面上出现一个陌生英文词是对的 ——
  *  比静默映射成「未知」要好,后者会让人以为库里真有个叫「未知」的状态。 */
-export function useLabel(kind: "task_status" | "shipment_status" | "event_kind" | "login_state") {
+export function useLabel(
+  kind: "task_status" | "shipment_status" | "event_kind" | "login_state"
+      | "account_state" | "purchase_source",
+) {
   const meta = useMeta();
   return (key: string | null | undefined): { label: string; tone: Tone } => {
     if (!key) return { label: "—", tone: "dashed-zinc" };

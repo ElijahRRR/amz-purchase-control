@@ -11,6 +11,7 @@ from datetime import date, timedelta
 from typing import Any
 
 from registry import settings
+from services import task_queue
 
 #: Amazon 单号形态。运营手里的表两种号混排是常态,粘进来自动分流,
 #: 不该逼人先分好类再贴。
@@ -25,6 +26,10 @@ AMZ_ORDER_RE = re.compile(r"^\d{3}-\d{7}-\d{7}$")
 #: 宽一点的一次查询比 N 次窄查询便宜得多,50 行 × 30 列也就几十 KB。
 _LIST_SQL = """
 SELECT t.id, t.line_key, t.upstream_order_no, t.marketplace, t.status,
+       -- 这一单是谁买的(插件 / 外部 / 人工回填)。**列表这一层也要有**:
+       -- 外部单没有护栏结论,而列表上那一列限价/实付的红绿点是按护栏那套判据画的,
+       -- 不知道来源就会给一张从没被核过的单画一个绿点。
+       t.purchase_source,
        t.ship_name, t.ship_phone, t.ship_line1,
        t.ship_city, t.ship_state, t.ship_postcode,
        t.price_cap, t.actual_total, t.actual_shipping, t.actual_tax,
@@ -136,6 +141,7 @@ def search(
     date_to: date | None = None,
     order_numbers: list[str] | None = None,
     asin: str | None = None,
+    purchase_source: str | None = None,
     page: int = 1,
     page_size: int = 50,
     after_id: int | None = None,
@@ -196,6 +202,12 @@ def search(
         if date_field == "purchased":
             # 按采购时间筛,本来就是在问「哪些单已经买了」。没下过单的行不在这个维度上。
             clauses.append("t.purchased_at IS NOT NULL")
+        if purchase_source:
+            # 与 status / env 一样,**只在不按单号找的时候生效**:粘一沓号进来的人
+            # 是来找特定几张单的,再叠一个来源筛选只会让「这几个号查不到」——
+            # 而那句话是假的(号在库里,只是来源不对),会把人支去上游翻一张好好的单。
+            clauses.append("t.purchase_source = %(purchase_source)s")
+            params["purchase_source"] = purchase_source
 
     if asin:
         clauses.append("EXISTS (SELECT 1 FROM procure.task_products p "
@@ -375,8 +387,12 @@ def summary(
     # 顶栏那两个数字是**全局**的,不跟着筛选走 —— 它们回答的是「今天整体怎么样」,
     # 筛掉一半再报数就不是那个问题的答案了。
     today = conn.execute(
+        # 「今日已拍」= **我们今天拍成了多少单**。外部下单不算(判据在
+        # task_queue.OURS_ONLY_SQL,认领 SQL 的日限与买家号页那一格接的是同一条):
+        # 上游在别处买的单混进这个数,顶栏那句「今天拍了 40 单」就是假话。
         "SELECT count(*) AS n FROM procure.tasks "
-        " WHERE status = 'purchased' AND purchased_at >= date_trunc('day', now())"
+        f" WHERE status = 'purchased' AND {task_queue.OURS_ONLY_SQL}"
+        "   AND purchased_at >= date_trunc('day', now())"
     ).fetchone()["n"]
     queue = conn.execute(
         "SELECT count(*) AS n FROM procure.tasks WHERE status = 'ready'"
@@ -466,6 +482,13 @@ def error_stats(conn, *, date_from: date, date_to: date) -> dict[str, Any]:
     }
 
 
+#: 外部下单在「是否超限价」这一列上的取值。**不是「否」,也不是「未核」**:
+#: 「未核」说的是「本该核、这次没核成」(金额没回传、读成了 0),看到它的人会去查;
+#: 外部单**根本没有限价这回事**,库里那个 0 是占位。两者渲染成同一个词,
+#: 会让人去查一批其实一切正常的单。
+CAP_NOT_APPLICABLE = "不适用"
+
+
 def cap_basis(task) -> Any:
     """输入:任务行 → 输出:该拿哪个数去跟 price_cap 比;比不了返回 None。
 
@@ -496,6 +519,10 @@ def over_cap(task) -> str:
     (金额还在 shimmer,或者选择器读错了格子)。两者都不是一次真做过的比较,
     不许渲染成「否」。
     """
+    # 外部下单先判:那一单没走过我们的结算页,price_cap 是个占位的 0,
+    # 拿它去比会得出「0 ≥ 0,没超」这种从没发生过的护栏结论。
+    if task.get("purchase_source") == "external":
+        return CAP_NOT_APPLICABLE
     basis = cap_basis(task)
     cap = task.get("price_cap")
     if basis is None or cap is None or basis <= 0:
@@ -526,6 +553,9 @@ EXPORT_COLUMNS: list[tuple[str, str]] = [
     # 与「状态」「错误码」都不是一回事:状态说要人裁决,码可能还说「重一下就过」,
     # 而这一列答的是「重置 = 会不会再买一遍」。
     ("may_have_ordered", "越过下单点"),
+    # 这一单是谁买的。**对账时第一件要分开的事**:外部单的费用几列全是空的,
+    # 不知道来源的人会把它当成「同步掉了」。
+    ("purchase_source_label", "来源"),
     ("amazon_order_no", "AMZ 单号"),
     ("env_code", "买家号"),
     ("amazon_customer_id", "买家号ID"),
@@ -592,6 +622,8 @@ def export_rows(conn, *, page_size: int, **filters) -> Any:
                     "quantity": p.get("quantity"),
                     "actual_unit_price": p.get("actual_unit_price"),
                     "over_cap": over_cap(t),
+                    "purchase_source_label": vocab.PURCHASE_SOURCE_LABELS.get(
+                        t.get("purchase_source"), t.get("purchase_source")),
                     # 渲染成「是/否」而不是 True/False:这一列是给人看的
                     # (与 over_cap 同一档),英文只在「状态(库里的值)」
                     # 「错误码(英文)」那两列里露面。

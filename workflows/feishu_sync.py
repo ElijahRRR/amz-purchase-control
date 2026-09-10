@@ -41,6 +41,10 @@ def _tail(mapped: dict, records: list[dict]) -> str:
     if mapped["skipped"]:
         # 「没轮到它」与「它有问题」分开说 —— 混在一起会让人去查一批其实没毛病的行。
         lines.append(f"  按 take_when 滤掉 {len(mapped['skipped'])} 条(不是拒收)")
+    for r in mapped.get("rejected") or []:
+        # 整组被拒的(眼下只有 AMZ 单号打架那一种):**一行都没落库**。
+        # 不报的话上游会以为这一单同步过了。
+        lines.append(f"  ⛔ {r['upstream_order_no']}:{r['reason']}")
     for c in mapped["conflicts"]:
         # 同一个上游单号的两行给了不同的地址/限价 —— 上游多半把两张单填成了
         # 同一个号。不静默取第一行了事,那会按错的地址寄出去。
@@ -94,11 +98,13 @@ def run(params: dict) -> str:
         # 那种「预览与真跑不一致」的空跑比没有空跑更误导人。
         with db.pg_conn() as conn:
             preview = task_intake.dry_run(conn, rows)
-        head = (f"dry-run:{len(rows)} 张订单 → 将新增 {preview['inserted']},"
-                f"重复 {preview['duplicated']},拒收 {preview['rejected']}"
-                f",落成 {'ready' if release else 'pending'}")
+        # 摘要与明细的拼装**与 cli.py task_intake 共用一份**(services/task_intake)。
+        head = task_intake.summarize(
+            preview, total=len(rows), unit="张订单", dry_run=True,
+            tail=f",落成 {'ready' if release else 'pending'}"
+                 f"(带 AMZ 单号的那几张不受这个影响,一律落成已拍单)")
         notes = [f"    #{d['index']} {d['upstream_order_no']}: "
-                 + (d.get("reason") or "已在库中")
+                 + task_intake.preview_note(d)
                  for d in preview["details"] if d["result"] != "inserted"]
         return (head + "\n" + _tail(mapped, records)
                 + ("\n  明细:\n" + "\n".join(notes) if notes else ""))
@@ -107,14 +113,7 @@ def run(params: dict) -> str:
         got = task_intake.ingest(conn, rows, release=release)
         linked = _link_sources(conn, got, mapped)
 
-    summary = (f"同步完成:新增 {got['inserted']},重复 {got['duplicated']},"
-               f"拒收 {got['rejected']}(共 {len(rows)} 张订单)")
+    summary = task_intake.summarize(got, total=len(rows), unit="张订单", verb="同步完成")
     summary += "\n" + _tail(mapped, records)
     summary += f"\n  对照上游行 {linked} 条(回写要靠它找到飞书里是哪几行)"
-    bad = [d for d in got["details"] if d["result"] == "rejected"]
-    if bad:
-        # 拒收的必须逐条说出来。回一句「同步成功」就完了的话,少了几行没人知道。
-        summary += "\n  拒收明细:"
-        for d in bad:
-            summary += f"\n    #{d['index']} {d['upstream_order_no']}: {d['reason']}"
-    return summary
+    return summary + task_intake.explain_rows(got)

@@ -122,6 +122,15 @@ export const api = {
     act<{ id: number; code: string; expected_card_last4: string | null }>(
       `/v1/admin/envs/${envId}/expected-card`, { last4 }),
 
+  /** 「以这个为准」:把这个买家号记的 Amazon 账号改成插件报上来的那个。
+   *
+   *  这个动作**会打开一道认领闸**(登错号被拒的那一道),所以它写
+   *  procure.env_events 并带上操作人 —— act() 会自动把操作人捎上。
+   *  传空串 = 清掉这一列(等于关掉这道闸),同样留痕。 */
+  setEnvCustomerId: (envId: number, customerId: string) =>
+    act<{ id: number; code: string; amazon_customer_id: string | null }>(
+      `/v1/admin/envs/${envId}/customer-id`, { amazon_customer_id: customerId }),
+
   releaseTask: (id: number) => act<{ status: string }>(`/v1/admin/tasks/${id}/release`),
   resetTask: (id: number, acknowledged: boolean) =>
     act<{ status: string }>(`/v1/admin/tasks/${id}/reset`, { acknowledged }),

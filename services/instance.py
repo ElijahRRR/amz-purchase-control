@@ -9,6 +9,8 @@
 `task_queue.login_blocks_claim`),以及运营台上那个买家号显示成什么。
 """
 
+import json
+import re
 from typing import Any
 
 from services import task_queue
@@ -20,6 +22,41 @@ from services import task_queue
 #: 就是读不到。把它当成 ok 正是这个项目反复栽过的那一类
 #: 「看起来有护栏、实际防不住」。
 LOGIN_STATES = frozenset({"ok", "signed_out", "unknown"})
+
+
+#: 买家号 ID 的形态。厂商是在页面 HTML 上跑 /customerId:\s*"([^"]*)"/ 抠出来的
+#: (v2.5.3 popup.js),他们**拿它当身份用**;我们只拿它对账与比对,身份仍然是
+#: 买家号环境本身。形状卡死是因为这一列一旦写进去就成了「该是谁」——
+#: 一个空串或者半截值会把这道闸永久钉在 mismatch 上,而运营看到的理由是假的。
+CUSTOMER_ID_RE = re.compile(r"^A[0-9A-Z]{8,}$")
+
+#: 买家号那条事件流的封闭集(procure.env_events.kind)。
+#: 中文标签在 services/vocab.ENV_EVENT_LABELS —— 有测试盯着两边一致。
+ENV_EVENT_KINDS = frozenset({
+    "customer_id_seen",       # 这个买家号第一次被认出账号(写进 buyer_envs)
+    "customer_id_mismatch",   # 报上来的账号与库里的不一样,认领已被拒
+    "customer_id_override",   # 人点了「以这个为准」
+})
+
+
+def record_env_event(conn, buyer_env_id: int, kind: str, *,
+                     instance_id: int | None = None,
+                     payload: dict[str, Any] | None = None) -> int:
+    """输入:连接 + 买家号 id + 事件类型(+实例/载荷)→ 输出:事件 id;kind 不在封闭集抛 ValueError。
+
+    与 `services/task_event.record` 是**两条事件流**,不是一条:那一条挂在 task_id 上,
+    这一条挂在买家号上。混成一条的话,任务时间线上会冒出一种永远不属于那儿的事件,
+    而买家号身上发生的事仍然没地方放。
+    """
+    if kind not in ENV_EVENT_KINDS:
+        raise ValueError(f"未知买家号事件类型 {kind!r},允许值:{sorted(ENV_EVENT_KINDS)}")
+    row = conn.execute(
+        """INSERT INTO procure.env_events (buyer_env_id, instance_id, kind, payload)
+           VALUES (%s, %s, %s, %s) RETURNING id""",
+        (buyer_env_id, instance_id, kind,
+         json.dumps(payload or {}, ensure_ascii=False)),
+    ).fetchone()
+    return row["id"]
 
 
 def validate_login_state(state: str) -> str:
@@ -95,11 +132,13 @@ def heartbeat(
     *,
     instance_uid: str,
     login_state: str | None = None,
+    amazon_customer_id: str | None = None,
     recheck_minutes: int = 10,
 ) -> dict[str, Any] | None:
     """输入:连接 + 实例唯一号(+这一轮读到的登录态)→ 输出:实例现状 dict;未注册返回 None。
 
-    返回 `{id, buyer_env_id, login_state, login_checked_at, login_check_due}`。
+    返回 `{id, buyer_env_id, login_state, login_checked_at, login_check_due,
+    amazon_customer_id, expected_customer_id, account_state, customer_id_rejected}`。
 
     `login_state` 为 None 表示**这一轮没有新消息**,不是「不知道」——
     原样保留库里那一位。覆盖成 unknown 的话,一个已知被登出的买家号会在下一次
@@ -116,10 +155,29 @@ def heartbeat(
     """
     if login_state is not None:
         validate_login_state(login_state)
+
+    # 形状不对的账号**不写库,但也不拒这条心跳**。
+    #
+    # 拒的话(照 login_state 那个 Literal 回 422)整条心跳就废了:last_seen_at
+    # 不再更新,这台机器在运营台上变成「失联」,登录态也送不上去 —— 一个毒值
+    # 把整条通道堵死,正是 service-worker 里 PENDING_LOGIN_MAX_REJECTS 那段注释
+    # 在防的事。所以这里只把它挡在库外,并**原样回给插件**(customer_id_rejected),
+    # 让它在日志里看得见:静默丢掉才是这个项目最不该有的处置。
+    reported = (amazon_customer_id or "").strip() or None
+    rejected_customer_id = None
+    if reported is not None and not CUSTOMER_ID_RE.match(reported):
+        rejected_customer_id, reported = reported, None
+
     row = conn.execute(
         f"""
         UPDATE procure.plugin_instances
            SET last_seen_at = now(),
+               -- 这台机器此刻登着谁。**不传 = 这一轮没有新消息**,保留旧值 ——
+               -- 与 login_state 同一条规则。抹成空的话,一台登错号的机器
+               -- 只要有一轮读不到 customerId,认领闸当场重新打开。
+               amazon_customer_id = CASE WHEN %(customer_id)s::text IS NULL
+                                         THEN amazon_customer_id
+                                         ELSE %(customer_id)s::text END,
                -- 留旧值还是覆盖,规则只有一处定义(_KEEPS_OLD_LOGIN_STATE)。
                -- **这一位和它的时刻永远一起动**:留住旧值就连 login_checked_at
                -- 一起留住,否则界面上会出现「已登出 · 刚刚检查过」——
@@ -129,28 +187,108 @@ def heartbeat(
                login_checked_at = CASE WHEN {_KEEPS_OLD_LOGIN_STATE}
                                        THEN login_checked_at ELSE now() END
          WHERE instance_uid = %(uid)s
-        RETURNING id, buyer_env_id, login_state, login_checked_at
+        RETURNING id, buyer_env_id, login_state, login_checked_at, amazon_customer_id
         """,
-        {"uid": instance_uid, "login_state": login_state},
+        {"uid": instance_uid, "login_state": login_state, "customer_id": reported},
     ).fetchone()
     if row is None:
         return None
+    row["customer_id_rejected"] = rejected_customer_id
+    # **先结算账号,再算「该不该去读页面」** —— 后者要用前者的结论:
+    # 账号还没比对上的机器认领会被拒,而它自己没有别的办法知道该去读一次页面。
+    row.update(_settle_customer_id(conn, instance_id=row["id"],
+                                   buyer_env_id=row["buyer_env_id"],
+                                   reported=row["amazon_customer_id"]))
     row["login_check_due"] = _login_check_due(
         conn,
         buyer_env_id=row["buyer_env_id"],
         checked_at=row["login_checked_at"],
         recheck_minutes=recheck_minutes,
+        account_unverified=row["account_state"] == "unverified",
     )
     return row
 
 
-def _login_check_due(conn, *, buyer_env_id: int, checked_at, recheck_minutes: int) -> bool:
+def _settle_customer_id(conn, *, instance_id: int, buyer_env_id: int,
+                        reported: str | None) -> dict[str, Any]:
+    """输入:这台机器**此刻记着的**账号 → 输出:{expected_customer_id, account_state}。
+
+    `reported` 是库里那一位(刚写完的),不是「这一轮报上来的」——
+    这两者只在「这一轮什么都没报」时不同,而那时正该拿上一轮的结论继续判:
+    一台登错号的机器读不到 customerId 的那几轮不该悄悄恢复派单。
+
+    两条规则,方向相反,所以必须分开写:
+
+      · 买家号那一列**为空** → 首次上报即写入,并留一条 `customer_id_seen`。
+        这是这一列唯一的自动来源 —— 在此之前全仓一个写入点都没有,
+        它是一列永远为空的数据(而 db_schema 里写着「插件从页面提取」)。
+      · 已有值且**不一样** → **不覆盖**,留一条 `customer_id_mismatch`,
+        认领闸(task_queue.account_blocks_claim)据此拒。
+        覆盖是最坏的选择:一台登错号的机器会把买家号那一列改成它自己登的号,
+        于是「登错了」这件事被它自己抹平,下一轮心跳一切正常。
+
+    `mismatch` **每次心跳只记第一条**:20 秒一次的心跳无条件追加的话,一台登错号
+    的机器一天往 env_events 里灌 4300 行,而它们说的是同一件事;真正要留痕的是
+    这件事第一次发生、以及有人做了处置。判据是「上一条 mismatch 里的 reported
+    与这次一样就不记」—— 换了个号登进去是新消息,同一个号不是。
+    """
+    env = conn.execute(
+        "SELECT amazon_customer_id FROM procure.buyer_envs WHERE id = %s",
+        (buyer_env_id,),
+    ).fetchone()
+    expected = (env["amazon_customer_id"] or None) if env else None
+
+    if reported and not expected:
+        # 条件写:同一个买家号上两台机器同时首报时,只有一台写得进去,
+        # 另一台走下面的比对(而它们要是登着不同的号,第二台立刻被判 mismatch）。
+        wrote = conn.execute(
+            """UPDATE procure.buyer_envs
+                  SET amazon_customer_id = %s, updated_at = now()
+                WHERE id = %s AND (amazon_customer_id IS NULL OR amazon_customer_id = '')
+            RETURNING amazon_customer_id""",
+            (reported, buyer_env_id),
+        ).fetchone()
+        if wrote is not None:
+            expected = wrote["amazon_customer_id"]
+            record_env_event(conn, buyer_env_id, "customer_id_seen",
+                             instance_id=instance_id,
+                             payload={"reported": reported, "expected": None,
+                                      "note": "买家号ID 之前是空的,按插件第一次报上来的写入"})
+        else:
+            expected = conn.execute(
+                "SELECT amazon_customer_id FROM procure.buyer_envs WHERE id = %s",
+                (buyer_env_id,)).fetchone()["amazon_customer_id"]
+
+    state = task_queue.account_state(expected, reported)
+    if state == "mismatch":
+        last = conn.execute(
+            """SELECT payload->>'reported' AS reported
+                 FROM procure.env_events
+                WHERE buyer_env_id = %s AND kind = 'customer_id_mismatch'
+                ORDER BY id DESC LIMIT 1""",
+            (buyer_env_id,),
+        ).fetchone()
+        if last is None or last["reported"] != reported:
+            record_env_event(conn, buyer_env_id, "customer_id_mismatch",
+                             instance_id=instance_id,
+                             payload={"reported": reported, "expected": expected,
+                                      "note": "这台机器登着的不是这个买家号,认领已被拒"})
+    return {"expected_customer_id": expected, "account_state": state}
+
+
+def _login_check_due(conn, *, buyer_env_id: int, checked_at, recheck_minutes: int,
+                     account_unverified: bool = False) -> bool:
     """输入:连接 + 买家环境 id + 这个实例上次检查的时刻 + 复检间隔 → 输出:该不该去读页面。
 
     两个条件都要:
       · 这个买家号**真有单在等派** —— 队列空着的时候开一张 Amazon 页面读导航栏,
         读到的结论没人用得上,白白多一次页面加载
-      · 这个实例上次读页面已经过了复检间隔
+      · 这个实例上次读页面已经过了复检间隔,**或者**这台机器的账号还没比对过
+
+    第二个「或者」是那道账号闸的解锁路径:`unverified` 的机器认领会被服务端拒,
+    而 customerId 是在**登录探测那一步顺手读**的 —— 不主动要它去读一次页面,
+    这台机器就永远报不上来,闸门永远关着。有界:插件那边 `ensureLoginChecked`
+    还有一层本地缓存(LOGIN_CACHE_MS),不会每一拍都开一张页面。
 
     按**这个实例自己**的检查时刻算,不按整个买家号的最新值:认领那道闸看的是
     来认领的那一个实例,这里也就得看同一个,否则同一个环境上有两个实例时,
@@ -166,7 +304,7 @@ def _login_check_due(conn, *, buyer_env_id: int, checked_at, recheck_minutes: in
         """,
         {"env_id": buyer_env_id, "checked_at": checked_at, "mins": recheck_minutes},
     ).fetchone()
-    return bool(row["has_work"] and row["stale"])
+    return bool(row["has_work"] and (row["stale"] or account_unverified))
 
 
 def resolve(conn, instance_uid: str) -> dict[str, Any] | None:
@@ -183,12 +321,16 @@ def resolve(conn, instance_uid: str) -> dict[str, Any] | None:
     ).fetchone()
 
 
-LIST_SQL = """
+LIST_SQL = f"""
 SELECT e.id            AS env_id,
        e.code          AS env_code,
        e.marketplace,
        e.status        AS env_status,
        e.amazon_customer_id,
+       -- **这台机器此刻登着的**那个账号(与上面那一列「这个买家号该是谁」是两列)。
+       -- 两列一比才判得出「登错号了」—— 在此之前这一页上,一台登着隔壁号的机器
+       -- 是满格绿色的「在线 · 可派」,而它领到的每一单都会用错的账号真买下来。
+       i.amazon_customer_id AS instance_customer_id,
        e.daily_cap,
        e.expected_card_last4,
        i.instance_uid,
@@ -200,8 +342,12 @@ SELECT e.id            AS env_id,
          WHERE t.buyer_env_id = e.id AND t.status = 'ready')     AS queue_depth,
        (SELECT count(*) FROM procure.tasks t
          WHERE t.buyer_env_id = e.id AND t.status = 'manual')    AS manual_count,
+       -- 「今日已拍」与真正那道日限闸必须是同一个数:判据在
+       -- task_queue.OURS_ONLY_SQL(外部下单不算 —— 那不是我们拍的)。
+       -- 分叉一次的表现是界面上绿着的「可派」和实际派不出,daily_cap 已经栽过一次。
        (SELECT count(*) FROM procure.tasks t
          WHERE t.buyer_env_id = e.id AND t.status = 'purchased'
+           AND t.{task_queue.OURS_ONLY_SQL}
            AND t.purchased_at >= date_trunc('day', now()))       AS purchased_today,
        -- 最近 24 小时里,这个买家号有几单**试着清车但没清动**。
        --
@@ -283,7 +429,17 @@ def list_with_liveness(conn, *, stale_seconds: int) -> list[dict]:
         # 界面自己算一遍「可派单」,算法与真闸不一样,于是界面上绿着、实际派不出。
         signed_out = task_queue.login_blocks_claim(row["login_state"])
         row["login_blocks_dispatch"] = signed_out
-        row["dispatchable"] = liveness == "online" and not capped and not signed_out
+        # 账号那道闸同样只有一处定义(task_queue.account_state /
+        # account_blocks_claim),认领 SQL 前那道闸调的是同一个函数。
+        # **它拦两档**:登错号(mismatch)与还没比对过(unverified)。
+        # 界面上这一格不许自己写死「登错号」三个字 —— 两档共用一句话的话,
+        # 一台刚装好的机器会被当成登错号去人工处置。
+        row["account_state"] = task_queue.account_state(
+            row["amazon_customer_id"], row["instance_customer_id"])
+        blocked = task_queue.account_blocks_claim(row["account_state"])
+        row["account_blocks_dispatch"] = blocked
+        row["dispatchable"] = (liveness == "online" and not capped
+                               and not signed_out and not blocked)
         out.append(row)
     return out
 
@@ -332,3 +488,69 @@ def set_expected_card(conn, env_id: int, last4: str | None) -> dict:
     if row is None:
         raise EnvRefused("ENV_NOT_FOUND", f"买家号不存在:{env_id}")
     return dict(row)
+
+
+def set_customer_id(conn, env_id: int, customer_id: str | None, *,
+                    operator: str | None = None) -> dict:
+    """输入:连接 + 买家号 id + 账号(或空 = 清掉)+ 操作人 → 输出:改后的那一行。
+
+    这是 `buyer_envs.amazon_customer_id` 唯一的人工入口(自动那条在 heartbeat 的
+    `_settle_customer_id` 里,而且只在这一列为空时写)。
+
+    **它会打开一道认领闸** —— 登错号被拒的那一道。所以与 `set_expected_card`
+    不同,这一步**必须留痕**:往 `procure.env_events` 写一条 `customer_id_override`,
+    带上改之前的值、改成什么、谁改的。一个能开闸的按钮按完之后库里一个字都不留,
+    是这个项目不该有的东西。
+    (`expected_card_last4` 还没接进这条事件流 —— 那是另一件事,这里不假装做过。)
+
+    留空 = 清掉这一列,回到「还没比对过」,**等于关掉这道闸**。允许它,是因为
+    真会有记错的时候;但它同样写事件 —— 关闸比开闸更该留痕。
+    """
+    v = (customer_id or "").strip() or None
+    if v is not None and not CUSTOMER_ID_RE.match(v):
+        raise EnvRefused(
+            "BAD_CUSTOMER_ID",
+            f"买家号ID 的形状不对(应形如 A1B2C3D4E5,A 开头 + 至少 8 位大写字母数字),"
+            f"收到 {customer_id!r};留空表示清掉这一列、不再比对")
+    before = conn.execute(
+        "SELECT amazon_customer_id FROM procure.buyer_envs WHERE id = %s", (env_id,)
+    ).fetchone()
+    if before is None:
+        raise EnvRefused("ENV_NOT_FOUND", f"买家号不存在:{env_id}")
+    row = conn.execute(
+        """UPDATE procure.buyer_envs
+              SET amazon_customer_id = %s, updated_at = now()
+            WHERE id = %s
+        RETURNING id, code, amazon_customer_id""",
+        (v, env_id),
+    ).fetchone()
+    record_env_event(conn, env_id, "customer_id_override",
+                     payload={"expected": before["amazon_customer_id"], "reported": v,
+                              "operator": operator,
+                              "note": "人工把买家号ID 改成了这个值"})
+    return dict(row)
+
+
+def env_events(conn, env_id: int, *, limit: int = 20) -> list[dict]:
+    """输入:买家号 id → 输出:这个买家号最近的事件(最新在前)。
+
+    「这个号是什么时候被认出来的、什么时候开始登错、谁把它改成了准」
+    三句话在同一条时间线上。
+
+    **中文标签在这里就贴好**(照 error-stats 里 assert_skipped.label 那个先例):
+    这几个 kind 不属于任何一个下发给前端的封闭集,让调用方再写一份中文
+    就又多了一处会分叉的副本。
+
+    ⚠ **运营台还没有渲染这条流** —— 眼下它只能从这个接口(或库里)读。
+    写在这里,免得下一个人以为买家号那一页上看得见。
+    """
+    from services import vocab
+
+    return [dict(r, label=vocab.ENV_EVENT_LABELS.get(r["kind"], r["kind"]))
+            for r in conn.execute(
+        """SELECT ev.kind, ev.payload, ev.created_at, i.instance_uid
+             FROM procure.env_events ev
+             LEFT JOIN procure.plugin_instances i ON i.id = ev.instance_id
+            WHERE ev.buyer_env_id = %s
+            ORDER BY ev.id DESC LIMIT %s""",
+        (env_id, limit)).fetchall()]

@@ -63,6 +63,14 @@ def meta() -> schemas.Envelope:
         "shipment_status": {"labels": vocab.SHIPMENT_LABELS, "tone": vocab.SHIPMENT_TONE},
         "event_kind": {"labels": vocab.EVENT_LABELS, "tone": vocab.EVENT_TONE},
         "login_state": {"labels": vocab.LOGIN_STATE_LABELS, "tone": vocab.LOGIN_STATE_TONE},
+        # 「这台机器登着的是不是这个买家号」。与 login_state 是两条独立的轴,
+        # 所以是两套词 —— 一条说「还登着吗」,一条说「登着的是不是这个号」。
+        "account_state": {"labels": vocab.ACCOUNT_STATE_LABELS,
+                          "tone": vocab.ACCOUNT_STATE_TONE},
+        # 这一单是谁买的(插件 / 外部 / 人工回填)。三种来源的处置不同,
+        # 界面上必须是三个词 —— 外部单没有护栏结论,写「未超」就是编。
+        "purchase_source": {"labels": vocab.PURCHASE_SOURCE_LABELS,
+                            "tone": vocab.PURCHASE_SOURCE_TONE},
         "error_code": {
             "labels": error_codes.LABELS,
             "retryable": sorted(error_codes.RETRYABLE),
@@ -140,6 +148,7 @@ def search(req: schemas.TaskSearchReq, conn=Depends(conn_ctx)):
         conn, status=req.status, env_code=req.env_code, date_field=req.date_field,
         date_from=req.date_from, date_to=req.date_to,
         order_numbers=req.order_numbers, asin=req.asin,
+        purchase_source=req.purchase_source,
         page=req.page, page_size=req.page_size,
     )
     return schemas.Envelope(ok=True, data=got)
@@ -176,6 +185,7 @@ def export_tasks(req: schemas.TaskSearchReq, conn=Depends(conn_ctx)):
             status=req.status, env_code=req.env_code, date_field=req.date_field,
             date_from=req.date_from, date_to=req.date_to,
             order_numbers=req.order_numbers, asin=req.asin,
+            purchase_source=req.purchase_source,
         ):
             w.writerow(["" if row.get(k) is None else str(row[k])
                         for k, _ in task_query.EXPORT_COLUMNS])
@@ -220,6 +230,39 @@ def expected_card(env_id: int, req: schemas.ExpectedCardReq, conn=Depends(conn_c
                      "error": {"code": exc.code, "message": exc.message}},
         )
     return schemas.Envelope(ok=True, data=got)
+
+
+@router.post("/envs/{env_id}/customer-id")
+def env_customer_id(env_id: int, req: schemas.EnvCustomerIdReq, conn=Depends(conn_ctx)):
+    """「以这个为准」:把这个买家号记的 Amazon 账号改成插件报上来的那个。
+
+    这个动作**会打开一道认领闸**(登错号被拒的那一道),所以它写
+    `procure.env_events`(带 operator)—— 见 services/instance.set_customer_id。
+
+    什么时候用它:插件报的账号与库里那一列不一样,而人核对之后确认
+    **库里那一列记错了**(比如这个买家号本来就换过号)。
+    如果是机器登错了号,该做的是去那台机器上换回来,不是按这个按钮。
+    """
+    try:
+        got = instance.set_customer_id(conn, env_id, req.amazon_customer_id,
+                                       operator=req.operator)
+    except instance.EnvRefused as exc:
+        return JSONResponse(
+            status_code=404 if exc.code == "ENV_NOT_FOUND" else 409,
+            content={"ok": False, "data": None,
+                     "error": {"code": exc.code, "message": exc.message}},
+        )
+    return schemas.Envelope(ok=True, data=got)
+
+
+@router.get("/envs/{env_id}/events")
+def env_events(env_id: int, limit: int = 20, conn=Depends(conn_ctx)) -> schemas.Envelope:
+    """这个买家号身上发生过什么(眼下只有买家号ID 那三条)。
+
+    买家号那张表长期一条审计流都没有 —— 这里先把有人可以点的那一个动作接上。
+    """
+    return schemas.Envelope(ok=True, data={
+        "items": instance.env_events(conn, env_id, limit=limit)})
 
 
 @router.post("/tasks/{task_id}/reset")

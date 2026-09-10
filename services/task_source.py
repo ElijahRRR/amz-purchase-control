@@ -47,6 +47,10 @@ _PENDING = """
 SELECT s.id, s.task_id, s.external_id, s.pushed_hash,
        t.upstream_order_no, t.status, t.amazon_order_no, t.purchased_at,
        t.error_code, t.actual_total,
+       -- 这一单是谁买的。回写要按它分流:外部单的采购状态与 AMZ 单号
+       -- **是上游自己填的**,写回去等于把它填的东西抄给它看一遍
+       -- (见 services/feishu_writeback.build)。
+       t.purchase_source,
        sh.carrier, sh.tracking_no, sh.status AS shipment_status
   FROM procure.task_sources s
   JOIN procure.tasks t ON t.id = s.task_id

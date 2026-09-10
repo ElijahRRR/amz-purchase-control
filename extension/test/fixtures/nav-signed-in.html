@@ -31,6 +31,22 @@
        实现要是全局扫 "有没有指向 signin 的链接"，这张页面就废了。
     3. 商品标题里带 "sign in" 三个字（"LED Neon Sign in Pink"）。
        实现要是全局扫页面文本，同样废。
+
+  ---------------------------------------------------------------------------
+  buyer 号 ID（parse.readCustomerId）
+  ---------------------------------------------------------------------------
+    页面上没有任何一个稳定的 DOM 节点带着它 —— 它是内联脚本里的一个字段，
+    所以只能在整页 HTML 上跑正则（做法沿用厂商 v2.5.3 popup.js:212-228，
+    他们拿它当身份用，我们只拿它对账与「登错号」比对）。
+
+    真值：'customerId': 'A3KM7PLQ92XVYD'（**键上带引号**的那种写法）
+
+    刻意摆在它前面的三个假值 —— 取第一个匹配就返回的实现（厂商就是这么写的）
+    会在这里当场露馅，而露馅的方向恰好最坏：抠到一个空串送上去，服务端
+    「这一列为空就首次写入」那条会把它写成这个买家号的身份：
+      a) customerId: ""            未登录模板/埋点占位留下的空槽
+      b) "customerId": "0"         A/B 实验里的默认值
+      c) customerId: "A12"         形状对一半（A 开头但太短）
 -->
 <html lang="en">
 <head><meta charset="utf-8"><title>Amazon.com Shopping Cart</title></head>
@@ -83,6 +99,16 @@
     </div>
   </div>
 </div>
+
+<!-- ④ 干扰 + 真值:整页 HTML 上跑正则才抠得到的那一位。
+     三个假值排在真值前面(空串 / "0" / 形状对一半),真值用的是键上带引号的写法。 -->
+<script type="text/javascript">
+  window.ue_furl = "fls-na.amazon.com";
+  var uet_config = { customerId: "", sessionId: "133-2837465-9182736" };
+  var ab_slot = { "customerId": "0", "weblab": "AMZ_PURCHASE_1234" };
+  var legacy_hint = { customerId: "A12" };
+  var P_config = { 'obfuscatedMarketplaceId': 'ATVPDKIKX0DER', 'customerId': 'A3KM7PLQ92XVYD' };
+</script>
 
 <footer id="navFooter">
   <ul class="nav_first">

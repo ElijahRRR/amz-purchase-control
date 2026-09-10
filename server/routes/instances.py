@@ -28,7 +28,7 @@ def register(req: schemas.RegisterReq, conn=Depends(conn_ctx)) -> schemas.Envelo
 
 @router.post("/heartbeat")
 def heartbeat(req: schemas.HeartbeatReq, conn=Depends(conn_ctx)) -> schemas.Envelope:
-    """心跳,顺带收登录态、回一句「该不该去复检登录态」。
+    """心跳,顺带收登录态与买家号ID,回一句「该不该去复检登录态」。
 
     `login_check_due` 是服务端给插件的回话:这个买家号有单在等,而上次读页面
     已经超过 `AMZ_LOGIN_RECHECK_MIN` 分钟了,下一轮认领前去读一次导航栏。
@@ -39,6 +39,7 @@ def heartbeat(req: schemas.HeartbeatReq, conn=Depends(conn_ctx)) -> schemas.Enve
         conn,
         instance_uid=req.instance_uid,
         login_state=req.login_state,
+        amazon_customer_id=req.amazon_customer_id,
         recheck_minutes=settings.login_recheck_minutes(),
     )
     if row is None:
@@ -50,4 +51,12 @@ def heartbeat(req: schemas.HeartbeatReq, conn=Depends(conn_ctx)) -> schemas.Enve
         # 两边对不上时(比如插件是旧版根本不报)在日志里一眼看得出来。
         "login_state": row["login_state"],
         "login_check_due": row["login_check_due"],
+        # 这台机器登着的账号跟这个买家号对不对得上。回给插件是为了让它在日志里
+        # 说得出话:mismatch 的下一次认领会被 409 INSTANCE_ACCOUNT_MISMATCH 拒,
+        # 而那一句拒绝之前,插件应该已经知道为什么。
+        "account_state": row["account_state"],
+        "amazon_customer_id": row["amazon_customer_id"],
+        # 报上来的值形状不对(不是 A 开头的那种)。**没写库,但也没拒这条心跳** ——
+        # 原样回给插件,让它在日志里看得见。静默丢掉才是这个项目最不该有的处置。
+        "customer_id_rejected": row["customer_id_rejected"],
     })

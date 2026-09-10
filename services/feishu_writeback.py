@@ -37,6 +37,17 @@ WRITEBACK_KEYS = frozenset({
     "tracking_no",         # 运单号
 })
 
+#: **外部下单的行只回写这三格。**
+#:
+#: 所有者定稿 ④:那种单是上游自己在别处买的,AMZ 单号、采购状态、采购时间、
+#: 实付都是**上游自己填进那张表的**。写回去有两个后果,都不好:
+#:   · 把上游填的东西原样抄给它看一遍 —— 那张表的编辑历史里多出一片
+#:     「机器人修改了此记录」,而内容一个字没变
+#:   · 更糟的一种:我们那几格是空的(外部单没有实付、没有失败原因),
+#:     写回去就是**把上游填的单号和时间清掉**
+#: 我们对这种单唯一真正知道的东西是物流 —— 那正是本系统在这条链上的职责。
+SHIPMENT_ONLY_KEYS = frozenset({"shipment_status", "carrier", "tracking_no"})
+
 
 class WritebackDisabled(RuntimeError):
     """没开回写。不是错误,是配置 —— 调用方据此安静地跳过。"""
@@ -92,7 +103,13 @@ def build(row: dict[str, Any], fields: dict[str, str]) -> dict[str, Any]:
         "carrier": row.get("carrier") or "",
         "tracking_no": row.get("tracking_no") or "",
     }
-    return {fields[k]: values[k] for k in fields}
+    # 外部下单:只写物流那三格(见 SHIPMENT_ONLY_KEYS)。
+    # 人工回填(manual_backfill)照旧全写 —— 那个单号是**我们这边**的人写进去的,
+    # 上游还不知道。
+    keys = fields
+    if row.get("purchase_source") == "external":
+        keys = {k: v for k, v in fields.items() if k in SHIPMENT_ONLY_KEYS}
+    return {keys[k]: values[k] for k in keys}
 
 
 def digest(payload: dict[str, Any]) -> str:
@@ -114,6 +131,11 @@ def plan(rows: list[dict[str, Any]], fields: dict[str, str]) -> dict[str, Any]:
     updates, skipped = [], 0
     for row in rows:
         payload = build(row, fields)
+        # 一格都没得写(外部单,而这张表只配了采购那几列)。**跳过,不发空更新** ——
+        # 飞书那边一次空 fields 的 batch_update 照样算一次「机器人修改了此记录」。
+        if not payload:
+            skipped += 1
+            continue
         h = digest(payload)
         if h == row.get("pushed_hash"):
             skipped += 1

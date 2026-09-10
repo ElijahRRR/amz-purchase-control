@@ -19,6 +19,7 @@ import { CopyText } from "@/components/CopyText";
 import { Tag } from "@/components/ui/tag";
 import { useLabel, useMeta } from "@/lib/meta";
 import { autoRetryApplies, capVerdict, cn, money, shortTime } from "@/lib/utils";
+import type { CapVerdict } from "@/lib/utils";
 import type { TaskRow } from "@/types";
 
 export type Density = "detail" | "compact";
@@ -80,10 +81,41 @@ function CrossedTag({ on }: { on: boolean }) {
   );
 }
 
+/** 「这一单是谁买的」。**插件下单不画标签** —— 那是常态,每行都挂一个抢眼的
+ *  标签等于没有标签;要画的是另外两种:这一单**没走过我们那条流**,
+ *  所以费用几格空着是对的,而限价那一条根本不成立。
+ *  标签文案与色调都走 /v1/admin/meta,前端不存副本。 */
+function SourceTag({ source, label, tone }: {
+  source: string; label: string; tone: Parameters<typeof Tag>[0]["tone"];
+}) {
+  if (source === "plugin") return null;
+  return (
+    <span title={source === "external"
+      ? "上游自己在别处下的单,本系统只同步物流 —— 没经过任何一道护栏,限价/实付几格空着是对的"
+      : "有人在运营台按了「强制回填」写进去的单号 —— 回填时那道 ASIN 断言是被跳过的"}>
+      <Tag tone={tone}>{label}</Tag>
+    </span>
+  );
+}
+
+/** 「实付/货款」那一格的颜色**跟着 capVerdict 的结论走**,不自己再判一遍。
+ *
+ *  原先这里写着自己的三分支(unknown 灰 / over 红 / 其余 zinc-800),于是
+ *  capVerdict 新加的第四档 `not_applicable`(外部下单)落进 else,拿到的 class
+ *  与一张**真核过、没超**的单一模一样 —— 「判据只有一处」那句话在这一格有过
+ *  第二份副本。而这一格已经栽过两次(null、"0.00"),那会是第三种形状。
+ *
+ *  键写成 tone 的全集:以后再加一档而忘了给颜色,TypeScript 当场报错,
+ *  不会安静地落进某个 else。 */
+const TOTAL_TONE: Record<CapVerdict["tone"], string> = {
+  "amber-hollow": "text-zinc-400",
+  red: "text-red-600 font-medium",
+  emerald: "text-zinc-800",
+  "dashed-zinc": "text-zinc-400",
+};
+
 function totalTone(r: TaskRow): string {
-  const v = capVerdict(r);
-  if (v.state === "unknown") return "text-zinc-400";
-  return v.state === "over" ? "text-red-600 font-medium" : "text-zinc-800";
+  return TOTAL_TONE[capVerdict(r).tone];
 }
 
 /** 勾选列。放在最前面,两种密度都有 —— 批量动作不该只在某一档才够得着。 */
@@ -142,6 +174,9 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
   const meta = useMeta();
   const statusLabel = useLabel("task_status");
   const shipLabel = useLabel("shipment_status");
+  // 来源的中文与色调也走 meta —— 前端不存副本(这个项目因为「两份副本悄悄分叉」
+  // 栽过两次)。查不到的键原样显示英文,比静默映射成「未知」强。
+  const sourceLabel = useLabel("purchase_source");
 
   const codeTag = (code: string | null) => {
     if (!code) return null;
@@ -234,7 +269,19 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
       { id: "env", header: "买家号", size: 88,
         cell: ({ row }) => <span className="text-xs">{row.original.env_code}</span> },
       { id: "cap", header: "限价", size: 74, meta: { align: "right" },
-        cell: ({ row }) => <span className="num">{money(row.original.price_cap)}</span> },
+        cell: ({ row }) => {
+          const r = row.original;
+          // 外部下单的 price_cap 是库里那一列 NOT NULL 逼出来的占位 0。
+          // **渲染成 0.00 就是在说「限价 0.00」**,而系统从没有过这个限价;
+          // 跟旁边一张限价真的很低的单排在一起,人读到的是一个数,不是一个占位。
+          // 详细档与 CSV 早就写「不适用」了 —— 而扫桶用的正是紧凑档,
+          // 它反而是唯一一处还在渲染那个 0 的地方。
+          if (r.purchase_source === "external") {
+            return <span className="text-2xs text-zinc-400"
+                         title={capVerdict(r).text}>不适用</span>;
+          }
+          return <span className="num">{money(r.price_cap)}</span>;
+        } },
       // **红色必须落在它标注的那个数上。** 原先这一格永远显示 actual_total,
       // 而闸比的是货款:礼品卡抵扣过的单会渲染成「限价 1200.00 / 实付 1141.86(红)」
       // —— 屏幕上两个数字说「没超」,颜色说「超了」,真正比过的那个数(2241.86)
@@ -264,6 +311,9 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
             <span className="flex flex-col items-start gap-0.5">
               <Tag tone={s.tone}>{s.label}</Tag>
               {r.awaiting_manual_verification && <AwaitingVerify since={r.awaiting_since} />}
+              {/* 扫桶用的就是这一档:一行「已拍单」里,哪几条其实不是我们买的,
+                  必须在这里看得出来 —— 否则「外部单的费用是空的」会被当成同步掉了。 */}
+              <SourceTag source={r.purchase_source} {...sourceLabel(r.purchase_source)} />
             </span>
           );
         } },
@@ -320,7 +370,10 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
               {codeTag(r.error_code)}
               {retryBadge(r)}
             </span>
-            <CrossedTag on={r.may_have_ordered} />
+            <span className="flex items-center gap-1.5 min-w-0 flex-wrap">
+              <CrossedTag on={r.may_have_ordered} />
+              <SourceTag source={r.purchase_source} {...sourceLabel(r.purchase_source)} />
+            </span>
             <DL k="创建"><span className="id text-xs+ text-zinc-500">{shortTime(r.created_at)}</span></DL>
             <DL k="采购"><span className="id text-xs+ text-zinc-500">{shortTime(r.purchased_at)}</span></DL>
           </div>
@@ -425,6 +478,15 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
             <span className="num ml-auto text-xs+">{money(v)}</span>
           </span>
         );
+        // 外部下单:这几格库里全是空的,而空着的原因不是「还没同步上」,
+        // 是**这一单不经本系统采购**。不写清楚的话,一排 "—" 看起来像丢了数据。
+        if (r.purchase_source === "external") {
+          return (
+            <span className="text-xs text-zinc-400 leading-relaxed">
+              外部下单<br />不经本系统采购,<br />没有费用与限价
+            </span>
+          );
+        }
         return (
           <div className="flex flex-col gap-0.5">
             {line("运费", r.actual_shipping)}

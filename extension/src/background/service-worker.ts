@@ -111,6 +111,15 @@ let pendingLoginRejects = 0;
  *  **丢一位登录态,好过让一个毒值把整条心跳通道堵死。** */
 const PENDING_LOGIN_MAX_REJECTS = 3;
 
+/** 内容脚本上一次报上来的买家号 ID(登录探测那一步顺手抠的)。
+ *
+ *  **与 pendingLoginState 不是一回事,所以不共用那套「被拒就重发」的账。**
+ *  登录态那一位是**一次性的消息**(报上去就该清掉,不然会一直重复报一个旧结论);
+ *  这一位是**一个事实**(这台机器登着谁),每次心跳原样带上正是对的:
+ *  服务端那边同一个值写两次是幂等的,而少带一次的后果是它退回
+ *  「这一轮没有新消息」—— 在登错号的那台机器上,那正是我们不希望发生的沉默。 */
+let lastCustomerId: string | undefined;
+
 /** 服务端在上一次心跳里回的「该不该复检登录态」。
  *  内容脚本每轮要租约时顺手取走 —— 不另开一条广播,少一条要维护的消息。 */
 let loginCheckDue = false;
@@ -140,7 +149,7 @@ async function boot(): Promise<void> {
 async function heartbeat(): Promise<void> {
   if (!client || !cfg?.envCode) return;
   const sending = pendingLoginState;
-  const r = await client.heartbeat(sending ?? undefined);
+  const r = await client.heartbeat(sending ?? undefined, lastCustomerId);
   if (r.ok) {
     // 收到了才清。清早了的话,一次网络抖动就能让「这台机器被登出了」这条消息
     // 永远丢掉 —— 而服务端会一直按上一位派单。
@@ -150,6 +159,27 @@ async function heartbeat(): Promise<void> {
       pendingLoginRejects = 0;
     }
     loginCheckDue = !!r.data?.login_check_due;
+    // 服务端说这台机器登着的**不是这个买家号**。下一次认领会被 409 拒,
+    // 而那句拒绝到达之前这里就该说话 —— 一台登错号的机器在面板上
+    // 原先与一台正常待命的机器长得一模一样。
+    if (r.data?.account_state === "mismatch") {
+      log.err(`这台机器登着的 Amazon 账号(${r.data.amazon_customer_id ?? "?"})` +
+              "不是这个买家号记的那个,服务端不会派单。" +
+              "请换回正确的账号;确实是库里记错了的话,去运营台买家号页按「以这个为准」");
+    } else if (r.data?.account_state === "unverified") {
+      // 同样领不到单,但**处置完全不同**:这台机器只是还没报过它登着谁
+      // (新装 / 新 profile / 换了机器),下一轮登录探测报上去就开闸。
+      // 与 mismatch 共用一句「登错号」的话,人会跑去那台机器上瞎换账号;
+      // 什么都不说的话,面板上它跟一台正常待命的机器长得一模一样。
+      log.warn("服务端还没收到这台机器登着谁,暂时不会派单 —— " +
+               "下一轮登录探测会把买家号 ID 报上去,对得上就自动恢复");
+    }
+    // 报上去的值形状不对(不是 A 开头那种)。服务端没写库、也没拒这条心跳,
+    // 只把它原样退回来 —— 静默丢掉的话,这一位会永远是空的而没人知道为什么。
+    if (r.data?.customer_id_rejected) {
+      log.warn(`买家号 ID 形状不对,服务端没收:${r.data.customer_id_rejected}` +
+               "(多半是 Amazon 改了页面,parse.readCustomerId 抠错了地方)");
+    }
     return;
   }
   if (r.kind === "business" && r.code === "INSTANCE_NOT_REGISTERED") {
@@ -250,6 +280,12 @@ chrome.runtime.onMessage.addListener((msg, sender, respond) => {
     // 换了一个值就重新数:上一位被拒的次数说的是上一位。
     if (msg.state !== pendingLoginState) pendingLoginRejects = 0;
     pendingLoginState = msg.state as LoginState;
+    // 同一次读页面的第二个结论:这台机器登着谁。**读不到就不动它** ——
+    // 「这一轮没读到」不是「这台机器换号了」,抹成空只会让服务端那边
+    // 退回「没有新消息」,而登错号那道闸正是靠这一位才竖得起来。
+    if (typeof msg.customerId === "string" && msg.customerId) {
+      lastCustomerId = msg.customerId;
+    }
     // 报上来之后这一轮的「该复检了」就算答完了,别让内容脚本再开一次页面。
     loginCheckDue = false;
     respond({ ok: true });
