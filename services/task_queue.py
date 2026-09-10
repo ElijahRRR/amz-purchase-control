@@ -18,10 +18,19 @@ CLAIM_SQL = """
 WITH env AS (
     -- expected_card_last4 跟着一起选出来:所有者定稿「替买家号切换支付卡」之后,
     -- 插件在读完结算页、报护栏之前要按它把卡切过去,所以它得随认领一起下发。
-    -- 与 daily_cap 同一个 CTE、同一个事务:认领那一刻读到的期望卡,就是这一单
-    -- 要切的那张。分成两条语句读的话,中间有人在运营台上改了这一格,
-    -- 插件切的是旧值、服务端 guard-check 比的是新值 —— 两边各自都"对",
-    -- 合起来是一单必然被 PAYMENT_METHOD_UNEXPECTED 拦下、而谁也说不清为什么。
+    --
+    -- 与 daily_cap 同一个 CTE **只保证一件事**:这两位是同一瞬间从库里读到的,
+    -- 认领这一次不会读到半新半旧的一组配置。**它关不掉那条真正的窗口** ——
+    -- guard-check 是另一个请求、另一个事务,每次都重新查一遍 buyer_envs
+    -- (server/routes/tasks.py 的 guard_check),而那已经是几分钟之后的事了。
+    -- 所以「插件切的是旧值、服务端比的是新值」今天是**开着的**:认领之后
+    -- 有人在运营台上改了这一格,这一单必然被 PAYMENT_METHOD_UNEXPECTED 拦下,
+    -- 而且这一次买家号在 Amazon 上的默认支付卡已经被我们真改过了 —— 事件流里
+    -- 没有任何一条说得出「这次失败是因为期望卡在途中被改了」。
+    -- 关掉它要把期望卡快照进 tasks 行(走改表流程,guard-check 比快照而不是
+    -- 比当前库值),那跨了这条线的文件边界,留给合并那一轮定夺。
+    -- 有一条 pytest 把这条窗口钉着(test_expected_card_changed_mid_flight_...),
+    -- docs/01 §5.3 里也记了改这一格时在途的单会怎样。
     SELECT daily_cap, expected_card_last4 FROM procure.buyer_envs WHERE id = %(env_id)s
 ),
 done_today AS (

@@ -327,6 +327,42 @@ def test_claim_still_works_when_the_env_has_no_expected_card(client, conn, seed)
     assert _claim(client) is not None
 
 
+def test_expected_card_changed_mid_flight_still_blocks_the_order(client, conn, seed):
+    """认领 → guard-check 之间改期望卡:这一单**必然被拦**,而且今天没人说得清为什么。
+
+    CLAIM_SQL 里 env 那个 CTE 只保证一件事:daily_cap 与 expected_card_last4 是
+    **同一瞬间**从库里读到的。它管不着这条真正的窗口 —— guard-check 是另一个请求、
+    另一个事务,每次都重新查一遍 buyer_envs(server/routes/tasks.py)。
+
+    所以下面这条链今天是开着的,而且切卡上线之后代价升了一级:
+      认领下发 4417 → 运营在运营台上把这一格改成 9021(插件此刻正在支付选择页上
+      照着 4417 点确认)→ 插件切完重读结算页得到 4417 → guard-check 上报 4417 →
+      服务端重新读库拿到 9021 → PAYMENT_METHOD_UNEXPECTED。
+    净结果:一单必然被拦,而且**这个买家号在 Amazon 上的默认支付卡已经被我们
+    改成 4417 了** —— 事件流里没有任何一条说过「这次失败是因为期望卡在途中被改了」。
+
+    这条断言不是在庆祝这个行为,是把它钉住:注释里不许再写「同一个 CTE 关掉了
+    这条分叉」那句假话。真要关掉它得把期望卡快照进 tasks 行(走改表流程),
+    那跨了这条线的文件边界,留给合并那一轮定夺。docs/01 §5.3 记了这一格。
+    """
+    _register(client)
+    conn.execute("UPDATE procure.buyer_envs SET expected_card_last4 = '4417'")
+    t = _claim(client)
+    assert t["guards"]["expected_card_last4"] == "4417"
+
+    # 在途改配置 —— 插件已经拿着 4417 上路了
+    conn.execute("UPDATE procure.buyer_envs SET expected_card_last4 = '9021'")
+
+    d = client.post(f"/v1/tasks/{t['task_id']}/guard-check", json={
+        "instance_uid": UID, "actual_total": "10.79", "payment_last4": "4417",
+        "delivery_raw": "Tomorrow", "is_fba": True,
+    }).json()["data"]
+    assert d["allow"] is False and d["error_code"] == "PAYMENT_METHOD_UNEXPECTED"
+    # 而理由里说的是「配的是 9021」—— 一句对着新配置说的话,
+    # 看的人无从知道插件当时拿到的是 4417。
+    assert "9021" in d["detail"] and "4417" in d["detail"]
+
+
 def test_guard_check_event_carries_the_numbers_the_guard_actually_used(client, conn, seed):
     """事件流是「不拦但要留痕」那类信号的去处 —— 自洽记录写在这里。"""
     _register(client)
