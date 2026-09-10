@@ -889,10 +889,13 @@ const PAYSELECT_URL = "https://www.amazon.com/gp/buy/payselect/handlers/display.
  *  `confirm`    摆不摆一个可点的确认按钮。
  *  `startUrl` / `afterUrl`  入口点下去之前/之后的 URL(afterUrl 为空 = 点完不变)。
  *  `signOut`    途中把 URL 换成 /ap/signin —— 那就是「切到一半会话过期」的现场。
+ *  `hideEntries` 把支付面板里那三个真入口一并隐掉(跑完原样放回)——
+ *               第 ① 步「入口没找到」的现场。夹具是共享的,所以只隐不删。
  *
  *  返回 [LoginLost / 错误码 / "裸Error" / "没抛", 文案]。 */
 const cardSwitchDrill = ({ cards = [], onClickAdd = null, confirm = false,
-                           startUrl = PAYSELECT_URL, afterUrl = "", signOut = false }) => `(async () => {
+                           startUrl = PAYSELECT_URL, afterUrl = "", signOut = false,
+                           hideEntries = false }) => `(async () => {
   // **这张夹具是共享的**:同一个页面跑完这一节所有断言。上一轮 append 进去的
   // 卡片和按钮不清掉的话,下一轮的「唯一命中」会被上一轮那张同尾号的卡打掉 ——
   // 断言仍然是绿的(码还是 PAYMENT_METHOD_UNEXPECTED),但停的地方悄悄换了一处,
@@ -940,11 +943,19 @@ const cardSwitchDrill = ({ cards = [], onClickAdd = null, confirm = false,
   driver.checkout = { el: null, doc: () => document, url: () => url,
                       urlState: () => ({ kind: "ok", url }), close() {} };
   ${signOut ? `setTimeout(() => { url = "https://www.amazon.com/ap/signin"; }, 20);` : ""}
+
+  // 第 ① 步的现场:面板还在,里面三个真入口一个都不渲染。**只隐不删**,
+  // 跑完原样放回 —— 这张夹具后面还有别的断言在用。
+  const hidden = ${hideEntries}
+    ? [...document.querySelectorAll("#pay-entry-a, #pay-entry-b, #pay-entry-c")] : [];
+  hidden.forEach((e) => { e.style.display = "none"; });
+
   try { await driver.ensurePaymentCard("9021"); return ["没抛", ""]; }
   catch (e) {
     return [e instanceof amzdom.LoginLostError ? "LoginLost" : (e.code ?? "裸Error"),
             String(e.message ?? "")];
   }
+  finally { hidden.forEach((e) => { e.style.display = ""; }); }
 })()`;
 
 /** 三步各自的现场:③ 一张卡都没有 ④ 有唯一那张、没有确认按钮 ⑤ 两样都有、但切不过去。 */
@@ -976,6 +987,23 @@ await withFixture("checkout.html", async (run) => {
     eq(`切卡第${stage}步没被登出时照旧落 PAYMENT_METHOD_UNEXPECTED`,
        code, "PAYMENT_METHOD_UNEXPECTED");
     check(`切卡第${stage}步停在「${STOPS[stage]}」`, msg.includes(STOPS[stage]), msg);
+  }
+
+  // ── 第 ① 步:面板在、面板里一个渲染出来的入口都没有 ────────────────────
+  //
+  // 这一支同样是「等满一个预算」,所以同样先问登录态。而它与第 ② 步必须分得开:
+  // 「入口没找到」是结算页那一侧改版(要改 payment.changeEntry),
+  // 「选卡页没到」是点了但没跳走 —— 两件事的处置完全不同,
+  // 而它们今天共用一个错误码,detail 里那句话是运营台上唯一能把它们分开的东西。
+  {
+    const [code, msg] = await run(cardSwitchDrill({ hideEntries: true }));
+    eq("切卡第1步:面板里三个入口都不渲染 → 停在「入口没找到」",
+       [code, msg.includes("入口没找到")], ["PAYMENT_METHOD_UNEXPECTED", true]);
+    const [lost] = await run(cardSwitchDrill({ hideEntries: true, signOut: true }));
+    eq("切卡第1步等不到时先问一句登录态(被登出 → LoginLost)", lost, "LoginLost");
+    // 隐掉的那三个必须原样放回 —— 不放回的话,后面每一条断言验的都是另一张页面。
+    eq("切卡第1步演练之后,三个入口原样放回",
+       await run(`amzdom.findPaymentChangeEntry(document)?.id ?? null`), "pay-entry-a");
   }
 
   // ── 第 ② 步那条对照判据:「从无到有」,不是「有」 ────────────────────
