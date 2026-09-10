@@ -1224,6 +1224,82 @@ const statesOf = (c) => c.events2.map((e) => e.payload?.state).filter(Boolean);
 }
 
 {
+  // 8b. **同一道闸,在「下单前确认」关着的那条默认路径上。**
+  //
+  //     上面那一条只覆盖 confirmBeforeOrder=true。而这个开关**默认是关的** ——
+  //     默认路径上僵尸 runTask 原先照旧越过下单点:看门狗在 runTask 正 await
+  //     guardCheck(或那条「点击下单按钮」的 POST,两者上界都是 requestTimeoutMs)
+  //     时开火,giveUp 写「插件放弃这一单」、dispose 驱动、放开 busy 闸;
+  //     那条 runTask 从 guardCheck 回来之后**不问 isAbandoned**,直接报
+  //     「点击下单按钮」(may_have_ordered=true)—— 任务此刻在服务端仍是 claimed,
+  //     这条 POST 会被收下,tasks.may_have_ordered 被置 true;随后 placeOrder 在
+  //     已 dispose 的驱动上抛 PLUGIN_INTERNAL,而位已经置上 → to_manual=true。
+  //     净效果:一张**一分钱没花**的单被永久打上「越过下单点」,人工重置 /
+  //     批量重置 / 自动重试三道闸全部把它拦下要 NEEDS_ACK,要人去买家号订单页
+  //     翻一遍不存在的订单。实测过这个形态(硬顶 200ms、guardCheck 400ms)。
+  const client = fakeClient(1);
+  const sent = [];
+  const inner = client.events;
+  client.events = async (id, evs) => { sent.push(...evs); return inner(id, evs); };
+  // guardCheck 慢过硬顶:看门狗必然在这条 await 里开火。
+  client.guardCheck = async () => {
+    await new Promise((r) => setTimeout(r, 400));
+    return { ok: true, data: { allow: true, error_code: null, detail: null,
+                               delivery_date: null, delivery_raw_used: null,
+                               goods_total: "1.00" } };
+  };
+  let placed = 0;
+  const loop = new Loop({
+    client, log: silentLog,
+    // confirmBeforeOrder **不传** —— 这就是默认路径。
+    config: () => ({ mode: "simulate", taskHardCapMs: 200 }),
+    driver: () => confirmDriver({ placeOrder: async () => { placed += 1; } }),
+  });
+  const got = await within(5_000, loop.tickOnce(), "tickOnce(默认路径上被硬顶掐掉)");
+  eq("默认路径上也掐得动", got.kind, "hard-cap");
+  await new Promise((r) => setTimeout(r, 600));   // 等那条僵尸 runTask 自己走完
+  eq("被放弃之后一次都不许点下单按钮", placed, 0);
+  const steps = sent.map((e) => e.payload?.step);
+  check("事件流里不许出现「点击下单按钮」", !steps.includes("点击下单按钮"),
+        JSON.stringify(steps));
+  check("越过下单点的那条留痕一条都不该有(这一单一分钱没花)",
+        !sent.some((e) => e.payload?.may_have_ordered === true), JSON.stringify(steps));
+  eq("一条 /fail 都不该有(结局由认领超时清扫说了算)", client.fails.length, 0);
+}
+
+{
+  // 8c. 同一件事在**开着确认**时还多一层:护栏那一趟里被掐掉之后,
+  //     不许再开确认窗口。少了护栏回来之后那一问的话,面板上会摆出一张
+  //     预览屏、让人对着一张已经死掉的单按按钮(窗口里那道闸要等人按完
+  //     或等到点才问),而按下去什么也不会发生。
+  const client = fakeClient(1);
+  client.guardCheck = async () => {
+    await new Promise((r) => setTimeout(r, 400));
+    return { ok: true, data: { allow: true, error_code: null, detail: null,
+                               delivery_date: null, delivery_raw_used: null,
+                               goods_total: "1.00" } };
+  };
+  let asked = 0;
+  const windows = [];
+  const loop = new Loop({
+    client, log: silentLog,
+    config: () => ({ mode: "simulate", taskHardCapMs: 200,
+                     confirmBeforeOrder: true, timeouts: { confirmWait: 3_000 } }),
+    driver: () => confirmDriver(),
+    askConfirm: () => { asked += 1; return new Promise(() => {}); },
+    onConfirmWindow: (ms) => windows.push(ms),
+  });
+  const got = await within(5_000, loop.tickOnce(), "tickOnce(护栏那一趟里被掐)");
+  eq("护栏那一趟里也掐得动", got.kind, "hard-cap");
+  await new Promise((r) => setTimeout(r, 600));
+  eq("被掐掉之后不许再开确认窗口", asked, 0);
+  // 掐单那一路会把面板上的倒计时清成 null(那是收摊,不是开窗口);
+  // 不许出现的是一个**真的到期时刻**。
+  check("面板上也不该出现一条倒计时", windows.every((w) => w === null),
+        JSON.stringify(windows));
+}
+
+{
   // 9. **开关开着,但这个运行环境没有应答界面。** 闸的条件是「开关开着」且
   //    「传了 askConfirm」,缺后者时它静默失效:一步不停、一条事件都不发,
   //    而开关在面板上看起来是开的。开关这一位存在 chrome.storage 里、跨版本

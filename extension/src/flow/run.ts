@@ -220,6 +220,23 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     }
   };
 
+  /** 看门狗已经掐掉这一单、而我们**还没点下单**时的统一出口。
+   *
+   *  两处共用(护栏回来之后 / 点下单之前),结局与「确认窗口那一格」完全一致:
+   *  这一刻一分钱没花,清车收摊,不写任何 `may_have_ordered` 的留痕,
+   *  也不自己去 /fail 或 /release —— 这一单的结局由 Loop 那条「插件放弃这一单」
+   *  和服务端的认领超时清扫说了算(Loop 已经放开 busy 闸去领下一单了)。
+   *  确认那一格自己留着一份措辞,是因为它还说得出**更具体的**处置
+   *  (confirmWait 与 taskHardCapMs 谁配得比谁长),这里说不出。 */
+  const abandonedBeforeOrdering = async (): Promise<Outcome> => {
+    log.warn("这一单已经被单笔硬顶掐掉了 —— 下单之前收摊:不点下单、不留「越过下单点」的痕。" +
+             "这一刻一分钱没花;要么把硬顶调大,要么把前面几步的预算调紧");
+    const cleared = await tryClear("看门狗已放弃这一单");
+    return { kind: "unreported",
+             message: "下单之前被单笔硬顶掐掉了",
+             cartCleared: cleared };
+  };
+
   try {
     await step("清空购物车");
     await driver.clearCart();
@@ -364,6 +381,16 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
 
     // 服务端最终采信哪条交期,回填时要原样带回,不能让插件另挑一条。
     const deliveryUsed = verdict.data.delivery_raw_used ?? undefined;
+
+    // **看门狗可能在这一趟 guardCheck 里先开火了。** 那条 POST 的上界是
+    // requestTimeoutMs(默认 15 秒),而单笔硬顶可以配得比它紧得多;硬顶到期时
+    // Loop 会写「插件放弃这一单」、dispose 掉驱动、放开 busy 闸去领下一单,
+    // 而这条 runTask 还活着。
+    //
+    // 这一句**在开着「下单前确认」时是看得见的**:少了它,下面那一格会照旧
+    // 开一个确认窗口、把预览屏摆到面板上、让人对着一张已经死掉的单按按钮
+    // (窗口里那道 isAbandoned 要等人按完或等到点才问)。
+    if (deps.isAbandoned?.() === true) return await abandonedBeforeOrdering();
 
     // ── 下单前的人工确认 ────────────────────────────────────────────────
     //
@@ -622,6 +649,24 @@ export async function runTask(task: Task, deps: RunDeps): Promise<Outcome> {
     //
     // 所以:没落地就不点。**这一刻还没花钱**,清车退回队列是安全的那一边;
     // 点下去才是不安全的那一边。
+    // ── 看门狗掐单之后,这一步一律不许再走 ──────────────────────────────
+    //
+    // 这道闸原先**只装在「下单前确认」那一格**,而那个开关默认是关的:默认路径上
+    // 僵尸 runTask 照旧越过下单点。实测(真 Loop + 真 runTask,硬顶 200ms、
+    // guardCheck 400ms)事件流是
+    //   [清空购物车 … 读到结算页, **插件放弃这一单**, **点击下单按钮**]
+    // —— 任务在服务端此刻仍是 claimed,这条 POST 会被收下,tasks.may_have_ordered
+    // 被置 true;随后 placeOrder 在已经 dispose 的驱动上抛
+    // PLUGIN_INTERNAL「购物车/结算页会话不存在」,而 mayHaveOrdered 已置位 →
+    // to_manual=true。净效果:一张**一分钱没花**的单被永久打上「越过下单点」,
+    // 人工重置 / 批量重置 / 自动重试三道闸全部把它拦下要 NEEDS_ACK,
+    // 要人去买家号订单页翻一遍不存在的订单。
+    //
+    // 与上面那一句是两道,不是一道多写了一遍:那一句关的是「护栏那一趟里被掐」,
+    // 这一句关的是「从那之后到点下单之前被掐」(确认窗口那一格就走在中间)。
+    // 这一刻还没花钱,清车收摊是安全的那一边;点下去才是不安全的那一边。
+    if (deps.isAbandoned?.() === true) return await abandonedBeforeOrdering();
+
     let armed = await step("点击下单按钮", { may_have_ordered: true });
     if (!armed.ok && armed.kind === "transport") {
       // 没说上话就重发一次:服务端那条 `UPDATE ... WHERE NOT may_have_ordered`
