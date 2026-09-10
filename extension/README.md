@@ -13,7 +13,7 @@
 | | 状态 |
 |---|---|
 | 注册 / 心跳 / 认领 / 事件上报 / 护栏裁决 / 回填 / 失败 / 释放 | ✅ 通了，场景实跑验过（清单见下面那张表） |
-| 执行时序（清车 → 加购 → 核对 → 填地址 → 读结算页 → 护栏 → 下单 → 回填断言） | ✅ 通了 |
+| 执行时序（清车 → 加购 → 核对 → 填地址 → 读结算页 → **切支付卡→重读** → 护栏 → **(可选)等人确认** → 下单 → 回填断言） | ✅ 通了 |
 | 面板（相位、任务卡、步骤、日志、点击复制） | ✅ |
 | 物流同步（订单详情页 → 跟踪页 → 回传轨迹） | ✅ 独立一条流，跑在 purchased 之后 |
 | 真实 Amazon 页面动作（P3） | ⚠️ 写完了，解析层对着 DOM 夹具全绿；**但没在真实 Amazon 上跑过** |
@@ -112,14 +112,15 @@ SW 那段「读租约 → 裁决 → 写租约」并发时只许一个标签页�
 
 | 夹具 | 页面 | 主要盯的东西 |
 |---|---|---|
-| `nav-signed-in.html` / `nav-signed-out.html` | 导航栏 | 登录态三档；隐藏的反向模板 |
+| `nav-signed-in.html` / `nav-signed-out.html` | 导航栏 | 登录态三档；隐藏的反向模板；**`customerId` 的真值与四个假值(注释里的、别的键名下的、长度不对的)** |
 | `product.html` / `product-oos.html` | 商品页 | 数量下拉、优惠券、库存；**disabled 的加购按钮副本** |
 | `cart.html` / `cart-empty.html` | 购物车 | 只数 Active Items；「空车」「没渲染」「读不懂这一页」三者分开；**只靠 CSS 类隐藏的空车提示模板 / 行模板** |
 | `cart-icon-delete.html` | 购物车 | **删除控件的三种图标形态**（厂商 v2.5.3:687-703） |
-| `checkout.html` | 结算页 | 金额、卡尾号、下单按钮、地址面板；折叠地址簿干扰项 |
+| `checkout.html` | 结算页 | 金额、卡尾号、下单按钮、地址面板；折叠地址簿干扰项；**支付面板里三个「更改支付方式」入口(三种隐藏机制)与页脚那个文档级诱饵** |
 | `checkout-apex-price.html` | 结算页 | 划线原价与实付价挂同一个类名 |
 | `checkout-thirdparty.html` | 结算页 | FBA 看的是谁发货，不是谁卖 |
 | `checkout-giftcard.html` | 结算页 | **礼品卡抵扣行**(隐藏表单标记 `subtotalLineType=SPECIAL_PAYMENTS_GIFT_CARD_BALANCE`,厂商 v2.5.3 `popup.js:2052-2079`)、已选支付方式的**槽位数**、卡尾号 |
+| `payselect.html` | 支付选择页 | **⚠️⚠️ 判据来自厂商截图、无 DOM 样本 —— 全仓可信度最低的一张**;卡片 radio、尾号唯一命中(有效期年份诱饵 / 同尾号两张 / 隐藏模板)、确认按钮 `disabled` 与隐藏副本、以及「这一页**没有**结算页支付面板」那条反向断言。**第一次开 live 档跑到切卡这一步之前,先在真页面上核一遍 `selectors.checkout.payselect`** |
 | `checkout-interstitial.html` | 中间页 | 会骗人的 `#submitOrderButtonId` |
 | `address-select.html` | 地址选择页 | **这一页没有姓名框**；同 id 入口三份，三种隐藏机制 |
 | `address-form-async.html` | 异步地址表单 | 预填着**别人地址**的隐藏模板副本；保存后三种结果 |
@@ -162,6 +163,27 @@ SW 那段「读租约 → 裁决 → 写租约」并发时只许一个标签页�
 
 ## 自检（不碰 Amazon）
 
+> **先决条件:自检要跑在 `amazon_customer_id` 为空的买家号上。**
+> D3 之后服务端多了一道闸:买家号那一列已经有值、而这台机器**从没报过**它登着谁 →
+> 认领被 409 `INSTANCE_ACCOUNT_UNVERIFIED` 拒。而 smoke 每次都用一个新的
+> `instance_uid` + `SimulatedDriver`,后者**按设计永远不报 `customerId`** ——
+> 它一次页面都没读过,编一个号出来就是撒谎(见 `flow/simulated.ts` 那段注释,
+> 与「模拟档只能报 `login_state=unknown`」是同一条规矩)。
+> 于是在任何**生产上已经被认出过账号**的买家号(那正是 D3 想要的状态)上,
+> 下面这些场景一条都领不到单。`smoke` 会在开跑前读一次心跳回执的 `account_state`,
+> 是 `unverified` / `mismatch` 就直接判失败并把该怎么办说出来 ——
+> 与它对没配 `expected_card_last4` 时做的事完全同形。
+> 临时清掉那一列即可(注意:清空之后自动首报写入对这个买家号也停了,
+> 那是服务端有意为之,见 `services/instance.set_customer_id`;
+> 要恢复得在运营台按一次「以这个为准」):
+>
+> ```bash
+> psql <库> -c "UPDATE procure.buyer_envs SET amazon_customer_id=NULL WHERE code='env-172'"
+> ```
+>
+> 同一件事对面板上的**「模拟」档**也成立:一台新装的机器切到模拟档,
+> 在已认出账号的买家号上一单也领不到(面板会写「等账号报上来」)。
+
 ```bash
 npm run smoke                                   # happy
 node tools/smoke.mjs --scenario over_cap        # 护栏拦截
@@ -186,6 +208,10 @@ node tools/smoke.mjs --scenario confirm_no            # 人按了「取消」→
 node tools/smoke.mjs --scenario confirm_wait_timeout  # 没人来按 → 到点清车,退回队列
 node tools/smoke.mjs --scenario confirm_watchdog      # 看门狗先掐了单,人晚一步按「下单」→ 那一下不作数
 node tools/smoke.mjs --scenario confirm_no_room       # 认领窗口不够停下来等人了 → 窗口根本不开,清车退回队列
+# 上面五个用的都是 happy 档,而那一档的模拟卡本来就是 4417 = 期望卡,一步都不会切。
+# 这一个换成 card_switch 档(初始卡 9021),跑的是切卡与确认闸**在同一单里**的那道接缝。
+# 它同样要先配上 expected_card_last4='4417'。
+node tools/smoke.mjs --scenario confirm_card_switch   # 切卡 → 重读结算页 → 停下来等人 → 人按下单
 
 # 物流同步是独立一条流,加 --ship 顺带跑一轮
 node tools/smoke.mjs --scenario happy --ship in_transit
@@ -219,6 +245,7 @@ node tools/smoke.mjs --scenario happy --ship delivered
 | confirm_wait_timeout | `ready`(**退回队列**) | — （事件流里有「等人确认超时 N 秒,退回队列」,`state=confirm_timeout`) |
 | confirm_watchdog | `claimed`(**停在原地,等认领超时清扫**) | — （事件流到「插件放弃这一单」为止:`state=plugin_hard_cap`,**没有** confirm_approved / 点击下单按钮,`may_have_ordered=false`) |
 | confirm_no_room | `ready`(**退回队列**) | — （事件流里只有「认领窗口不够停下来等人了,退回队列」,`state=confirm_no_room`,**没有** `awaiting_confirm` —— 窗口根本没开过) |
+| confirm_card_switch | `purchased` | — （切卡与确认闸**在同一单里**:事件流的顺序必须是「切换支付卡 → 支付卡已切换 → 切卡后重读结算页 → 等待人工确认下单 → 点击下单按钮」;顺序错了,摆给操作员看的金额就是一张**已经不存在的结算页**上的数) |
 
 「没人来按」那一条**不叫 `confirm_timeout`**,叫 `confirm_wait_timeout`:前一个名字
 已经归上面那一行用了(「点了下单但没等到确认页」,`ORDER_CONFIRM_TIMEOUT`,
@@ -401,7 +428,8 @@ Amazon 改了购物车页的结构 —— 而 `tickOnce` 每 10 秒来一次,一
 | `timeouts.orderServerMargin` | `180000` | 硬顶要给服务端认领超时留的余量。**别调小** —— 它拦的是「订单下成了却报不上去」 |
 | `timeouts.orderCards` | `20000` | 订单历史页等卡片 |
 | `timeouts.orderPoll` | `500` | 下单之后那一段的轮询间隔 |
-| `timeouts.confirmWait` | `180000` | 等人按下单/取消的预算。**不是实际生效的上界** —— 实际取它与「认领窗口 − `orderServerMargin`」里更紧的那个,调大它不会让人多等一秒,只会让事件流里的 `capped_by` 从 `confirm_wait` 变成 `claim_window` |
+| `timeouts.confirmWait` | `180000` | 等人按下单/取消的预算。**不是实际生效的上界** —— 实际取它与「认领窗口 − `orderServerMargin` − `minOrderRoom`」里更紧的那个,调大它不会让人多等一秒,只会让事件流里的 `capped_by` 从 `confirm_wait` 变成 `claim_window` |
+| `timeouts.minOrderRoom` | `60000` | 留给「点下单 → 等确认页」那一步的**地板**。认领窗口里剩下的余地,不许被前面任何一步(眼下只有「等人确认」)吃到低于它。`placeOrder` 是**先点按钮再算硬顶**的:余地不够时要拖到那时候才发现,而代价是一张**可能真花过钱**的单(`ORDER_CONFIRM_TIMEOUT` → `may_have_ordered=true` → 待人工)。扣完不剩就根本不开确认窗口(事件流里是 `confirm_no_room`,一分钱没花、退回队列)。认领超时本来就配得紧的话,调小它比调小 `confirmWait` 更直接 |
 
 超时值只接受**有限的正数**,填坏了(0、负数、字符串)一律退回默认值:
 一个存成 0 的 `manualVerify` 会让「等操作员完成验证」变成不等,

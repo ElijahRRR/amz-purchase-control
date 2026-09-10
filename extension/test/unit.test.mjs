@@ -1708,6 +1708,98 @@ const statesOf = (c) => c.events2.map((e) => e.payload?.state).filter(Boolean);
 }
 
 
+// ── 切支付卡 × 下单前确认:**同一单里的那道接缝** ──────────────────────
+//
+// 这两步在 run.ts 里紧挨着(切卡 → 重读结算页 → guard-check → 停下来等人 → 点下单),
+// 而合并那一轮正是在这个接缝上炸过一次(confirmDriver 缺 ensurePaymentCard)。
+// 补上之后它被写成恒 `{last4:null, switched:false}` —— 于是那几组确认用例永远走不到
+// 「切了 → 重读 → 用重读那份报护栏 → 再停下来等人」这条真实路径;smoke 的确认场景
+// 又把驱动写死成 "happy"(那一档的模拟卡本来就是 4417 = 期望卡,同样不会切)。
+// 净结果:把 `reading = await driver.readCheckout()`(切卡后重读)那一行挪到 confirm
+// 闸之后,或者让 ConfirmPreview 取切卡**之前**那一份 reading,
+// unit / DOM / smoke / pytest 一条都不会红 —— 而屏幕上摆给操作员看的金额会是
+// 一张**已经不存在的结算页**上的数,他按下的「下单」是对着旧数据点的头。
+{
+  const events = [];
+  const guardBodies = [];
+  const client = confirmClient();
+  // 服务端那半照真的算一遍货款(实付 + 礼品卡抵扣)——
+  // confirmClient 默认回的是一个写死的数,那样这条断言就验不出
+  // 「预览屏上的货款到底来自切前还是切后那一份读数」。
+  client.guardCheck = async (_id, body) => {
+    guardBodies.push(body);
+    const goods = (Number(body.actual_total) + Number(body.gift_card ?.amount ?? 0))
+      .toFixed(2);
+    return { ok: true, data: { allow: true, error_code: null, detail: null,
+                               delivery_date: "2026-08-27",
+                               delivery_raw_used: "Thursday, August 27",
+                               goods_total: goods } };
+  };
+  const innerEv = client.events;
+  client.events = async (id, evs) => {
+    for (const e of evs) events.push(e.payload.step);
+    return innerEv(id, evs);
+  };
+
+  const task = fakeTask(1);
+  task.guards.expected_card_last4 = "4417";
+  task.upstream_order_no = "UP-1";
+
+  // 初始卡 9021(与 SimulatedDriver 的 card_switch 场景同一组数),切完 4417。
+  // 切前后金额不同 —— 真实页面上就是这样(不同卡不同促销/税)。
+  // 两个数不一样,才验得出预览屏与护栏拿到的是哪一份。
+  let card = "9021";
+  let preview = null;
+  const driver = confirmDriver({
+    readCheckout: async () => ({
+      actualTotal: card === "4417" ? "12.34" : "1.00",
+      actualShipping: "0.00", actualTax: "0.80",
+      deliveryTexts: ["Thursday, August 27"], isFba: true, unitPrices: [],
+      giftCard: { applied: true, amount: "5.00" },
+      paymentLast4: card,
+    }),
+    ensurePaymentCard: async (expected, hooks = {}) => {
+      const want = (expected ?? "").trim();
+      if (!want || want === card) return { last4: card, switched: false };
+      const from = card;
+      await hooks.onSwitchStart?.({ from, to: want });
+      card = want;
+      await hooks.onSwitched?.({ from, to: want, matched: `ending in ${want}` });
+      return { last4: want, switched: true };
+    },
+  });
+
+  const out = await within(5_000, runTask(task, {
+    client, driver, log: silentLog,
+    confirmBeforeOrder: true,
+    askConfirm: async (_t, p) => { preview = p; return true; },
+  }), "runTask(切卡 + 等人确认)");
+
+  eq("切卡 + 等人确认这一单正常拍完", out.kind, "purchased");
+
+  // ① 顺序:切卡 → 切卡后重读 → 停下来等人 → 点下单。**这条顺序不许动**
+  //    (CLAUDE.md 定稿①:切在报护栏之前)。
+  const at = (s) => events.indexOf(s);
+  check("事件流里出现了那三条切卡留痕",
+        at("切换支付卡") >= 0 && at("支付卡已切换") >= 0 && at("切卡后重读结算页") >= 0,
+        JSON.stringify(events));
+  check("「切卡后重读结算页」排在「等待人工确认下单」**之前**",
+        at("切卡后重读结算页") < at("等待人工确认下单"), JSON.stringify(events));
+  check("「等待人工确认下单」排在「点击下单按钮」之前",
+        at("等待人工确认下单") < at("点击下单按钮"), JSON.stringify(events));
+
+  // ② 报给护栏的是切完那一份 —— 切之前那张页面已经不存在了。
+  eq("护栏拿到的是切完重读的那一份",
+     guardBodies.map((b) => [b.actual_total, b.payment_last4]), [["12.34", "4417"]]);
+
+  // ③ **摆到操作员眼前的也必须是那一份。** 取切之前那一份的话,屏幕上是一张
+  //    已经不存在的结算页上的数,而他按下的「下单」是对着旧数据点的头。
+  eq("预览屏上的实付取的是切卡之后重读的那一份", preview?.actualTotal, "12.34");
+  eq("预览屏上的货款取的是服务端算的那个数(它比的也是切完那一份)",
+     preview?.goodsTotal, "17.34");
+  eq("预览屏上摆的是人搜得到的上游单号", preview?.upstreamOrderNo, "UP-1");
+}
+
 console.log(`\n  通过 ${pass} 条`);
 if (failures.length) {
   console.log(`  失败 ${failures.length} 条:`);

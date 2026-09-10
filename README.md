@@ -36,7 +36,10 @@ pending ──放行──► ready ──插件认领──► claimed         
 展开见 `docs/01-系统设计.md` §10。
 
 插件那一侧:清车 → 商品页(库存/FBA)→ 加购 → 回读购物车 → 去结算 → 填地址 →
-读结算页 → **服务端护栏裁决** → 下单 → 读订单卡 → **ASIN 断言** → 回填。
+读结算页 → **替买家号切支付卡 → 切成了就重读结算页**(留空 = 一步不做)→
+**服务端护栏裁决** → *(可选)停下来等人确认* → 下单 → 读订单卡 → **ASIN 断言** → 回填。
+切在报护栏**之前** —— 这条先后顺序是所有者定稿①里明写「不许动」的东西
+(把它挪到裁决之后,服务端拿到的就是切卡前那一份尾号,每一单都会被拦下)。
 
 ## 快速开始
 
@@ -47,7 +50,7 @@ python cli.py db_init
 
 # 2. 跑测试(需要一个可连的 PostgreSQL 17;连不上会整体 skip)
 export AMZ_TEST_ADMIN_DSN="dbname=postgres"
-python -m pytest -q                       # 485 条
+python -m pytest -q                       # 497 条
 
 # 3. 起服务
 python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
@@ -66,7 +69,7 @@ python tools/mock_plugin.py --scenario no_asin     # 一个 ASIN 都没采到:�
 # 6. 插件侧
 cd extension && npm install
 npm run typecheck && npm run build        # → dist/,可加载进 Chrome
-npm run test:dom                          # 279 条 DOM 解析断言(不需要服务端),顺带跑 test:unit 181 条
+npm run test:dom                          # 290 条 DOM 解析断言(不需要服务端),顺带跑 test:unit 210 条
 npm run smoke                             # 用插件自己的 Loop/runTask 跑闭环
 node tools/smoke.mjs --scenario happy --ship in_transit
 node tools/smoke.mjs --scenario login_lost         # 跑到一半被登出:退回队列,不记异常
@@ -194,17 +197,17 @@ python cli.py feishu_writeback
 
 | | 状态 |
 |---|---|
-| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 485 条 pytest,跑在真 PostgreSQL 17 上 |
+| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 497 条 pytest,跑在真 PostgreSQL 17 上 |
 | 插件与服务端的时序(认领 → 执行 → 护栏 → 回填 → 失败清车) | ✅ 全部 smoke 场景实跑,跑的是插件自己的 `Loop`/`runTask`(清单见 `extension/README.md`,那张表就是唯一的场景清单 —— 写死一个数字每加一条就过期一次) |
 | 物流同步时序 | ✅ 实跑 |
-| DOM 解析层(选择器是否按报告的语义在读) | ✅ 279 条断言,对着按报告造的夹具跑(地址/购物车/商品页从 0 条到有断言);另有 181 条纯 Node 断言盯等待原语、单飞闸、租约、认领循环、看门狗、清车熔断、「下单点留痕没落地就不许点」、「下单前确认」那几种走向,以及「上界由服务端反推」那条算式 |
+| DOM 解析层(选择器是否按报告的语义在读) | ✅ 290 条断言,对着按报告造的夹具跑(地址/购物车/商品页从 0 条到有断言);另有 210 条纯 Node 断言盯等待原语、单飞闸、租约、认领循环、看门狗、清车熔断、「下单点留痕没落地就不许点」、「下单前确认」那几种走向,以及「上界由服务端反推」那条算式 |
 | 登录态(被登出 → 拒绝派单 → 重新登录后自愈) | ✅ 心跳落库/认领被拒/恢复/unknown 的 pytest,加一轮 `--scenario login_lost` 实跑 |
-| 登错号(这台机器登的不是这个买家号 → 拒绝派单 → 换回来自愈) | ✅ pytest:首次写入/不覆盖/认领被拒/换回自愈/「以这个为准」留痕/形状不对不堵心跳;**还没报过账号的新实例也拦**(它会自己好:服务端主动要一次登录探测)。⚠ **只剩一个窗口没盖住** —— 一个**从来没被认出过**的买家号(`amazon_customer_id` 还是空的),它的**第一台机器不受这道闸保护**:那一刻我们手里没有任何可以比的东西。要关掉它,得先由人把这一列手工填上。⚠ **customerId 是在夹具上验的** —— 真实 Amazon 页面上它长什么样、还在不在,同「真实 Amazon 页面」那一行 |
-| 外部下单(上游在别处买的单只同步物流) | ✅ pytest:落库/五条状态迁移/回写只写物流三列/「不适用」不渲染成「未超」;另有一次 curl 闭环(import → `/v1/shipments/pending` 出现它)|
+| 登错号(这台机器登的不是这个买家号 → 拒绝派单 → 换回来自愈) | ✅ pytest:首次写入/不覆盖/认领被拒/换回自愈/「以这个为准」留痕/形状不对不堵心跳;**还没报过账号的新实例也拦**(它会自己好:服务端主动要一次登录探测)。⚠ **剩下两条**:(1) 一个**从来没被认出过**的买家号(`amazon_customer_id` 还是空的),它的**第一台机器不受这道闸保护** —— 那一刻我们手里没有任何可以比的东西;要关掉它,得先由人把这一列手工填上。(2) **这两道闸只装在 `claim` 上,而外部下单根本不经过 claim** —— 它只走 `/v1/shipments/pending` + `/sync`,一台登错号的机器照样领得到外部单去同步。那条路上**有意不拦**(同步不花钱,拦了只会让轨迹停更),改的是结论的措辞:`order_state=not_found` 时按 `instance.cannot_speak_for_env` 分两句话说,并留一位 `reader_blind`。**插件面板已经跟上了**:`loop.ts` 收到这两个业务码落 `account-mismatch` / `account-unverified` 两格相位(面板写「登错号」/「等账号报上来」),不再写「连不上服务端」;还没做的是「心跳回执里的 `account_state` 直接置相位」—— 眼下要等一拍被拒的认领(默认 10 秒)。⚠ **customerId 是在夹具上验的** —— 真实 Amazon 页面上它长什么样、还在不在,同「真实 Amazon 页面」那一行 |
+| 外部下单(上游在别处买的单只同步物流) | ✅ pytest:落库/状态迁移表**每一格**(含 `cancelled` 与「码说可能已下单」那两格,以及「认领落在读与写之间」那个交错)/回写只写物流三列/「不适用」不渲染成「未超」(列表两档、详情弹窗、CSV 四处)/「登错号的机器同步时 not_found 说明不了单号」;另有一次 curl 闭环(import → `/v1/shipments/pending` 出现它)。⚠ **「外部单不占日限、不进 assert_skipped 分母」是按所有者定稿④的字面推的**,没有当面确认过 |
 | 下单后的三段等待(发卡行验证 → 露窗口 → 上报 → 有界超时) | ⚠️ **只验到时序那一半**:两条 step 事件、`claim_timeout_min` 下发、列表徽标、新错误码转人工,都有 pytest 与 `--scenario manual_verify / manual_verify_timeout` 实跑;**「iframe 真被导到跨域页之后 `urlState()` 读到什么、`reveal()` 出来的窗口能不能真的输验证码」没验过** —— 那要一个真买家号 |
-| 下单前确认(`confirmBeforeOrder`,默认关) | ⚠️ **只验到插件↔服务端那一层**:五种走向(放行 / 取消 / 超时 / 看门狗抢先 / 认领窗口不够)在真服务端上各实跑过一遍(`node tools/smoke.mjs --scenario confirm_yes、confirm_no、confirm_wait_timeout、confirm_watchdog、confirm_no_room`),另有 pytest 盯跨文件字面量与「先写事件流再 `/release`」;**没验到**浏览器里那一层 —— 预览屏在 shadow root 里长什么样、两个按钮点不点得动 |
+| 下单前确认(`confirmBeforeOrder`,默认关) | ⚠️ **只验到插件↔服务端那一层**:五种走向(放行 / 取消 / 超时 / 看门狗抢先 / 认领窗口不够)在真服务端上各实跑过一遍(`node tools/smoke.mjs --scenario confirm_yes、confirm_no、confirm_wait_timeout、confirm_watchdog、confirm_no_room、confirm_card_switch`),另有 pytest 盯跨文件字面量与「先写事件流再 `/release`」;**没验到**浏览器里那一层 —— 预览屏在 shadow root 里长什么样、两个按钮点不点得动 |
 | 运营台前端 | ✅ 真库 + 真服务 + 真浏览器跑过四页、详情弹窗、改地址、剪贴板、NEEDS_ACK 流程 |
-| 替买家号切支付卡（所有者定稿①） | ⚠️ **只验到我们自己那一半**：期望卡随认领下发、「切完重读结算页」、切不动时不下单/不转人工/清车，都有 pytest 与 `--scenario card_switch / card_switch_fail` 实跑；`ensurePaymentCard` 那五步的**分支**（五种停法各停在哪一步、每一处超时先问登录态、第 ② 步「从无到有」那条对照判据、期望值非四位数字必须抛错、期望为空连 `doc()` 都不碰）有一组 DOM 断言拿真驱动跑在 `checkout.html` 上——那一段此前一条断言都没有，单测用的是假驱动、smoke 用的是模拟驱动、DOM 断言只覆盖三个纯函数。**仍然没人盯的**：向上爬找最小块那一段的文本判据、两处「元素在但 click 没生效」的分支。payselect 页那一整套**判据本身没有任何证据**——厂商自己承认那一页只有截图、没有 DOM 样本，夹具 `payselect.html` 是照他们的猜测造的。夹具上跑通只说明我们按自己写的语义在读。第一次开 live 档跑到这一步之前，先在真页面上核一遍 `selectors.checkout.payselect` |
+| 替买家号切支付卡（所有者定稿①） | ⚠️ **只验到我们自己那一半**：期望卡随认领下发、「切完重读结算页」、切不动时不下单/不转人工/清车，都有 pytest 与 `--scenario card_switch / card_switch_fail` 实跑；`ensurePaymentCard` 那五步的**分支**（五种停法各停在哪一步、每一处超时先问登录态、第 ② 步「从无到有」那条对照判据、期望值非四位数字必须抛错、期望为空连 `doc()` 都不碰）有一组 DOM 断言拿真驱动跑在 `checkout.html` 上——那一段此前一条断言都没有，单测用的是假驱动、smoke 用的是模拟驱动、DOM 断言只覆盖三个纯函数。**仍然没人盯的**：向上爬找最小块那一段的文本判据、两处「元素在但 click 没生效」的分支。**认领→guard-check 之间改期望卡那条窗口已经关掉**：认领 SQL 把那一位快照进 `tasks.expected_card_last4_at_claim`，guard-check 比的是快照——改配置只影响下一次认领（两条 pytest 钉着）。**没关掉的那一半**：那个买家号在 Amazon 上的默认卡此刻可能已经被切成旧值了，库与账号在这一刻不一致，下一单才会切回来——所以运营台那一格在有在途单（`claimed`）时会问一句再提交，操作规矩见 `docs/01` §5.3。**切卡与「下单前确认」那道接缝**有断言了（unit 一组 + `--scenario confirm_card_switch`）：顺序必须是 切卡 → 重读结算页 → 报护栏 → 等人 → 点下单，而且预览屏上的金额取的是重读那一份。payselect 页那一整套**判据本身没有任何证据**——厂商自己承认那一页只有截图、没有 DOM 样本，夹具 `payselect.html` 是照他们的猜测造的。夹具上跑通只说明我们按自己写的语义在读。第一次开 live 档跑到这一步之前，先在真页面上核一遍 `selectors.checkout.payselect` |
 | **真实 Amazon 页面** | ❌ **从未跑过**。这里没有可登录的买家号 |
 
 最后一行是这套系统眼下最大的未知。夹具能保证「报告里记着的选择器,我们确实按它们的语义在读」,

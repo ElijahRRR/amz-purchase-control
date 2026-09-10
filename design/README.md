@@ -41,8 +41,13 @@
    改成「没接上,也不打算接」之后又被这一轮追上了。**这一份现在说的是现状:
    接上了、默认关、开了也有界。**
    那个当初拦住它的难点是这么解的:等待上界取
-   `min(timeouts.confirmWait, 认领窗口 − orderServerMargin)`(与 `placeOrder` 的硬顶
-   同一把尺子),由 `flow/run.ts` 那边的钟执行、不由面板提供;而
+   `min(timeouts.confirmWait, 认领窗口 − orderServerMargin − timeouts.minOrderRoom)`
+   (与 `placeOrder` 的硬顶同一把尺子),由 `flow/run.ts` 那边的钟执行、不由面板提供。
+   最后那一项是**留给下单那一步的地板** —— 等人这一格不许把认领窗口吃光:
+   `placeOrder` 先点按钮再算硬顶,人在窗口末尾按下的那一下会当场撞上
+   `ORDER_CONFIRM_TIMEOUT`,一张刚被批准的单变成「可能已下单 · 待人工」。
+   **扣完不剩就根本不开窗口**(`confirm_no_room`:一个人都不问,清车退回队列,
+   一分钱没花)——「系统来不及了」是这一格的第三种走向,不是「没人按」的一种。而
    「操作员去吃了个饭」与「他看了一眼觉得不对」**不落成同一个结果** ——
    两条路都退回队列,但事件流里是 `confirm_timeout` 与 `confirm_cancelled`
    两条不同的文案与 state。

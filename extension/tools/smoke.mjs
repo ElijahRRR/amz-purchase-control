@@ -68,6 +68,15 @@ const CONFIRM_SCENARIOS = {
   confirm_no_room:      { answer: true,  waitMs: 60_000, minOrderRoomMs: 15 * 60_000,
                           wantOutcome: "released",
                           wantStatus: "ready",     wantStep: "认领窗口不够停下来等人了" },
+  // 第六个:**切支付卡 × 下单前确认,在同一单里。** 上面五个用的都是 happy 档,
+  // 而 happy 档的模拟卡本来就是 4417 = 期望卡 —— 一步都不会切。于是「切了 →
+  // 重读结算页 → 用重读那份报护栏 → 再停下来等人」这条真实路径,smoke 从来没跑过;
+  // 而这两步在 run.ts 里紧挨着,合并那一轮正是在这个接缝上炸过一次。
+  // 这一格换成 card_switch 档(初始卡 9021),下面那段切卡断言会一起跑。
+  // 与其它五个一样,它要求这个买家号配着 expected_card_last4='4417'。
+  confirm_card_switch:  { answer: true,  waitMs: 60_000, driver: "card_switch",
+                          wantOutcome: "purchased",
+                          wantStatus: "purchased", wantStep: "人按了下单,继续" },
 };
 const confirmCase = CONFIRM_SCENARIOS[scenario] ?? null;
 
@@ -83,9 +92,37 @@ console.log(`  注册 instance_id=${reg.data.instance_id} env_status=${reg.data.
 const hb = await client.heartbeat();
 console.log("  心跳", hb.ok ? "ok" : "失败");
 
+// ── 开跑前先看一眼这台「机器」报不报得上账号 ────────────────────────────
+//
+// D3 之后服务端多了一道闸:买家号那一列已经有值、而这台机器从没报过它登着谁 →
+// 认领被 409 INSTANCE_ACCOUNT_UNVERIFIED 拒。而 smoke 每次都用一个**新的**
+// instance_uid + SimulatedDriver,后者按设计**永远不报 customerId**
+// (它一次页面都没读过,报 ok / 报一个编出来的号都是在撒谎,见 flow/simulated.ts)。
+// 于是:在任何**已经被认出过账号**的买家号上,这一轮一单都领不到 ——
+// 十八个场景全部是空跑,而 extension/README 的自检说明恰恰叫人拿真买家号来跑。
+//
+// 所以这里先判、先说清楚,与它对 expected_card_last4 没配时做的事完全同形:
+// **「跑不起来」和「跑起来了」不许长成同一个结果。**
+if (hb.ok && (hb.data?.account_state === "unverified"
+              || hb.data?.account_state === "mismatch")) {
+  console.error(
+    `  ✗ 服务端说这台机器的 account_state=${hb.data.account_state} —— 认领会被 409 拒,` +
+    `这一轮什么也验不到。\n` +
+    `      模拟驱动一次页面都没读过,按设计**不会**报 customerId,所以它永远过不了这道闸。\n` +
+    `      自检要跑在 amazon_customer_id 为空的买家号上;临时清掉那一列即可:\n` +
+    `      psql <库> -c "UPDATE procure.buyer_envs SET amazon_customer_id=NULL ` +
+    `WHERE code='${envCode}'"\n` +
+    `      注意:清空之后自动首报写入对这个买家号也停了(服务端有意为之,` +
+    `见 services/instance.set_customer_id),要恢复得在运营台按一次「以这个为准」。`);
+  process.exit(2);
+}
+
 // 驱动每轮现取一个:一单一个实例,加购过的东西留在实例里,
 // 回读购物车和造订单卡都从那里来,不需要外部再喂 ASIN。
-const driver = new SimulatedDriver(confirmCase ? "happy" : scenario);
+// 确认那几个场景默认用 happy 档,但**不写死** —— confirm_card_switch 要的是
+// card_switch 档(初始卡 9021),不然那一格验不到「切了之后再停下来等人」。
+const driverScenario = confirmCase ? (confirmCase.driver ?? "happy") : scenario;
+const driver = new SimulatedDriver(driverScenario);
 
 // 模拟驱动自己也得守规矩:它**一次页面都没读过**,能说的只有 unknown。
 // 报 ok 的话,运营在面板上切一下模拟档就能把一台确实被登出的机器洗成绿色
@@ -148,9 +185,11 @@ console.log("\n  结果:", JSON.stringify(r.kind === "ran" ? { kind: r.kind, tas
 // 跑之前要先给这个买家号配上期望卡,否则服务端下发的是 null、插件一步都不做,
 // 而这一轮照样会「成功」—— 那种成功什么也没验到。所以这里先查那一位,
 // 没配就直接判失败并说清该怎么配:**「没配」和「配了且切成了」不许长成同一个结果**。
-if (scenario === "card_switch" || scenario === "card_switch_fail") {
+if (driverScenario === "card_switch" || driverScenario === "card_switch_fail") {
   const fail = (msg) => { console.error("  ✗ " + msg); process.exit(2); };
   if (r.kind !== "ran") fail(`这一轮没跑起来(${r.kind}),切卡场景什么也没验到`);
+  // 驱动档与场景名解耦之后,下面那两个分支要按**驱动档**分,不是按场景名。
+  const switching = driverScenario === "card_switch";
 
   const want = r.task.guards?.expected_card_last4 ?? null;
   if (want !== "4417") {
@@ -164,7 +203,7 @@ if (scenario === "card_switch" || scenario === "card_switch_fail") {
     fail(`插件没按下发的期望卡去切:calls=${JSON.stringify(driver.calls)}`);
   }
 
-  if (scenario === "card_switch") {
+  if (switching) {
     if (!driver.calls.includes("cardSwitched:9021->4417")) {
       fail(`没切成:calls=${JSON.stringify(driver.calls)}`);
     }
@@ -246,7 +285,8 @@ if (confirmCase) {
       // 分得开的地方只剩事件流里那条文案与 payload.state。合成一条的话,
       // 一台没人守的机器会一直产出「有人按了取消」,看的人以为有人在把关。
       const states = evs.map((e) => e.payload?.state).filter(Boolean);
-      const wantState = scenario === "confirm_yes" ? "confirm_approved"
+      const wantState = scenario === "confirm_yes"
+                        || scenario === "confirm_card_switch" ? "confirm_approved"
                       : scenario === "confirm_no" ? "confirm_cancelled"
                       : scenario === "confirm_watchdog" ? "plugin_hard_cap"
                       : scenario === "confirm_no_room" ? "confirm_no_room" : "confirm_timeout";
@@ -257,6 +297,23 @@ if (confirmCase) {
                     : scenario === "confirm_wait_timeout" ? "confirm_cancelled" : null;
       if (strayer && states.includes(strayer)) {
         problems.push(`事件流里同时出现了 ${strayer} —— 取消与超时被渲染成了同一件事`);
+      }
+      if (scenario === "confirm_card_switch") {
+        // **那道接缝的顺序,在服务端的事件流上再钉一遍。**
+        // 切卡 → 切卡后重读结算页 → 停下来等人 → 点下单。挪动其中任何一步,
+        // 摆给操作员看的金额就会是一张已经不存在的结算页上的数。
+        const i = (t) => steps.findIndex((x) => x.includes(t));
+        for (const t of ["切换支付卡", "支付卡已切换", "切卡后重读结算页"]) {
+          if (i(t) < 0) problems.push(`事件流里没有「${t}」:${JSON.stringify(steps)}`);
+        }
+        if (i("切卡后重读结算页") >= 0 && i("等待人工确认下单") >= 0
+            && i("切卡后重读结算页") > i("等待人工确认下单")) {
+          problems.push(`「切卡后重读结算页」排到了「等待人工确认下单」后面:${JSON.stringify(steps)}`);
+        }
+        if (i("等待人工确认下单") >= 0 && i("点击下单按钮") >= 0
+            && i("等待人工确认下单") > i("点击下单按钮")) {
+          problems.push(`「等待人工确认下单」排到了「点击下单按钮」后面:${JSON.stringify(steps)}`);
+        }
       }
       if (scenario === "confirm_no_room") {
         // 窗口**没开过**。写了 awaiting_confirm 的话,运营台上会出现一屏

@@ -229,7 +229,7 @@ table { border-collapse: separate; border-spacing: 0; width: 100%; }
   <div style="height:76px;flex:none;background:#fff;border-top:1px solid #e4e4e7;display:flex;align-items:center;gap:14px;padding:0 16px">
     <div class="card" style="flex:1;padding:9px 12px;display:flex;flex-direction:column;gap:3px">
       <div style="display:flex;align-items:center;gap:6px"><svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" width="12" height="12" fill="none" stroke="#b91c1c" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2 3 14h9l-1 8 10-12h-9z"/></svg><span style="font-size:12px;font-weight:500;color:#18181b">下单前的预览步 <span style="font-weight:400;color:#b45309">· 默认关</span></span></div>
-      <div style="font-size:12px;color:#71717a;line-height:1.6">花钱这一步是红实心 + ⚡,前面站一屏「要发生什么」,面板上再没有第二个红按钮。<b>代码里接上了</b>,但开关默认关(所有者定稿:下单前默认无人工确认)。开着的时候等待有界 —— 上界取 min(confirmWait, 认领窗口 − 余量),到点清车退回队列,而且「没人按」与「按了取消」是两条不同的文案。</div>
+      <div style="font-size:12px;color:#71717a;line-height:1.6">花钱这一步是红实心 + ⚡,前面站一屏「要发生什么」,面板上再没有第二个红按钮。<b>代码里接上了</b>,但开关默认关(所有者定稿:下单前默认无人工确认)。开着的时候等待有界 —— 上界取 min(confirmWait, 认领窗口 − orderServerMargin − minOrderRoom),到点清车退回队列,而且「没人按」与「按了取消」是两条不同的文案。最后那一项是留给下单那一步的地板,扣完不剩就<b>根本不开窗口</b>(confirm_no_room:一个人都不问,一分钱没花)。</div>
     </div>
     <div class="card" style="flex:1;padding:9px 12px;display:flex;flex-direction:column;gap:3px">
       <div style="display:flex;align-items:center;gap:6px"><span class="dot" style="background:#8b5cf6"></span><span style="font-size:12px;font-weight:500;color:#18181b">护栏拦截不是失败</span></div>

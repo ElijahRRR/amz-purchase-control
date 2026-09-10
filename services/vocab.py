@@ -101,7 +101,10 @@ PURCHASE_SOURCE_TONE: dict[str, str] = {
 }
 
 #: 这台机器登着的 Amazon 账号跟这个买家号对不对得上
-#: (services/instance.account_state 现算出来的,**不是库里的一列**)。
+#: (services/task_queue.account_state 现算出来的,**不是库里的一列**;
+#:  services/instance 只是调用方 —— 照这条路标去 instance.py 找定义的人找不到函数,
+#:  最可能的处置是在那边另写一份判据,而这一格已经因为「界面自己算一遍、
+#:  算法跟真闸不一样」出过一次事,account_state 的 docstring 自己写着那次事故)。
 #:
 #: 与 LOGIN_STATE 是两条独立的轴:登录态答的是「还登着吗」,这一条答的是
 #: 「登着的是不是**这个号**」。两台机器登错号是真会发生的事,而在此之前
