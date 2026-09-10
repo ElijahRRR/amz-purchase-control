@@ -59,6 +59,15 @@ const CONFIRM_SCENARIOS = {
   confirm_watchdog:     { answer: true,  waitMs: 60_000, answerAfterMs: 600,
                           hardCapMs: 250, wantTick: "hard-cap",
                           wantStatus: "claimed",   wantStep: "插件放弃这一单" },
+  // 第五个:**认领窗口已经不够停下来等人了**。把「下单那一步至少要留」的地板
+  // 配成 15 分钟(比服务端的整个认领窗口还长)→ 扣完一点余地都不剩。
+  // 要验的是这一格**根本不开窗口**:一个人都不问,清车退回队列,
+  // 事件流里一条 awaiting_confirm 都没有(窗口没开过,没人见过那一屏)。
+  // 硬着头皮开的话,人在窗口末尾按下的那一下会拿到一个 ~0 的下单硬顶 →
+  // ORDER_CONFIRM_TIMEOUT → 待人工「可能已下单」,而它本来一分钱没花。
+  confirm_no_room:      { answer: true,  waitMs: 60_000, minOrderRoomMs: 15 * 60_000,
+                          wantOutcome: "released",
+                          wantStatus: "ready",     wantStep: "认领窗口不够停下来等人了" },
 };
 const confirmCase = CONFIRM_SCENARIOS[scenario] ?? null;
 
@@ -97,7 +106,11 @@ const loop = new Loop({
   config: () => ({
     mode: "simulate",
     confirmBeforeOrder: !!confirmCase,
-    ...(confirmCase ? { timeouts: { confirmWait: confirmCase.waitMs } } : {}),
+    ...(confirmCase
+      ? { timeouts: { confirmWait: confirmCase.waitMs,
+                      ...(confirmCase.minOrderRoomMs
+                        ? { minOrderRoom: confirmCase.minOrderRoomMs } : {}) } }
+      : {}),
     ...(confirmCase?.hardCapMs ? { taskHardCapMs: confirmCase.hardCapMs } : {}),
   }),
   driver: () => driver,
@@ -166,17 +179,28 @@ if (confirmCase) {
       if (d.status !== confirmCase.wantStatus) {
         problems.push(`服务端状态是 ${d.status},该是 ${confirmCase.wantStatus}`);
       }
-      const steps = (d.events ?? []).map((e) => String(e.payload?.step ?? ""));
+      // **只看这一轮说过的话。** 事件表是追加的,而这几个场景里有三个会把任务
+      // 退回队列 —— 它随后会被再认领一次,上一轮的 awaiting_confirm /
+      // confirm_timeout / confirm_cancelled 全都还留在同一条任务上。不切的话,
+      // 「这一轮既写了取消又写了超时」与「上一轮写过超时」长成同一个样子,
+      // 这份自检自己就犯了它要防的那个毛病(两种情况渲染成一个结果)——
+      // 表现是同一份代码在空库上全绿、在跑过几轮的库上莫名转红。
+      // 切法:一轮从服务端记下的那条 `claimed` 事件开始,取最后一条。
+      const all = d.events ?? [];
+      const lastClaim = all.map((e) => e.kind).lastIndexOf("claimed");
+      const evs = lastClaim >= 0 ? all.slice(lastClaim) : all;
+      const steps = evs.map((e) => String(e.payload?.step ?? ""));
       if (!steps.some((t) => t.includes(confirmCase.wantStep))) {
         problems.push(`事件流里没有「${confirmCase.wantStep}」,只有:${JSON.stringify(steps)}`);
       }
       // 取消与超时**不许长成一个样子**:两条路都是 released + 回 ready,
       // 分得开的地方只剩事件流里那条文案与 payload.state。合成一条的话,
       // 一台没人守的机器会一直产出「有人按了取消」,看的人以为有人在把关。
-      const states = (d.events ?? []).map((e) => e.payload?.state).filter(Boolean);
+      const states = evs.map((e) => e.payload?.state).filter(Boolean);
       const wantState = scenario === "confirm_yes" ? "confirm_approved"
                       : scenario === "confirm_no" ? "confirm_cancelled"
-                      : scenario === "confirm_watchdog" ? "plugin_hard_cap" : "confirm_timeout";
+                      : scenario === "confirm_watchdog" ? "plugin_hard_cap"
+                      : scenario === "confirm_no_room" ? "confirm_no_room" : "confirm_timeout";
       if (!states.includes(wantState)) {
         problems.push(`事件流里没有 state=${wantState},只有:${JSON.stringify(states)}`);
       }
@@ -184,6 +208,24 @@ if (confirmCase) {
                     : scenario === "confirm_wait_timeout" ? "confirm_cancelled" : null;
       if (strayer && states.includes(strayer)) {
         problems.push(`事件流里同时出现了 ${strayer} —— 取消与超时被渲染成了同一件事`);
+      }
+      if (scenario === "confirm_no_room") {
+        // 窗口**没开过**。写了 awaiting_confirm 的话,运营台上会出现一屏
+        // 从来没人见过的确认屏 —— 而这一格恰恰是「没轮到人」。
+        if (states.includes("awaiting_confirm")) {
+          problems.push("窗口根本没开却写了 awaiting_confirm —— 事件流里多出一屏没人见过的确认屏");
+        }
+        for (const stray of ["confirm_approved", "confirm_cancelled", "confirm_timeout"]) {
+          if (states.includes(stray)) {
+            problems.push(`事件流里出现了 ${stray} —— 没人被问过,这三句在这一格全是假话`);
+          }
+        }
+      }
+      // **退回队列的那几格,一位都不许点亮 may_have_ordered。** 它们的共同点是
+      // 下单按钮一次都没点下去;点亮了的话,四道「回队列之前先看一眼」的闸会把
+      // 一张一分钱没花的单挡在队列外面,而它本来还能安全地再跑一次。
+      if (confirmCase.wantStatus !== "purchased" && d.may_have_ordered !== false) {
+        problems.push(`may_have_ordered=${d.may_have_ordered},该是 false(这一单一分钱没花)`);
       }
       if (scenario === "confirm_watchdog") {
         // 被放弃之后按下的那一下**一点都不作数**。三条一起判,少一条这道闸就有缝:
@@ -198,9 +240,6 @@ if (confirmCase) {
         }
         if (steps.some((t) => t.includes("点击下单按钮"))) {
           problems.push("看门狗掐单之后还点了下单按钮 —— 一张没花钱的单被推过了下单点");
-        }
-        if (d.may_have_ordered !== false) {
-          problems.push(`may_have_ordered=${d.may_have_ordered},该是 false(这一单一分钱没花)`);
         }
       }
       console.log(`  服务端:status=${d.status} · 事件 state=${JSON.stringify(states)}`);
