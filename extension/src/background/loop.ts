@@ -29,6 +29,14 @@ export type TickResult =
   /** 这个浏览器被登出了,这一轮不认领。**与 no-task 分开**:
    *  「没有单」是正常的,「领不了单」是要人去处理的,长得一样就没人会去处理。 */
   | { kind: "signed-out" }
+  /** 服务端**说上了话**,并且明确拒了这一次认领:这台机器登着的不是这个买家号
+   *  (`INSTANCE_ACCOUNT_MISMATCH`),或者它从没报过自己登着谁
+   *  (`INSTANCE_ACCOUNT_UNVERIFIED`)。**与 transport-error 分开**:
+   *  把一次业务拒绝记成传输失败,正是这个仓库反复批评厂商的那个形状 ——
+   *  面板会写「连不上服务端」,而操作员要做的是去 profile 里换回账号
+   *  (或者什么都不做,等下一轮登录探测)。`message` 是服务端原话,
+   *  里面连两个账号 ID 和该怎么处置都写好了,原样带到面板上。 */
+  | { kind: "account-blocked"; code: string; message: string }
   | { kind: "transport-error"; message: string }
   | { kind: "ran"; task: Task; outcome: Outcome };
 
@@ -113,6 +121,17 @@ export class Loop {
   private loginState: LoginState = "unknown";
   private loginCheckedAt = 0;
   private warnedSignedOut = false;
+  /** 上一次认领失败说的那句话(`code + message`)。**只为了去重日志。**
+   *
+   *  登错号 / 还没报过号是**长期**状态:要人去换 profile,或者等下一轮登录探测。
+   *  而认领每 `claimPollMs`(默认 10 秒)来一次 —— 无条件追加的话,面板那块
+   *  200 行的日志环大约 33 分钟就被同一句话填满,此前所有内容被挤掉,
+   *  运营打开面板想看这台机器到底发生过什么,看到的是一整屏同一句话。
+   *  `INSTANCE_SIGNED_OUT` 那一支早就有 `warnedSignedOut` 只说一次,
+   *  这一位把同一条规矩推到**所有**认领失败上(env_events 那一侧对 20 秒一次的
+   *  心跳做过一模一样的判断:同一件事不值得一天写 4300 行)。
+   *  话变了就再说一次;认领成功时清掉,恢复之后下一次失败仍然说得出口。 */
+  private lastClaimFail: string | null = null;
 
   constructor(private readonly deps: LoopDeps) {}
 
@@ -284,12 +303,39 @@ export class Loop {
         // 「没说上话」绝不能当成「没有单」。厂商插件正是在这里把网络失败
         // 记成「没有需要同步的订单」,运维看日志会以为系统正常(深度分析 §5.3)。
         const msg = claimed.kind === "transport" ? claimed.message : `${claimed.code} ${claimed.message}`;
-        this.deps.log.err("认领失败:" + msg);
+        // **同一句话不重复说。** 见 lastClaimFail 那一段:这几条拒绝多半是长期的,
+        // 而认领每 10 秒来一次 —— 无条件追加会把 200 行的日志环填满、把此前
+        // 所有内容挤掉,运营打开面板看到的是一整屏同一句话。
+        if (this.lastClaimFail !== msg) {
+          this.deps.log.err("认领失败:" + msg);
+          this.lastClaimFail = msg;
+        }
+
+        // 登错号 / 还没报过号:服务端**说上了话**,而且给了一句确切的拒绝。
+        // 落进下面那条通用出口的话,相位是 no-server、面板写「连不上服务端」,
+        // 操作员会去查网络、重启插件、改 baseUrl —— 而服务端一切正常,
+        // 真正要做的是去这个浏览器 profile 里换回正确的 Amazon 账号
+        // (或者去运营台按「以这个为准」)。这与当初把「被登出」渲染成
+        // CHECKOUT_TIMEOUT 是同一类缺陷,只是换了个格子。
+        //
+        // **两个码给两格相位**:mismatch 要人动手,unverified 什么都不用做
+        // (下一轮登录探测把 customerId 报上去就自动开闸)。合成一句的话,
+        // 一台其实不用管的机器会有人跑去瞎换账号。
+        if (claimed.kind === "business" &&
+            (claimed.code === "INSTANCE_ACCOUNT_MISMATCH" ||
+             claimed.code === "INSTANCE_ACCOUNT_UNVERIFIED")) {
+          this.phase(claimed.code === "INSTANCE_ACCOUNT_MISMATCH"
+                       ? "account-mismatch" : "account-unverified");
+          return { kind: "account-blocked", code: claimed.code, message: claimed.message };
+        }
+
         // 相位也要分开,不能落回 idle:面板上「待命 · 队列里没有本买家号的单」
         // 这一句在这一格是**假话** —— 队列里可能正堆着单,是我们没问到。
         this.phase("no-server");
         return { kind: "transport-error", message: msg };
       }
+      // 认领这一趟说上话了:上一次那句失败可以忘掉,下次再失败仍然说得出口。
+      this.lastClaimFail = null;
 
       const task = claimed.data;
       if (task === null) {

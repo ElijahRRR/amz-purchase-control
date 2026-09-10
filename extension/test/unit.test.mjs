@@ -22,6 +22,7 @@ import { Loop } from "../build/background/loop.js";
 import { runTask } from "../build/flow/run.js";
 import { orderHardCapMs } from "../build/flow/amazon.js";
 import { DriverError } from "../build/flow/driver.js";
+import { PHASE_LABEL } from "../build/core/status.js";
 
 const here = dirname(fileURLToPath(import.meta.url));
 
@@ -1537,6 +1538,97 @@ const statesOf = (c) => c.events2.map((e) => e.payload?.state).filter(Boolean);
      guardBodies.map((b) => b.payment_last4), ["9021"]);
   check("没切卡就不该有任何切卡事件", !events.some((e) => e.includes("支付卡")),
         JSON.stringify(events));
+}
+
+
+{
+  // ── 服务端**说上了话**、并且拒了这一次认领:登错号 / 还没报过号 ────────────
+  //
+  // 这两个业务码原先与「没说上话」共用一条出口:TickResult 报 transport-error、
+  // 相位落 no-server、面板写「连不上服务端」。操作员照那句话去查网络、重启插件、
+  // 改 baseUrl,而服务端一切正常 —— 真正要做的是去 profile 里换回账号
+  // (mismatch),或者什么都不做等下一轮登录探测(unverified)。
+  // 一次业务拒绝被记成传输失败,正是这个仓库反复批评厂商的那个形状。
+  const mkLoop = (code, message, log = silentLog) => {
+    const phases = [];
+    const loop = new Loop({
+      client: {
+        claim: async () => ({ ok: false, kind: "business", code, message }),
+        events: async () => ({ ok: true, data: {} }),
+        release: async () => ({ ok: true, data: {} }),
+      },
+      log,
+      config: () => ({ mode: "simulate", taskHardCapMs: 60_000 }),
+      driver: () => ({
+        name: "fake", ready: true,
+        readLoginState: async () => "unknown",
+        dispose: async () => {},
+      }),
+      onPhase: (p) => phases.push(p),
+    });
+    return { loop, phases };
+  };
+
+  {
+    const { loop, phases } = mkLoop(
+      "INSTANCE_ACCOUNT_MISMATCH",
+      "这台机器登着 AOTHER00099,而这个买家号记的是 AKNOWN00001");
+    const r = await loop.tickOnce();
+    eq("登错号:不是 transport-error", r.kind, "account-blocked");
+    eq("登错号:业务码原样带上来", r.code, "INSTANCE_ACCOUNT_MISMATCH");
+    // 服务端那句话里连两个账号 ID 和处置都写好了 —— 丢掉它等于把面板上
+    // 唯一能告诉人「该去干什么」的那句话删掉。
+    check("登错号:服务端原话原样带到面板", r.message.includes("AOTHER00099"), r.message);
+    eq("登错号:相位不是 no-server", phases, ["account-mismatch"]);
+    eq("登错号:面板标签说的是登错号,不是「连不上服务端」",
+       PHASE_LABEL["account-mismatch"], "登错号");
+  }
+
+  {
+    const { loop, phases } = mkLoop("INSTANCE_ACCOUNT_UNVERIFIED",
+                                    "这台机器还没报过它登着谁");
+    const r = await loop.tickOnce();
+    eq("还没报过号:也不是 transport-error", r.kind, "account-blocked");
+    // **两个码两格相位。** 合成一格的话,一台其实什么都不用做的机器
+    // (等下一轮登录探测就自己好)会有人跑去瞎换账号。
+    eq("还没报过号:自己一格相位", phases, ["account-unverified"]);
+    eq("还没报过号:标签与「登错号」不是同一句话",
+       PHASE_LABEL["account-unverified"], "等账号报上来");
+    check("两格标签必须不一样",
+          PHASE_LABEL["account-unverified"] !== PHASE_LABEL["account-mismatch"]);
+  }
+
+  {
+    // 真正的「没说上话」照旧落 no-server —— 上面那一支不能把它一起吃掉。
+    const phases = [];
+    const loop = new Loop({
+      client: { claim: async () => ({ ok: false, kind: "transport", message: "fetch failed" }) },
+      log: silentLog,
+      config: () => ({ mode: "simulate", taskHardCapMs: 60_000 }),
+      driver: () => ({ name: "fake", ready: true, readLoginState: async () => "unknown",
+                       dispose: async () => {} }),
+      onPhase: (p) => phases.push(p),
+    });
+    const r = await loop.tickOnce();
+    eq("真的没说上话:仍然是 transport-error", r.kind, "transport-error");
+    eq("真的没说上话:相位仍然是 no-server", phases, ["no-server"]);
+  }
+
+  {
+    // ── 同一句拒绝不许每 10 秒写一行 ──────────────────────────────────
+    //
+    // 这两个码是**长期**状态(要人去换 profile,或者等下一轮登录探测),
+    // 而认领每 claimPollMs(默认 10 秒)来一次。无条件追加的话,面板那块
+    // 200 行的日志环约 33 分钟就被同一句话填满,此前所有内容被挤掉 ——
+    // 运营打开面板想看这台机器到底发生过什么,看到的是一整屏同一句话。
+    // signed_out 那一支早就只说一次,这一位把同一条规矩推到所有认领失败上。
+    const errs = [];
+    const log = { info() {}, warn() {}, err(m) { errs.push(m); }, ok() {}, dim() {} };
+    const { loop } = mkLoop("INSTANCE_ACCOUNT_UNVERIFIED", "这台机器还没报过它登着谁", log);
+    for (let i = 0; i < 6; i += 1) await loop.tickOnce();
+    eq("连拒 6 轮,日志只写一行", errs.length, 1);
+    check("写的那一行说得出业务码", errs[0].includes("INSTANCE_ACCOUNT_UNVERIFIED"), errs[0]);
+  }
 }
 
 

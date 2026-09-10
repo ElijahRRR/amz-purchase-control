@@ -49,6 +49,13 @@ const PHASE_TAG: Record<Phase, [string, string]> = {
   // 红色:这台机器**真的坏了**,不重新登录一单也跑不了。
   // 与「待命」的灰色分开,是为了让人一眼看出该动手的是他自己。
   "signed-out": ["tag", "background:#fef2f2;color:#b91c1c;border-color:#fecaca"],
+  // 红色,与「已登出」一档:两者都要人去**这台机器上**动手,只是动的东西不同
+  // (一个重新登录,一个换回正确的账号)。
+  "account-mismatch": ["tag", "background:#fef2f2;color:#b91c1c;border-color:#fecaca"],
+  // 琥珀,**不是红的**:这一格通常什么都不用做 —— 下一轮登录探测把账号报上去
+  // 就自动开闸。染成红的会让人跑去那台机器上瞎换账号,而它本来就是对的。
+  // 与运营台买家号页「可派单」那一列的配色同源(那边也是红 / 琥珀两档)。
+  "account-unverified": ["tag", "background:#fffbeb;color:#b45309;border-color:#fde68a"],
   // 同样是红的:这台机器此刻拍不了单,而且要人去动手。
   "cart-blocked": ["tag", "background:#fef2f2;color:#b91c1c;border-color:#fecaca"],
   // 上一单被强行掐掉、还没落地:这期间不认领。也是红的 —— 它同样是
@@ -116,6 +123,9 @@ function bandNote(phase: Phase, task: Task | null): string {
     case "idle": return "队列里没有本买家号的单";
     case "no-server": return "和服务端没说上话 —— 这不等于「没有单」";
     case "signed-out": return "这个浏览器被登出了,认领已暂停";
+    // 「服务端拒了」与「没问到服务端」是两句话 —— 后者会让人去查网络。
+    case "account-mismatch": return "登的不是这个买家号 —— 服务端拒绝派单";
+    case "account-unverified": return "账号还没报上来 —— 服务端暂时不派单";
     case "cart-blocked": return "连着几单清不动购物车,认领已暂停";
     case "stuck": return "上一单还没收尾,这期间不认领";
     default: return "";
@@ -164,6 +174,19 @@ function render(): void {
     ${phase === "signed-out" ? `<div class="warnbar" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">
       这个浏览器上的买家号已被登出,认领已暂停。请在<b>本浏览器</b>里重新登录 Amazon ——
       插件复检到之后会自己继续,不用重启插件。在那之前队列里属于这个买家号的单没人拍。
+    </div>` : ""}
+    ${phase === "account-mismatch" ? `<div class="warnbar" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">
+      <b>这个浏览器里登的不是这个买家号。</b>服务端认得出来,所以它<b>不会</b>把单派给这台机器
+      —— 派了就是拿另一个账号去买。<b>这不是「连不上服务端」</b>:服务端好好的,
+      拒绝的理由写在下面的日志里(那句话里有两个账号 ID)。
+      请在<b>本浏览器</b>里换回这个买家号该登的 Amazon 账号;
+      确实是库里记错了的话,去运营台买家号页按「以这个为准」。
+    </div>` : ""}
+    ${phase === "account-unverified" ? `<div class="warnbar" style="background:#fffbeb;color:#92400e;border-color:#fde68a">
+      <b>服务端还不知道这台机器登着谁</b>,所以暂时不派单 —— 新装 / 新 profile / 换过机器
+      的那一刻最容易登错号,这道闸就是拦那一刻的。<b>通常什么都不用做</b>:
+      下一轮登录探测会把买家号 ID 读上来报过去,对得上就自动恢复。
+      一直不恢复只有两种可能:登的真不是这个号,或者页面上没抠到账号 ID —— 那时要人去看一眼。
     </div>` : ""}
     ${phase === "no-server" ? `<div class="warnbar" style="background:#fef2f2;color:#b91c1c;border-color:#fecaca">
       认领时没跟服务端说上话(超时/断网/响应不是 JSON)。<b>这不等于「没有单」</b> ——
