@@ -47,7 +47,7 @@ python cli.py db_init
 
 # 2. 跑测试(需要一个可连的 PostgreSQL 17;连不上会整体 skip)
 export AMZ_TEST_ADMIN_DSN="dbname=postgres"
-python -m pytest -q                       # PYTEST_N 条
+python -m pytest -q                       # 485 条
 
 # 3. 起服务
 python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
@@ -66,7 +66,7 @@ python tools/mock_plugin.py --scenario no_asin     # 一个 ASIN 都没采到:�
 # 6. 插件侧
 cd extension && npm install
 npm run typecheck && npm run build        # → dist/,可加载进 Chrome
-npm run test:dom                          # DOM_N 条 DOM 解析断言(不需要服务端),顺带跑 test:unit UNIT_N 条
+npm run test:dom                          # 279 条 DOM 解析断言(不需要服务端),顺带跑 test:unit 181 条
 npm run smoke                             # 用插件自己的 Loop/runTask 跑闭环
 node tools/smoke.mjs --scenario happy --ship in_transit
 node tools/smoke.mjs --scenario login_lost         # 跑到一半被登出:退回队列,不记异常
@@ -194,10 +194,10 @@ python cli.py feishu_writeback
 
 | | 状态 |
 |---|---|
-| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ PYTEST_N 条 pytest,跑在真 PostgreSQL 17 上 |
+| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 485 条 pytest,跑在真 PostgreSQL 17 上 |
 | 插件与服务端的时序(认领 → 执行 → 护栏 → 回填 → 失败清车) | ✅ 全部 smoke 场景实跑,跑的是插件自己的 `Loop`/`runTask`(清单见 `extension/README.md`,那张表就是唯一的场景清单 —— 写死一个数字每加一条就过期一次) |
 | 物流同步时序 | ✅ 实跑 |
-| DOM 解析层(选择器是否按报告的语义在读) | ✅ DOM_N 条断言,对着按报告造的夹具跑(地址/购物车/商品页从 0 条到有断言);另有 UNIT_N 条纯 Node 断言盯等待原语、单飞闸、租约、认领循环、看门狗、清车熔断、「下单点留痕没落地就不许点」、「下单前确认」那几种走向,以及「上界由服务端反推」那条算式 |
+| DOM 解析层(选择器是否按报告的语义在读) | ✅ 279 条断言,对着按报告造的夹具跑(地址/购物车/商品页从 0 条到有断言);另有 181 条纯 Node 断言盯等待原语、单飞闸、租约、认领循环、看门狗、清车熔断、「下单点留痕没落地就不许点」、「下单前确认」那几种走向,以及「上界由服务端反推」那条算式 |
 | 登录态(被登出 → 拒绝派单 → 重新登录后自愈) | ✅ 心跳落库/认领被拒/恢复/unknown 的 pytest,加一轮 `--scenario login_lost` 实跑 |
 | 登错号(这台机器登的不是这个买家号 → 拒绝派单 → 换回来自愈) | ✅ pytest:首次写入/不覆盖/认领被拒/换回自愈/「以这个为准」留痕/形状不对不堵心跳;**还没报过账号的新实例也拦**(它会自己好:服务端主动要一次登录探测)。⚠ **只剩一个窗口没盖住** —— 一个**从来没被认出过**的买家号(`amazon_customer_id` 还是空的),它的**第一台机器不受这道闸保护**:那一刻我们手里没有任何可以比的东西。要关掉它,得先由人把这一列手工填上。⚠ **customerId 是在夹具上验的** —— 真实 Amazon 页面上它长什么样、还在不在,同「真实 Amazon 页面」那一行 |
 | 外部下单(上游在别处买的单只同步物流) | ✅ pytest:落库/五条状态迁移/回写只写物流三列/「不适用」不渲染成「未超」;另有一次 curl 闭环(import → `/v1/shipments/pending` 出现它)|

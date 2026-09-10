@@ -937,6 +937,7 @@ function confirmDriver(extra = {}) {
       deliveryTexts: ["Thursday, August 27"], isFba: true, unitPrices: [],
       giftCard: { applied: true, amount: "5.00" },
     }),
+    ensurePaymentCard: async () => ({ last4: null, switched: false }),
     placeOrder: async () => {},
     readOrderCard: async () => ({ amazonOrderNo: "111-0000000-0000000", observedAsins: [] }),
     dispose: async () => {},
