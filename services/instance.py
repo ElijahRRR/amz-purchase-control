@@ -209,6 +209,27 @@ def heartbeat(
     return row
 
 
+def _cleared_by_hand(conn, buyer_env_id: int) -> bool:
+    """输入:连接 + 买家号 id → 输出:这一列此刻的空,是不是**人手工清空**的。
+
+    判据:`procure.env_events` 里最近一条 `customer_id_override` 把它改成了 null。
+    (那条事件是 `set_customer_id` 唯一的产物,`payload.reported` 就是改成的值。)
+
+    为什么不加一列 `customer_id_cleared_at`:这张事件流本来就是为这一列开的,
+    而且它已经**带着 operator 和时刻**;再加一列等于把同一件事记两遍,
+    两份迟早会分叉。代价是这里要查一次 env_events —— 只在这一列为空、
+    而且这一轮真报上来了号的那几次心跳上走到。
+    """
+    last = conn.execute(
+        """SELECT payload->>'reported' AS reported
+             FROM procure.env_events
+            WHERE buyer_env_id = %s AND kind = 'customer_id_override'
+            ORDER BY id DESC LIMIT 1""",
+        (buyer_env_id,),
+    ).fetchone()
+    return last is not None and last["reported"] is None
+
+
 def _settle_customer_id(conn, *, instance_id: int, buyer_env_id: int,
                         reported: str | None) -> dict[str, Any]:
     """输入:这台机器**此刻记着的**账号 → 输出:{expected_customer_id, account_state}。
@@ -219,9 +240,16 @@ def _settle_customer_id(conn, *, instance_id: int, buyer_env_id: int,
 
     两条规则,方向相反,所以必须分开写:
 
-      · 买家号那一列**为空** → 首次上报即写入,并留一条 `customer_id_seen`。
-        这是这一列唯一的自动来源 —— 在此之前全仓一个写入点都没有,
-        它是一列永远为空的数据(而 db_schema 里写着「插件从页面提取」)。
+      · 买家号那一列**为空**、而且**不是人手工清空的** → 首次上报即写入,
+        并留一条 `customer_id_seen`。这是这一列唯一的自动来源 —— 在此之前
+        全仓一个写入点都没有,它是一列永远为空的数据(而 db_schema 里
+        写着「插件从页面提取」)。
+        「不是人手工清空的」那一条是必须的:`set_customer_id(None)` 的自述是
+        「等于关掉这道闸」,而少了这一条它其实是**把「这个买家号该是谁」的定义权
+        交给下一次心跳的那台机器**。对一台正被 mismatch 拦着的机器,清空等于一次
+        不需要二次确认、不带 operator 的「以这个为准」:20 秒后它的心跳把**错的**
+        号写成新基准,认领恢复,而这道闸从此永久对着错的基准静默。
+        判据是 `_cleared_by_hand`(读 env_events 里最近一条 `customer_id_override`)。
       · 已有值且**不一样** → **不覆盖**,留一条 `customer_id_mismatch`,
         认领闸(task_queue.account_blocks_claim)据此拒。
         覆盖是最坏的选择:一台登错号的机器会把买家号那一列改成它自己登的号,
@@ -238,7 +266,15 @@ def _settle_customer_id(conn, *, instance_id: int, buyer_env_id: int,
     ).fetchone()
     expected = (env["amazon_customer_id"] or None) if env else None
 
-    if reported and not expected:
+    if reported and not expected and _cleared_by_hand(conn, buyer_env_id):
+        # 人刚刚手工把这一列清空了 —— **不自动首报写入**。理由见 docstring:
+        # 自动写回去等于把基准交给下一次心跳的那台机器,而清空这个动作最常见的
+        # 现场恰恰是「这台机器正因为登错号被拦着」。要重新定基准只有一条路:
+        # 人再点一次「以这个为准」(带 operator、留 customer_id_override)。
+        # 这一支不记事件:20 秒一次的心跳无条件追加的话一天 4300 行,
+        # 而它们说的是同一件事 —— 那句话已经写在那条 override 事件里了。
+        pass
+    elif reported and not expected:
         # 条件写:同一个买家号上两台机器同时首报时,只有一台写得进去,
         # 另一台走下面的比对(而它们要是登着不同的号,第二台立刻被判 mismatch）。
         wrote = conn.execute(
@@ -513,6 +549,18 @@ def set_customer_id(conn, env_id: int, customer_id: str | None, *,
 
     留空 = 清掉这一列,回到「还没比对过」,**等于关掉这道闸**。允许它,是因为
     真会有记错的时候;但它同样写事件 —— 关闸比开闸更该留痕。
+
+    **而「关掉」必须真的是关掉。** 清空之后 `_settle_customer_id` 那条「为空就按
+    首次上报写入」的自动路径对这个买家号**不再生效**(判据 `_cleared_by_hand`)。
+    少了这一条,清空其实是「把『这个买家号该是谁』的定义权交给下一次心跳的那台
+    机器」:对一台正被 mismatch 拦着的机器,它等于一次不需要二次确认、不带
+    operator 的「以这个为准」—— 20 秒后那台登错号的机器把**错的**号写成新基准,
+    认领恢复,而这道闸从此永久对着错的基准静默。实测过这条链(真服务端):
+    claim → 409 MISMATCH;清空 → 200;下一次心跳 → account_state=ok、
+    库里那一列 = 那台机器登错的那个号。
+
+    代价说在明处:清空之后要重新定基准只有一条路 —— 人再点一次「以这个为准」。
+    自动那条路不会再帮忙,因为「帮忙」和「被登错号的机器劫持」是同一个动作。
     """
     v = (customer_id or "").strip() or None
     if v is not None and not CUSTOMER_ID_RE.match(v):
@@ -535,7 +583,11 @@ def set_customer_id(conn, env_id: int, customer_id: str | None, *,
     record_env_event(conn, env_id, "customer_id_override",
                      payload={"expected": before["amazon_customer_id"], "reported": v,
                               "operator": operator,
-                              "note": "人工把买家号ID 改成了这个值"})
+                              "note": ("人工清掉了买家号ID —— 这道闸关了,"
+                                       "而且插件报上来的号不会再被自动写成新基准;"
+                                       "要重新定基准得再点一次「以这个为准」"
+                                       if v is None else
+                                       "人工把买家号ID 改成了这个值")})
     return dict(row)
 
 

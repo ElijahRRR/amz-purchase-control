@@ -341,7 +341,7 @@ python cli.py task_retry
 | `POST /v1/admin/tasks/{id}/release` `/reset` `/force-backfill` `/address` `/asin` | 五个人工动作 |
 | `POST /v1/admin/tasks/batch-reset` | 批量重置。**不接受 acknowledged** —— 可能已下单的原样报回来,让人逐条去看 |
 | `POST /v1/admin/envs/{id}/expected-card` | 就地改这个买家号该刷哪张卡的后四位。**有副作用**:填上之后插件会在下单前替这个买家号把 Amazon 上选中的支付卡切成这一张(先切后验,校验仍在服务端);留空 = 既不校验也不切。改的是**下一次认领** —— 在途那一单比的是它认领时的快照 |
-| `POST /v1/admin/envs/{id}/customer-id` | 「以这个为准」:把这个买家号记的 Amazon 账号改成插件报上来的那个。**这个动作会打开一道认领闸**(登错号被拒的那道),所以它带操作人并写 `procure.env_events` |
+| `POST /v1/admin/envs/{id}/customer-id` | 「以这个为准」:把这个买家号记的 Amazon 账号改成插件报上来的那个。**这个动作会打开一道认领闸**(登错号被拒的那道),所以它带操作人并写 `procure.env_events`。**留空 = 关掉这道闸**,而且是真的关掉:清空之后「首次上报即写入」那条自动路径对这个买家号不再生效 —— 不然清空等于把「这个买家号该是谁」交给下一次心跳的那台机器(而清空最常见的现场正是「这台机器登错号被拦着」)。要重新定基准得再点一次「以这个为准」 |
 | `GET /v1/admin/envs/{id}/events` | 这个买家号身上发生过什么(眼下只有买家号 ID 那三条)。⚠ 运营台还没渲染这条流 |
 
 | `GET /v1/admin/instances` | 买家号与判活 |

@@ -165,9 +165,71 @@ def test_taking_it_as_the_truth_leaves_a_trace_with_a_name(client, conn, seed):
     assert ev[0]["payload"] == {"expected": ID_A, "reported": ID_B,
                                 "operator": "张三",
                                 "note": "人工把买家号ID 改成了这个值"}
+    # 清空那一路的 note 是**另一句话**:它还要说清「自动那条路也停了」——
+    # 合成一句的话,读事件流的人不知道下一次心跳会不会自己把基准补回来。
+    client.post(f"/v1/admin/envs/{env_id}/customer-id",
+                json={"amazon_customer_id": None, "operator": "张三"})
+    ev2 = _events(conn, "customer_id_override")
+    assert ev2[-1]["payload"]["reported"] is None
+    assert "不会再被自动写成新基准" in ev2[-1]["payload"]["note"]
     got = client.get(f"/v1/admin/envs/{env_id}/events").json()["data"]["items"]
     # 中文标签由服务端贴好 —— 让调用方再写一份中文就又多了一处会分叉的副本
     assert got[0]["label"] == vocab.ENV_EVENT_LABELS["customer_id_override"]
+
+
+def test_clearing_the_account_by_hand_really_turns_the_gate_off(client, conn, seed):
+    """**「清空 = 关掉这道闸」这句自述必须是真的。**
+
+    少了这一条,清空其实是「把『这个买家号该是谁』的定义权交给**下一次心跳的
+    那台机器**」——而清空这个动作最常见的现场,恰恰是「这台机器正因为登错号
+    被拦着」。于是它等于一次不需要二次确认、不带 operator 的「以这个为准」:
+    20 秒后那台登错号的机器把**错的**号写成新基准,认领恢复,
+    这道闸从此永久对着错的基准静默。实测过整条链(真服务端 + 真请求)。
+
+    README「验到了什么」里记的那个「唯一剩下的窗口」是「一个**从来没被认出过**的
+    买家号的第一台机器」;这条路把那个窗口重新打开在一个**已经认出过、
+    而且此刻正登着错号**的买家号上。
+    """
+    _beat(client, ID_A)                       # 基准 = ID_A
+    _beat(client, ID_B)                       # 这台机器登的是 ID_B → mismatch
+    assert client.post("/v1/tasks/claim",
+                       json={"instance_uid": "inst-A"}).status_code == 409
+    env_id = conn.execute(
+        "SELECT id FROM procure.buyer_envs WHERE code='env-172'").fetchone()["id"]
+
+    r = client.post(f"/v1/admin/envs/{env_id}/customer-id",
+                    json={"amazon_customer_id": None, "operator": "张三"})
+    assert r.status_code == 200, r.text
+    assert _env(conn) is None
+
+    # **下一次心跳不许把那台登错号的机器写成新基准。**
+    assert _beat(client, ID_B).json()["data"]["account_state"] == "unknown"
+    assert _env(conn) is None
+    # 也不许悄悄补一条 customer_id_seen —— 那会让事件流看起来像是「它自己认出来的」。
+    # (第一条是最开头 _beat(ID_A) 那次真正的首报,清空之后不该再多出第二条。)
+    seen = _events(conn, "customer_id_seen")
+    assert len(seen) == 1 and seen[0]["payload"]["reported"] == ID_A
+
+    # 闸确实是关的(unknown 不拦单),而不是变成另一种拦法。
+    assert client.post("/v1/tasks/claim",
+                       json={"instance_uid": "inst-A"}).status_code == 200
+
+    # 要重新定基准只有一条路:人再点一次「以这个为准」。
+    client.post(f"/v1/admin/envs/{env_id}/customer-id",
+                json={"amazon_customer_id": ID_A, "operator": "张三"})
+    assert _env(conn) == ID_A
+
+
+def test_a_never_seen_env_still_gets_its_account_written_on_first_report(client, conn, seed):
+    """而**没被人清空过**的买家号照旧首报即写入 —— 这一列唯一的自动来源。
+
+    上一条那道拦不许把它一起拦掉:拦掉的话这一列会退回「永远为空」,
+    而 db_schema 写着「插件从页面提取」。
+    """
+    assert _env(conn) is None
+    assert _beat(client, ID_A).json()["data"]["account_state"] == "ok"
+    assert _env(conn) == ID_A
+    assert len(_events(conn, "customer_id_seen")) == 1
 
 
 def test_a_misshapen_account_is_refused_with_a_name(client, conn, seed):
