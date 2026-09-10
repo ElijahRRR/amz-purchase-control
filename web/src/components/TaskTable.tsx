@@ -19,6 +19,7 @@ import { CopyText } from "@/components/CopyText";
 import { Tag } from "@/components/ui/tag";
 import { useLabel, useMeta } from "@/lib/meta";
 import { autoRetryApplies, capVerdict, cn, money, shortTime } from "@/lib/utils";
+import type { CapVerdict } from "@/lib/utils";
 import type { TaskRow } from "@/types";
 
 export type Density = "detail" | "compact";
@@ -97,10 +98,24 @@ function SourceTag({ source, label, tone }: {
   );
 }
 
+/** 「实付/货款」那一格的颜色**跟着 capVerdict 的结论走**,不自己再判一遍。
+ *
+ *  原先这里写着自己的三分支(unknown 灰 / over 红 / 其余 zinc-800),于是
+ *  capVerdict 新加的第四档 `not_applicable`(外部下单)落进 else,拿到的 class
+ *  与一张**真核过、没超**的单一模一样 —— 「判据只有一处」那句话在这一格有过
+ *  第二份副本。而这一格已经栽过两次(null、"0.00"),那会是第三种形状。
+ *
+ *  键写成 tone 的全集:以后再加一档而忘了给颜色,TypeScript 当场报错,
+ *  不会安静地落进某个 else。 */
+const TOTAL_TONE: Record<CapVerdict["tone"], string> = {
+  "amber-hollow": "text-zinc-400",
+  red: "text-red-600 font-medium",
+  emerald: "text-zinc-800",
+  "dashed-zinc": "text-zinc-400",
+};
+
 function totalTone(r: TaskRow): string {
-  const v = capVerdict(r);
-  if (v.state === "unknown") return "text-zinc-400";
-  return v.state === "over" ? "text-red-600 font-medium" : "text-zinc-800";
+  return TOTAL_TONE[capVerdict(r).tone];
 }
 
 /** 勾选列。放在最前面,两种密度都有 —— 批量动作不该只在某一档才够得着。 */
@@ -254,7 +269,19 @@ function useColumns(density: Density): ColumnDef<TaskRow>[] {
       { id: "env", header: "买家号", size: 88,
         cell: ({ row }) => <span className="text-xs">{row.original.env_code}</span> },
       { id: "cap", header: "限价", size: 74, meta: { align: "right" },
-        cell: ({ row }) => <span className="num">{money(row.original.price_cap)}</span> },
+        cell: ({ row }) => {
+          const r = row.original;
+          // 外部下单的 price_cap 是库里那一列 NOT NULL 逼出来的占位 0。
+          // **渲染成 0.00 就是在说「限价 0.00」**,而系统从没有过这个限价;
+          // 跟旁边一张限价真的很低的单排在一起,人读到的是一个数,不是一个占位。
+          // 详细档与 CSV 早就写「不适用」了 —— 而扫桶用的正是紧凑档,
+          // 它反而是唯一一处还在渲染那个 0 的地方。
+          if (r.purchase_source === "external") {
+            return <span className="text-2xs text-zinc-400"
+                         title={capVerdict(r).text}>不适用</span>;
+          }
+          return <span className="num">{money(r.price_cap)}</span>;
+        } },
       // **红色必须落在它标注的那个数上。** 原先这一格永远显示 actual_total,
       // 而闸比的是货款:礼品卡抵扣过的单会渲染成「限价 1200.00 / 实付 1141.86(红)」
       // —— 屏幕上两个数字说「没超」,颜色说「超了」,真正比过的那个数(2241.86)
