@@ -23,6 +23,7 @@ import { Loop } from "../background/loop.js";
 import { AmazonDriver, AmazonShipmentReader } from "../flow/amazon.js";
 import { SimulatedDriver, SimulatedShipmentReader } from "../flow/simulated.js";
 import type { PageDriver } from "../flow/driver.js";
+import type { ConfirmPreview } from "../flow/run.js";
 import type { LoginState } from "../flow/dom/parse.js";
 import type { ShipmentReader } from "../flow/shipment.js";
 
@@ -32,6 +33,13 @@ export interface RunnerState {
   hasLease: boolean;
   /** 正在等操作员做发卡行验证,到点是这个时刻(epoch 毫秒)。null = 没在等。 */
   verifyDeadlineMs: number | null;
+  /** 正在等人按「下单」/「取消」时,这一屏要摆出来的东西。null = 没在等。
+   *  **与 verifyDeadlineMs 分开**:一个是「你已经花了钱,去做发卡行验证」,
+   *  一个是「还没花钱,你决定买不买」—— 两件事渲染成一个样子的话,
+   *  屏幕上那句话在其中一种情况下必然是假的。 */
+  confirm: ConfirmPreview | null;
+  /** 等人确认那一格的到期时刻(epoch 毫秒)。面板拿它跑倒计时。 */
+  confirmDeadlineMs: number | null;
 }
 
 /** 这几个相位表示「这个标签页手里有一单没跑完」。续租时要把它报给 SW ——
@@ -50,6 +58,10 @@ export class Runner {
   private loop: Loop | null = null;
   private hasLease = false;
   private verifyDeadlineMs: number | null = null;
+  private confirmDeadlineMs: number | null = null;
+  /** 面板上那一屏正等着的应答。`resolve` 是 runTask 那条 await 的另一头。
+   *  **只答一次** —— 答完立刻置 null,第二次点(或超时之后再点)什么都不做。 */
+  private pendingConfirm: { preview: ConfirmPreview; resolve: (go: boolean) => void } | null = null;
   /** 单飞闸。**挂在 Runner 上,不挂在 Loop 上** —— Loop 会被 setConfig 重建,
    *  闸跟着归零,于是正在跑的那一单还没结束就又领了一单进来(两条 runTask
    *  动同一个购物车)。Runner 只有一个,活得比 Loop 长。 */
@@ -72,7 +84,22 @@ export class Runner {
       task: this.task,
       hasLease: this.hasLease,
       verifyDeadlineMs: this.verifyDeadlineMs,
+      confirm: this.pendingConfirm?.preview ?? null,
+      confirmDeadlineMs: this.confirmDeadlineMs,
     };
+  }
+
+  /** 面板上那两个按钮按下之后调这里。true = 下单,false = 取消。
+   *
+   *  **不做超时。** 到点由 flow/run.ts 那边的钟说了算(它 race 的是同一个 promise)
+   *  —— 上界交给界面的话,一个渲染卡住的面板就等于没有上界,而它长得跟
+   *  「人还在看」一模一样。这里只负责把人的那一下传过去。 */
+  answerConfirm(go: boolean): void {
+    const p = this.pendingConfirm;
+    if (!p) return;          // 已经答过了 / 已经超时收摊了:第二次点什么都不做
+    this.pendingConfirm = null;
+    this.emit();
+    p.resolve(go);
   }
 
   private emit() {
@@ -115,6 +142,29 @@ export class Runner {
         // 「此刻正在等这个人做发卡行验证,到点是什么时候」。面板拿它跑倒计时;
         // 相位负责标签,这一条负责那个数字。
         onVerifyWindow: (deadlineMs) => { this.verifyDeadlineMs = deadlineMs; this.emit(); },
+        // 「等人确认下单」那一格的倒计时。**收到 null 时要把弹窗一起收掉** ——
+        // 这一位有两个来路:run.ts 按超时落地了(清车 + 退回队列),
+        // 或者 Loop 的看门狗先开火把整单放弃了(硬顶配得比确认窗口紧时)。
+        // 两种都已经没有任何东西在等这个人了:屏幕上还留着两个能按的按钮的话,
+        // 人按下去会以为自己刚刚下了单,而那一单要么早就回队列了、
+        // 要么正等着认领超时清扫。
+        onConfirmWindow: (deadlineMs) => {
+          this.confirmDeadlineMs = deadlineMs;
+          if (deadlineMs === null && this.pendingConfirm) {
+            const p = this.pendingConfirm;
+            this.pendingConfirm = null;
+            // 这个值 run.ts 那边**不会再看**(race 已经按超时落定了)。
+            // 只是不让那条 promise 永远挂着。
+            p.resolve(false);
+          }
+          this.emit();
+        },
+        // 下单前那一屏。**接了它不等于开着** —— 开关在 Config.confirmBeforeOrder
+        // (默认关),Loop 每一轮现读;这里只负责把弹窗支起来。
+        askConfirm: (_task, preview) => new Promise<boolean>((resolve) => {
+          this.pendingConfirm = { preview, resolve };
+          this.emit();
+        }),
         // 读页面必须在内容脚本里(SW 没有 document),心跳发在 SW 里。
         // 所以这里只负责把读到的那一位交给 SW,由它挂在下一次心跳上。
         reportLogin: (state: LoginState) => {

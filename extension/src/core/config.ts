@@ -48,8 +48,32 @@ export interface Timeouts {
   /** 硬顶还要给服务端的认领超时留出这么多余量:必须保证 fail/complete 发生在
    *  任务还是 claimed 的时候,否则「单真下成了、单号也读到了」会写不进库。 */
   orderServerMargin: number;
+  /** **留给「点下单 → 等确认页」那一步的地板。** 认领窗口里剩下的余地,
+   *  不许被前面任何一步(眼下只有「等人确认」)吃到低于这个数。
+   *
+   *  为什么非有不可:`placeOrder` 是**先点按钮、再算硬顶**的 —— 硬顶算出来
+   *  接近 0 时按钮已经点下去了,第一轮轮询就到期 → `ORDER_CONFIRM_TIMEOUT`
+   *  → 置位 may_have_ordered → 待人工「可能已下单,去买家号里看一眼」。
+   *  也就是说「余地不够」这件事,如果拖到 placeOrder 里才发现,代价是一张
+   *  **可能真花了钱**的单;而在点下去之前发现,代价只是退回队列。
+   *
+   *  默认取 `orderConfirm`(下单后正常相位的预算)那个量级:低于它,点下去
+   *  几乎必然等不到确认页。它不是「下单一定够用」的保证 —— 发卡行验证要 6 分钟,
+   *  那一段本来就由 orderHardCap/orderServerMargin 另外兜着。 */
+  minOrderRoom: number;
   /** 下单后那一段的轮询间隔。 */
   orderPoll: number;
+  /** 「下单前停下来等人按」那一格的预算。只在 `confirmBeforeOrder` 开着时用得上。
+   *
+   *  **它不是实际生效的上界。** 真正等多久取
+   *  `min(confirmWait, 认领时刻 + claim_timeout_min×60s − orderServerMargin
+   *       − minOrderRoom − 此刻)`
+   *  —— 与 placeOrder 的硬顶同一把尺子(flow/amazon.orderHardCapMs),再扣掉
+   *  留给下单那一步的地板(minOrderRoom):等人这一格**不许把认领窗口吃光**,
+   *  否则人在窗口末尾按下的那一下会当场撞上 ORDER_CONFIRM_TIMEOUT。
+   *  把它调到比认领窗口还长不会让人多等一秒,只会让「实际上界是谁定的」
+   *  在事件流里从 confirm_wait 变成 claim_window。 */
+  confirmWait: number;
 }
 
 export interface Config {
@@ -83,6 +107,16 @@ export interface Config {
   /** 持有者说自己在跑单、却再也没来续租时,还给它多少宽限。
    *  必须有界:标签页没关但内容脚本死了的话,租约会永远停在 busy 上。 */
   leaseBusyGraceMs: number;
+  /** 下单前停下来等人按一下。**默认关**(所有者定稿:下单前默认无人工确认,
+   *  做成可设置项)。
+   *
+   *  开着的时候花的是**操作员的注意力**:每一单都要有人在屏幕前看着按,
+   *  没人按就到点退回队列 —— 一台没人守的机器开着它,等于把队列堵在确认窗口上。
+   *  所以默认是关的,要开是一个当场的、看得见的选择,不是装上就有的默认行为。
+   *
+   *  **只认真正的 `true`。** 存坏了(字符串 "false"、0、undefined)一律当关 ——
+   *  这一位判错的方向必须是「不停」而不是「停下来等一个不存在的人」。 */
+  confirmBeforeOrder: boolean;
   timeouts: Timeouts;
 }
 
@@ -103,6 +137,9 @@ export const DEFAULTS = {
   // 比一单的硬顶短是故意的:真跑着单的标签页每一轮认领都续一次,
   // 连着 10 分钟一次都没续上,它已经不在跑了。
   leaseBusyGraceMs: 10 * 60_000,
+  // 默认关。开着它的代价是「每一单都要有人在屏幕前」,那是运营现场的选择,
+  // 不该由装上插件这个动作替他们做。
+  confirmBeforeOrder: false,
   timeouts: {
     frameLoad: 30_000,
     loginProbe: 20_000,
@@ -122,7 +159,14 @@ export const DEFAULTS = {
     postVerify: 60_000,
     orderHardCap: 10 * 60_000,
     orderServerMargin: 3 * 60_000,
+    // 1 分钟:与 orderConfirm(下单后正常相位的预算)同一个量级。
+    // 认领窗口只剩这么点的时候,停下来等人是拿一张「还能安全退回队列」的单
+    // 去换一张「可能已下单」的单 —— 那笔交换在任何配置下都不划算。
+    minOrderRoom: 60_000,
     orderPoll: 500,
+    // 3 分钟:够一个正盯着屏幕的人看完预览再按一下,又短到「他离开座位了」
+    // 不会把这一单一直挂在认领窗口里。到点退回队列,单子还在,谁都没花钱。
+    confirmWait: 3 * 60_000,
   } as Timeouts,
 };
 
@@ -175,6 +219,10 @@ export async function loadConfig(store: Store = memoryStore()): Promise<Config> 
     cartBlockMs: posOr(saved.cartBlockMs, DEFAULTS.cartBlockMs),
     leaseTtlMs: posOr(saved.leaseTtlMs, DEFAULTS.leaseTtlMs),
     leaseBusyGraceMs: posOr(saved.leaseBusyGraceMs, DEFAULTS.leaseBusyGraceMs),
+    // `=== true` 而不是 `?? false`:存下来的这一位可能是任何东西(手改过的
+    // storage、旧版本存的字符串)。「像是开着」就停下来等人的话,一台没人守的
+    // 机器会把每一单都等到超时再退回队列 —— 而队列看起来一直在动。
+    confirmBeforeOrder: saved.confirmBeforeOrder === true,
     timeouts: mergeTimeouts(saved.timeouts),
   };
   if (saved.instanceUid !== cfg.instanceUid) await store.set(KEY, cfg);
