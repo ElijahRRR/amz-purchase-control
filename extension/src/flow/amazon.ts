@@ -904,6 +904,13 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
   // 错误码(PAYMENT_METHOD_UNEXPECTED,归 BUSINESS_BLOCKED、不自动重试),
   // 那一句「切支付卡停在「xxx」」就是运营台上唯一能把它们分开的东西。
   //
+  // **五步的每一处「等满了预算」之前都先问一句 guardLogin。** 切卡途中会话过期
+  // (Amazon 把 iframe 导去 /ap/signin)在这里的表现全都是「等不到」,而这一段
+  // 抛的 PAYMENT_METHOD_UNEXPECTED 是 BUSINESS_BLOCKED、不可自动重试、也不上报
+  // signed_out —— 那会让一台已经登出的机器把整队单子刷成「支付卡不符」。
+  // 「点不动」那两支不问:元素找着了、也渲染出来了,页面就是我们这一张,
+  // 不是登录页;为它多读一遍页面只会把一个说得清的失败拖慢。
+  //
   // 为什么整段都用 PAYMENT_METHOD_UNEXPECTED 而不新开一个码:错误码是封闭集
   // (docs/01 §4 ↔ services/error_codes.py ↔ core/codes.ts,有测试盯着),
   // 而这五种停法的处置与「结算页那张卡不是期望的那张」完全一致 ——
@@ -918,8 +925,15 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
 
     // **期望为空 = 一步都不做。** 连结算页都不多读一遍:这个买家号的语义是
     // 「不校验也不切」,任何多余的动作都是在没被授权的情况下动别人的支付配置。
+    //
+    // last4 直接给 null,**不是** readPaymentLast4(doc()):`doc()` 在结算 iframe
+    // 已经跨域/已被销毁时是**抛错**的(frame.ts:129),而这一档抛出来的是一个裸
+    // Error,run.ts 只能把它兜成 PLUGIN_INTERNAL —— 一个**根本没配期望卡**的
+    // 买家号,因为一个按定义什么都不做的步骤而失败。这一位调用方也不用:
+    // run.ts 只看 switched,switched=false 时那一份读数没有任何人读。
+    // 契约(driver.ts)写着这一档「不读任何东西」,那句话得是真的。
     const want = (expected ?? "").trim();
-    if (!want) return { last4: readPaymentLast4(doc()) ?? null, switched: false };
+    if (!want) return { last4: null, switched: false };
 
     // 配成了别的形状(填了 "**** 4417"、"4417 Visa"、四位以外的数字)。
     // **不猜、也不当成"不校验"**:当成不校验的话,一格填错的配置会让这个
@@ -1004,6 +1018,14 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
     const hit = await waitFor("目标支付卡", () => findCardRadioByLast4(doc(), want),
                               { timeoutMs: T.paymentSelect }).catch(() => null);
     if (!hit) {
+      // ①② 同一条规矩,而这三步(③④⑤)比前两步更要紧:切卡的失败落的是
+      // PAYMENT_METHOD_UNEXPECTED —— 归 BUSINESS_BLOCKED,**不在 RETRYABLE 里**,
+      // 而且不上报 signed_out。少了这一句,一个在切卡途中被登出的买家号会:
+      // 这一单落成「支付卡不符」的拍单异常 → login_state 仍是 ok → 下一轮照常
+      // 认领 → 照样死在同一步。一台机器就这样把整队单子刷成「支付卡不符」,
+      // 而运营看到这个码只会去查买家号钱包里的卡,查不出任何问题。
+      // (地址那条链的同类分支落的是 ADDRESS_FORM_TIMEOUT,可重试,轻一档。)
+      await this.guardLogin(f, "选支付卡");
       // 这一句要能分开三种现场:一张卡都没渲染出来(还在画/改版)、
       // 有卡但没有一张是那个尾号(钱包里没这张卡)、有两张都是那个尾号(不敢挑)。
       // 只写「没找到」的话,运营唯一能做的事是自己登录买家号去看一遍。
@@ -1025,6 +1047,9 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
     const confirm = await waitFor("支付方式确认按钮", () => findPaymentConfirmButton(doc()),
                                   { timeoutMs: T.paymentSelect }).catch(() => null);
     if (!confirm) {
+      // 同 ③:等满一个预算才走到这里,而「等不到」最常见的成因之一就是页面
+      // 已经被导去 /ap/signin 了。先问一句,理由见上面那一段。
+      await this.guardLogin(f, "确认支付方式");
       // 「页面上根本没有这个按钮」与「按钮在、但一直是 disabled」是两回事:
       // 前者是改版,后者是这张卡被拒了(过期、额度、地区),等多久都不会变。
       const all = Array.from(doc().querySelectorAll(SEL.checkout.payselect.confirm));
@@ -1051,6 +1076,9 @@ export class AmazonDriver implements PageDriver, CartReadReporter {
                               () => { const v = now(); return v === want ? v : null; },
                               { timeoutMs: T.paymentSelect, everyMs: 300 }).catch(() => null);
     if (!got) {
+      // 同 ③④。这一步等的是「回到结算页、而且卡换过来了」——被登出时页面根本
+      // 不会回到结算页,等满预算之后报一句「切完读到的仍不是期望」是**错的原因**。
+      await this.guardLogin(f, "切卡后回结算页");
       stop("切完读到的仍不是期望",
            `点完确认等了 ${T.paymentSelect}ms,结算页读到的仍是 ` +
            `${now() ?? "读不出来"},不是 ${want}(切之前是 ${from ?? "读不出来"});` +
