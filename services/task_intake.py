@@ -20,7 +20,7 @@ from datetime import datetime
 from decimal import Decimal, InvalidOperation
 from typing import Any
 
-from services import task_event
+from services import error_codes, task_event
 
 MARKETPLACES = frozenset({"US"})     # 首期只做 US
 
@@ -39,30 +39,40 @@ PURCHASE_SOURCES = frozenset({"plugin", "external", "manual_backfill"})
 #: 这几个状态可以转成「外部下单」:单子还没被买到,或者买砸了/在等人 ——
 #: 上游既然已经在别处买了,我们这边那张单就不该再被拍一次。
 #:
-#: **状态只是判据的一半**,另一半是「越过没越过下单点」,两半在 `_can_migrate` 里
-#: 取与。光看状态的话,一张 `manual + may_have_ordered` 的单(插件在点下单按钮
-#: 之前报过 step、随后 ORDER_CONFIRM_TIMEOUT,正等着人去买家号订单页看一眼到底
-#: 下没下成)会被一轮定时同步静默转成「已拍单 · 外部下单」并清掉错误码 ——
-#: 全项目唯一「可能已经花过钱」的那一桶被清空,而 NEEDS_ACK 那道要人亲自确认的闸
-#: 一次都没被问过。
+#: **状态只是判据的三分之一**,另外两条是「越过没越过下单点」与「失败原因属不属于
+#: 『可能已下单』那一组」,三条在 `_can_migrate` 里取与。光看状态的话,一张
+#: `manual + may_have_ordered` 的单(插件在点下单按钮之前报过 step、随后
+#: ORDER_CONFIRM_TIMEOUT,正等着人去买家号订单页看一眼到底下没下成)会被一轮定时
+#: 同步静默转成「已拍单 · 外部下单」并清掉错误码 —— 全项目唯一「可能已经花过钱」
+#: 的那一桶被清空,而 NEEDS_ACK 那道要人亲自确认的闸一次都没被问过。
 _MIGRATABLE = frozenset({"pending", "ready", "exception", "manual"})
 
 
 def _can_migrate(t: dict[str, Any]) -> bool:
     """输入:库里那一行 → 输出:能不能转成「外部下单」。**状态迁移表的判据,唯一定义处。**
 
-    两条取与:
+    三条取与:
       · 状态在 `_MIGRATABLE` 里 —— 单子还没被买到,或者买砸了/在等人
       · **没越过下单点** —— `may_have_ordered` 为真意味着插件已经点过下单按钮
         (或者点的过程中崩了),这一单可能已经在亚马逊上真花过钱
+      · **失败原因不属于「可能已下单」那一组** —— `error_codes.POSSIBLY_ORDERED`
 
-    第二条与「回队列」那四道闸(人工重置 / 批量重置 / 自动重试选单 / 插件的
-    `/release`)判的是同一件事,只是方向相反:**回队列与转终态都不许替人做
-    那次「去买家号订单页看一眼到底买了几次」的确认。** `claimed` 那一格早就有
-    这条保护(报 conflicted 让人去看),而 `manual + may_have_ordered` 恰恰是
-    我们**已经知道**可能花过钱的那一格,原先反而没有。
+    后两条**与 `task_admin.reset_to_queue` 那道 NEEDS_ACK 闸同源,而且必须同源**:
+    那边判的正是 `risky_code or crossed` 两条取或(见 README「几条贯穿全项目的判断」)。
+    只判 `may_have_ordered` 会漏掉一整类:`CLAIM_TIMEOUT`(插件领走之后机器睡了/崩了,
+    那条 step 从没发出去,这一位仍是 false)、以及**所有加列之前的历史行**
+    —— `may_have_ordered` 是后加的 `ADD COLUMN ... DEFAULT false`,加列之前那些
+    `manual + ORDER_CONFIRM_TIMEOUT` 的单在这一位上一律是 false。实测过:
+    一张 `manual + CLAIM_TIMEOUT` 的单,人工重置被 NEEDS_ACK 拦下,而同一张单
+    走一轮定时同步就被静默转成「已拍单 · 外部下单」、错误码被清掉、
+    单号换成上游那一张 —— 同一件事两条路两个答案。
+
+    **回队列与转终态都不许替人做那次「去买家号订单页看一眼到底买了几次」的确认。**
+    `claimed` 那一格早就有这条保护(报 conflicted 让人去看)。
     """
-    return t["status"] in _MIGRATABLE and not t["may_have_ordered"]
+    return (t["status"] in _MIGRATABLE
+            and not t["may_have_ordered"]
+            and t["error_code"] not in error_codes.POSSIBLY_ORDERED)
 
 
 def line_key(upstream_order_no: str, products: list[dict[str, Any]]) -> str:
@@ -236,6 +246,7 @@ def _mark_external(conn, *, line_key: str, amazon_order_no: str,
 
       pending / ready / exception / manual  → 转 purchased(external),写一条事件
       **任一状态 + 越过下单点**              → **一动不动**,报出来让人看
+      **任一状态 + 码属于「可能已下单」**    → **一动不动**,报出来让人看
       claimed                               → **一动不动**,报出来让人看
       purchased 且单号相同                   → 什么都不做,也不报(幂等,回写就是这么来的)
       purchased 且单号不同                   → 一动不动,报出来
@@ -250,7 +261,7 @@ def _mark_external(conn, *, line_key: str, amazon_order_no: str,
     离开待人工桶之后没有人会再去核对它。
     """
     t = conn.execute(
-        "SELECT id, status, amazon_order_no, may_have_ordered"
+        "SELECT id, status, amazon_order_no, may_have_ordered, error_code"
         "  FROM procure.tasks WHERE line_key = %s",
         (line_key,),
     ).fetchone()
@@ -446,7 +457,7 @@ def dry_run(conn, rows: list[dict[str, Any]]) -> dict[str, Any]:
                 continue
 
         in_db = conn.execute(
-            "SELECT status, amazon_order_no, may_have_ordered"
+            "SELECT status, amazon_order_no, may_have_ordered, error_code"
             "  FROM procure.tasks WHERE line_key = %s", (key,)
         ).fetchone()
         dup = key in seen_keys or in_db is not None
@@ -484,7 +495,7 @@ def dry_run(conn, rows: list[dict[str, Any]]) -> dict[str, Any]:
 def _why_not_migrated(t: dict[str, Any], amazon_order_no: str) -> str:
     """输入:库里那一行 + 上游填的单号 → 输出:「为什么没动」那句话。
 
-    **只管措辞,不参与决定**(决定在 `_MIGRATABLE`)。真跑与空跑共用它 ——
+    **只管措辞,不参与决定**(决定在 `_can_migrate`)。真跑与空跑共用它 ——
     两套措辞的话,空跑说的和真跑说的对不上,而人是照空跑那份去核对的。
     """
     if t["status"] == "claimed":
@@ -496,6 +507,16 @@ def _why_not_migrated(t: dict[str, Any], amazon_order_no: str) -> str:
         # 一个已经花完还没确认。措辞里必须出现「到底买了几次」——
         # 这一句就是要人去买家号订单页做的那件事。
         return (f"这一单越过过下单点(可能已经在亚马逊上真花过钱,状态 {t['status']}),"
+                f"上游又填了 AMZ 单号 {amazon_order_no} —— 这一单没动。"
+                f"请去这个买家号的订单页确认到底买了几次")
+    if t["error_code"] in error_codes.POSSIBLY_ORDERED:
+        # 与 may_have_ordered 那一格同源,只是这一支拦的是**那条 step 从没发出去**
+        # 的那一类:CLAIM_TIMEOUT(领走之后机器睡了/崩了)、以及所有加列之前的
+        # 历史行。措辞照 task_admin.reset_to_queue 那道 NEEDS_ACK 闸的口径 ——
+        # 同一件事在两条路上必须是同一句话,而且说的是**中文标签**不是英文码
+        # (docs/01 §4:界面上不出现英文码)。
+        return (f"这一单的失败原因是「{error_codes.label(t['error_code'])}」,"
+                f"意味着它可能已经真下成了(状态 {t['status']}),"
                 f"上游又填了 AMZ 单号 {amazon_order_no} —— 这一单没动。"
                 f"请去这个买家号的订单页确认到底买了几次")
     if t["status"] == "purchased":

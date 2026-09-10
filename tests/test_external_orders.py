@@ -16,8 +16,8 @@ from decimal import Decimal
 
 import pytest
 
-from services import (feishu_writeback, instance, ops_query, shipment, task_admin,
-                      task_intake, task_query, task_queue)
+from services import (error_codes, feishu_writeback, instance, ops_query, shipment,
+                      task_admin, task_intake, task_query, task_queue)
 
 
 def _row(**over):
@@ -147,7 +147,11 @@ def _land(conn, status, *, error_code=None, may_have_ordered=False):
 
 @pytest.mark.parametrize("status,error_code", [
     ("pending", None), ("ready", None),
-    ("exception", "CHECKOUT_TIMEOUT"), ("manual", "CLAIM_TIMEOUT"),
+    ("exception", "CHECKOUT_TIMEOUT"),
+    # manual 那一格挑的码**不能**属于 POSSIBLY_ORDERED —— 那一组走的是下面
+    # test_a_task_whose_error_code_says_it_might_have_been_bought_is_left_alone。
+    # 原先这里写的正是 CLAIM_TIMEOUT,于是这条测试断言的是「那一类单会被转掉」。
+    ("manual", "ADDRESS_NOT_APPLIED"),
 ])
 def test_upstream_filling_in_the_order_no_turns_the_task_into_an_external_purchase(
         conn, seed, status, error_code):
@@ -262,6 +266,84 @@ def test_a_task_that_crossed_the_order_point_is_left_alone(conn, seed, status, e
     assert t["error_code"] == error_code       # 红色警告不许被这条路清掉
     assert t["purchase_source"] == "plugin"
     assert "purchased" not in _kinds(conn, task_id)
+
+
+@pytest.mark.parametrize("code", sorted(error_codes.POSSIBLY_ORDERED))
+def test_a_task_whose_error_code_says_it_might_have_been_bought_is_left_alone(
+        conn, seed, code):
+    """**错误码属于「可能已下单」那一组的单一动不动** —— 哪怕 `may_have_ordered` 是 false。
+
+    这是与上一条同源、而原先漏掉的那一半。§5.4 那四道回队列的闸判的是
+    `错误码 ∈ POSSIBLY_ORDERED` **或** `may_have_ordered`,两条取或;转终态这条路
+    原先只判后一半,于是一整类单漏了过去:
+
+      · `CLAIM_TIMEOUT` —— 插件领走之后机器睡了/崩了,那条 step **从没发出去**,
+        `may_have_ordered` 仍是 false,而 task_sweep 判成 `manual + CLAIM_TIMEOUT`;
+      · **所有加列之前的历史行** —— `may_have_ordered` 是后加的
+        `ADD COLUMN … DEFAULT false`,加列之前那些 `manual + ORDER_CONFIRM_TIMEOUT`
+        在这一位上一律是 false。
+
+    实测过的净效果:同一张单,`task_admin.reset_to_queue` 被 NEEDS_ACK 拦下,
+    而一轮定时 `feishu_sync` 把它静默转成「已拍单 · 外部下单」、清掉错误码、
+    单号换成上游那一张 —— 同一件事,两条路两个答案,而后一条**连人都没有**。
+    """
+    task_id = _land(conn, "manual", error_code=code, may_have_ordered=False)
+    got = task_intake.ingest(conn, [_row(amazon_order_no="111-2223334-5556667",
+                                         price_cap=None)])
+    assert got["conflicted"] == 1 and got["migrated"] == 0
+    d = got["details"][0]
+    assert d["result"] == "conflicted"
+    # 措辞照 NEEDS_ACK 那道闸的口径:说中文标签(不是英文码),并把人指向
+    # 那件要做的事。两条路对同一张单说的必须是同一句话。
+    assert error_codes.label(code) in d["reason"]
+    assert "到底买了几次" in d["reason"]
+    t = _task(conn)
+    assert (t["status"], t["amazon_order_no"]) == ("manual", None)
+    assert t["error_code"] == code             # 红色警告不许被这条路清掉
+    assert t["purchase_source"] == "plugin"
+    assert "purchased" not in _kinds(conn, task_id)
+
+
+def test_dry_run_also_leaves_the_risky_error_code_alone(conn, seed):
+    """空跑与真跑判的是同一个 `_can_migrate`,「码说可能买过了」那一格也不例外。"""
+    _land(conn, "manual", error_code="CLAIM_TIMEOUT", may_have_ordered=False)
+    rows = [_row(amazon_order_no="111-2223334-5556667", price_cap=None)]
+    preview = task_intake.dry_run(conn, rows)
+    real = task_intake.ingest(conn, rows)
+    for k in ("inserted", "duplicated", "rejected", "migrated", "conflicted"):
+        assert preview[k] == real[k], k
+    assert preview["details"][0]["reason"] == real["details"][0]["reason"]
+
+
+def test_a_cancelled_task_is_left_alone(conn, seed):
+    """**已取消的单一动不动。** 这一格原先一条断言都没有。
+
+    docs/01 §10.2 写着「每一条各有一条 pytest」,而 `cancelled` 那一格是空的:
+    实测把 "cancelled" 加进 `_MIGRATABLE`,全量 pytest 一条都不红。
+    真发生的话:一张人已经取消掉的单,被上游补一个 AMZ 单号之后,会被一轮定时
+    同步静默复活成 `purchased` + `external`、清掉 error_code、直接进物流同步队列。
+    **取消是人做过的决定**,这条路把它抹掉了。
+    """
+    task_id = _land(conn, "cancelled")
+    got = task_intake.ingest(conn, [_row(amazon_order_no="111-2223334-5556667",
+                                         price_cap=None)])
+    assert got["conflicted"] == 1 and got["migrated"] == 0
+    d = got["details"][0]
+    assert d["result"] == "conflicted"
+    # 兜底那句措辞:说得出是哪个状态,也说得出上游填的是哪个号。
+    assert "cancelled" in d["reason"] and "111-2223334-5556667" in d["reason"]
+    t = _task(conn)
+    assert (t["status"], t["amazon_order_no"], t["purchase_source"]) == (
+        "cancelled", None, "plugin")
+    assert "purchased" not in _kinds(conn, task_id)
+
+    # 空跑与真跑同一张表(照 test_dry_run_also_leaves_the_crossed_order_point_alone)
+    rows = [_row(amazon_order_no="111-2223334-5556667", price_cap=None)]
+    preview = task_intake.dry_run(conn, rows)
+    real = task_intake.ingest(conn, rows)
+    for k in ("inserted", "duplicated", "rejected", "migrated", "conflicted"):
+        assert preview[k] == real[k], k
+    assert preview["details"][0]["reason"] == real["details"][0]["reason"]
 
 
 def test_dry_run_also_leaves_the_crossed_order_point_alone(conn, seed):
