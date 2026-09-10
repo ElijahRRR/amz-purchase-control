@@ -34,9 +34,18 @@
   做成可设置项。开着的话,每一单在护栏放行之后、点下单之前停一格:面板弹出预览
   (上游单号、商品与数量、服务端真正比过的货款与限价、礼品卡抵扣、交期原文、买家号),
   两个按钮「下单」「取消」,一条倒计时。三条规矩:
-  - **开了也有界。** 等待上界取 `min(timeouts.confirmWait, 认领窗口 − orderServerMargin)`
-    ——与 `placeOrder` 的硬顶同一把尺子。上界由 `flow/run.ts` 那边的钟执行,**不由面板提供**:
-    面板那条倒计时只负责显示 M:SS,把上界交给界面的话,一个渲染卡住的面板就等于没有上界。
+  - **开了也有界。** 等待上界取
+    `min(timeouts.confirmWait, 认领窗口 − orderServerMargin − timeouts.minOrderRoom)`
+    ——与 `placeOrder` 的硬顶同一把尺子,再扣掉留给下单那一步的地板。上界由
+    `flow/run.ts` 那边的钟执行,**不由面板提供**:面板那条倒计时只负责显示 M:SS,
+    把上界交给界面的话,一个渲染卡住的面板就等于没有上界。
+  - **不许把认领窗口吃光(`timeouts.minOrderRoom`,默认 1 分钟)。** `placeOrder`
+    先点按钮、再算硬顶:窗口被吃光时,人在末尾按下的那一下会当场
+    `ORDER_CONFIRM_TIMEOUT` + `may_have_ordered=true` → 待人工「可能已下单」。
+    扣完余地不剩就**根本不开窗口**(一个人都不问,清车退回队列,连
+    `awaiting_confirm` 都不写);人按下之后再看一眼表,掉到地板以下同样不点。
+    两处都写 `payload.state: confirm_no_room` —— 那是「系统来不及了」,
+    不是「没人来按」。
   - **超时退回队列,而且与「人按了取消」分开。** 到点 = 清车 + `/release`,
     这一刻还没花钱,退回去是安全的那一边;但事件流里的文案与 `payload.state` 是两条
     (`confirm_timeout` / `confirm_cancelled`)——一个是「有人看了一眼决定不买」,
@@ -171,6 +180,7 @@ node tools/smoke.mjs --scenario confirm_yes           # 人按了「下单」→
 node tools/smoke.mjs --scenario confirm_no            # 人按了「取消」→ 清车,退回队列
 node tools/smoke.mjs --scenario confirm_wait_timeout  # 没人来按 → 到点清车,退回队列
 node tools/smoke.mjs --scenario confirm_watchdog      # 看门狗先掐了单,人晚一步按「下单」→ 那一下不作数
+node tools/smoke.mjs --scenario confirm_no_room       # 认领窗口不够停下来等人了 → 窗口根本不开,清车退回队列
 
 # 物流同步是独立一条流,加 --ship 顺带跑一轮
 node tools/smoke.mjs --scenario happy --ship in_transit
@@ -201,12 +211,24 @@ node tools/smoke.mjs --scenario happy --ship delivered
 | confirm_no | `ready`(**退回队列**) | — （事件流里有「人按了取消,退回队列」,`state=confirm_cancelled`) |
 | confirm_wait_timeout | `ready`(**退回队列**) | — （事件流里有「等人确认超时 N 秒,退回队列」,`state=confirm_timeout`) |
 | confirm_watchdog | `claimed`(**停在原地,等认领超时清扫**) | — （事件流到「插件放弃这一单」为止:`state=plugin_hard_cap`,**没有** confirm_approved / 点击下单按钮,`may_have_ordered=false`) |
+| confirm_no_room | `ready`(**退回队列**) | — （事件流里只有「认领窗口不够停下来等人了,退回队列」,`state=confirm_no_room`,**没有** `awaiting_confirm` —— 窗口根本没开过) |
 
 「没人来按」那一条**不叫 `confirm_timeout`**,叫 `confirm_wait_timeout`:前一个名字
 已经归上面那一行用了(「点了下单但没等到确认页」,`ORDER_CONFIRM_TIMEOUT`,
 钱**可能已经花了**)。两件事共用一个场景名的话,`--scenario confirm_timeout` 跑出来的
 到底是哪一种就要靠猜 —— 而它们一个是「可能已下单,转待人工」,一个是
 「一分钱没花,回队列」。
+
+`confirm_no_room` 那一条验的是**等人这一格不许把认领窗口吃光**。`placeOrder` 是
+先点按钮、再算硬顶的:窗口被吃光时,人在末尾按下的那一下会拿到一个 ~0 的硬顶,
+第一轮轮询就到期 → `ORDER_CONFIRM_TIMEOUT` → `may_have_ordered=true` →
+待人工「可能已下单」。所以 `timeouts.minOrderRoom`(默认 1 分钟)是给下单那一步
+留的地板,扣完不剩就**根本不开窗口**:一个人都不问,清车退回队列,事件流里
+连 `awaiting_confirm` 都不写(没人见过那一屏)。地板同样在**人按下之后**再看一眼表
+——那条 `/events` 的来回走在窗口里面。实跑复现过(把 `run.ts` 里 `roomMs` 那行的
+`- minOrderRoomMs` 去掉,这条场景当场转红:事件流变成
+`[awaiting_confirm, confirm_no_room]`,那句 step 也变成「人按了下单,但认领窗口
+只剩 720 秒,不够下单了」)。
 
 `confirm_watchdog` 那一条验的是**两种情况不许渲染成一个结果**的另一头:看门狗掐单
 之后屏幕上那张卡片跟着收掉,人晚一步按下的「下单」一点都不作数。不这么做的话,
@@ -227,9 +249,14 @@ node tools/smoke.mjs --scenario happy --ship delivered
 **下单前确认:默认关,开了也有界,超时退回队列。** 开关在 `core/config.confirmBeforeOrder`
 (默认 `false`),由 `background/loop` **每一轮现读** —— 不是「构造 Loop 时传没传
 `askConfirm`」;那样面板改开关不重建 Loop,关掉之后机器照旧每一单都停下来等。
-开着的时候等待上界取 `min(confirmWait, 认领窗口 − 余量)`,由 `flow/run.ts` 那边的钟执行,
-不由面板提供。到点 = 清车 + 退回队列(这一刻还没花钱),**且与「人按了取消」是两条不同的
+开着的时候等待上界取 `min(confirmWait, 认领窗口 − 余量 − minOrderRoom)`,由
+`flow/run.ts` 那边的钟执行,不由面板提供;那把钟与交给面板的 `deadlineMs` 是
+**同一个时刻**(`awaiting_confirm` 那条 `/events` 的来回走在窗口里面,不是窗口外面
+——否则面板归零之后按钮还能按,而屏幕上写着「到点退回队列」)。
+到点 = 清车 + 退回队列(这一刻还没花钱),**且与「人按了取消」是两条不同的
 文案与 `payload.state`**:一个是有人看过了,一个是没人在看这台机器。
+第三条 `confirm_no_room` 也分开:认领窗口已经不够走完「点下单 → 等确认页」——
+那是**系统来不及了**,不是没人来按,而他可能正坐在屏幕前、并且真的按了。
 
 **失败必上报、必清车。** 每条终止路径都走 `finish()`，它保证先清车再上报，
 不存在"只写本地日志"的出口。（厂商插件有 30+ 条只写日志的失败路径，且多数不清车，

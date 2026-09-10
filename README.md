@@ -40,7 +40,7 @@ python cli.py db_init
 
 # 2. 跑测试(需要一个可连的 PostgreSQL 17;连不上会整体 skip)
 export AMZ_TEST_ADMIN_DSN="dbname=postgres"
-python -m pytest -q                       # 409 条
+python -m pytest -q                       # 422 条
 
 # 3. 起服务
 python -m uvicorn server.app:app --host 127.0.0.1 --port 8781
@@ -59,7 +59,7 @@ python tools/mock_plugin.py --scenario no_asin     # 一个 ASIN 都没采到:�
 # 6. 插件侧
 cd extension && npm install
 npm run typecheck && npm run build        # → dist/,可加载进 Chrome
-npm run test:dom                          # 225 条 DOM 解析断言(不需要服务端),顺带跑 test:unit 95 条
+npm run test:dom                          # 225 条 DOM 解析断言(不需要服务端),顺带跑 test:unit 172 条
 npm run smoke                             # 用插件自己的 Loop/runTask 跑闭环
 node tools/smoke.mjs --scenario happy --ship in_transit
 node tools/smoke.mjs --scenario login_lost         # 跑到一半被登出:退回队列,不记异常
@@ -187,12 +187,13 @@ python cli.py feishu_writeback
 
 | | 状态 |
 |---|---|
-| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 409 条 pytest,跑在真 PostgreSQL 17 上 |
+| 服务端全部端点、状态流转、护栏裁决、封闭集校验 | ✅ 422 条 pytest,跑在真 PostgreSQL 17 上 |
 | 插件与服务端的时序(认领 → 执行 → 护栏 → 回填 → 失败清车) | ✅ 全部 smoke 场景实跑,跑的是插件自己的 `Loop`/`runTask`(清单见 `extension/README.md`,那张表就是唯一的场景清单 —— 写死一个数字每加一条就过期一次) |
 | 物流同步时序 | ✅ 实跑 |
-| DOM 解析层(选择器是否按报告的语义在读) | ✅ 225 条断言,对着按报告造的夹具跑(地址/购物车/商品页从 0 条到有断言);另有 95 条纯 Node 断言盯等待原语、单飞闸、租约、认领循环、看门狗、清车熔断、「下单点留痕没落地就不许点」,以及「上界由服务端反推」那条算式 |
+| DOM 解析层(选择器是否按报告的语义在读) | ✅ 225 条断言,对着按报告造的夹具跑(地址/购物车/商品页从 0 条到有断言);另有 172 条纯 Node 断言盯等待原语、单飞闸、租约、认领循环、看门狗、清车熔断、「下单点留痕没落地就不许点」、「下单前确认」那几种走向,以及「上界由服务端反推」那条算式 |
 | 登录态(被登出 → 拒绝派单 → 重新登录后自愈) | ✅ 心跳落库/认领被拒/恢复/unknown 的 pytest,加一轮 `--scenario login_lost` 实跑 |
 | 下单后的三段等待(发卡行验证 → 露窗口 → 上报 → 有界超时) | ⚠️ **只验到时序那一半**:两条 step 事件、`claim_timeout_min` 下发、列表徽标、新错误码转人工,都有 pytest 与 `--scenario manual_verify / manual_verify_timeout` 实跑;**「iframe 真被导到跨域页之后 `urlState()` 读到什么、`reveal()` 出来的窗口能不能真的输验证码」没验过** —— 那要一个真买家号 |
+| 下单前确认(`confirmBeforeOrder`,默认关) | ⚠️ **只验到插件↔服务端那一层**:五种走向(放行 / 取消 / 超时 / 看门狗抢先 / 认领窗口不够)在真服务端上各实跑过一遍(`node tools/smoke.mjs --scenario confirm_yes、confirm_no、confirm_wait_timeout、confirm_watchdog、confirm_no_room`),另有 pytest 盯跨文件字面量与「先写事件流再 `/release`」;**没验到**浏览器里那一层 —— 预览屏在 shadow root 里长什么样、两个按钮点不点得动 |
 | 运营台前端 | ✅ 真库 + 真服务 + 真浏览器跑过四页、详情弹窗、改地址、剪贴板、NEEDS_ACK 流程 |
 | **真实 Amazon 页面** | ❌ **从未跑过**。这里没有可登录的买家号 |
 
