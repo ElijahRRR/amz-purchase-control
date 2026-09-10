@@ -44,6 +44,9 @@
   身份仍然是买家号环境(`buyer_envs.code`)。这一列为空时由插件首次上报写入;
   已有值而插件报上来的不一样 → **不覆盖**,认领时拒
   (`INSTANCE_ACCOUNT_MISMATCH`,形状照 `INSTANCE_SIGNED_OUT`,**不是**回「没有单」)。
+  已有值而这台机器**从没报过** → 同样拒(`INSTANCE_ACCOUNT_UNVERIFIED`),
+  因为最容易登错号的正是新装 / 新 profile 那一刻;它会自己好 ——
+  服务端在心跳回执里主动要一次登录探测。
   判据现算不存,唯一定义处 `services/task_queue.account_state`。见 `docs/01` §11。
 
 ## 安全铁律

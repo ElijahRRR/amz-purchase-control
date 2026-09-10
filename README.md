@@ -330,7 +330,7 @@ python cli.py task_retry
 | | |
 |---|---|
 | `POST /v1/instances/register` `/heartbeat` | 实例注册与心跳。心跳捎上插件读到的**登录态**与**买家号 ID**(两者都是「不带 = 没有新消息」),回一句「该不该复检」以及「登着的是不是这个买家号」 |
-| `POST /v1/tasks/claim` | 按买家号认领一单。被登出的实例回 409 `INSTANCE_SIGNED_OUT`、**登错号**的实例回 409 `INSTANCE_ACCOUNT_MISMATCH` —— **都不是**回一个「没有单」 |
+| `POST /v1/tasks/claim` | 按买家号认领一单。被登出的实例回 409 `INSTANCE_SIGNED_OUT`、**登错号**的回 409 `INSTANCE_ACCOUNT_MISMATCH`、**还没报过自己登着谁**的回 409 `INSTANCE_ACCOUNT_UNVERIFIED`(会自己好)—— **都不是**回一个「没有单」 |
 | `POST /v1/tasks/{id}/events` | 执行步骤上报(只追加)。回执带 `may_have_ordered`:**这条任务**此刻越没越过下单点,不是「这一批里有没有那条 step」 |
 | `POST /v1/tasks/{id}/guard-check` | **护栏裁决在服务端**,插件只报数 |
 | `POST /v1/tasks/{id}/complete` `/fail` `/release` | 落终态 |
